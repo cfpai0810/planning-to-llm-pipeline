@@ -21,10 +21,14 @@ these pages, and a poisoned name must render as text.
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass
-from typing import Optional
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Optional, Sequence
 
 import streamlit as st
+
+from src.stats import percent, wilson_interval
 
 # -- Colour tokens ----------------------------------------------------------------
 
@@ -96,6 +100,8 @@ PAIRS = (
     Pair(NAVY, PAPER, "ui", "focus ring on the page"),
     Pair(NAVY, SURFACE, "ui", "focus ring on a card or input"),
     *(Pair(s.text, s.background, "text", f"{kind} chip") for kind, s in STATUS.items()),
+    Pair(INK, INFO_TINT, "text", "sidebar: the current page"),
+    Pair(INK, NEUTRAL_TINT, "text", "sidebar link on hover; SQL and hashes"),
     Pair(RULE, SURFACE, "decorative", "card border, table rules"),
     Pair(RULE, PAPER, "decorative", "dividers on the page"),
 )
@@ -104,6 +110,7 @@ PAIRS = (
 
 SANS = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 SERIF = "'Source Serif 4', Georgia, 'Times New Roman', serif"
+MONO = "ui-monospace, 'Cascadia Mono', Consolas, 'Liberation Mono', monospace"
 FONTS_URL = ("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700"
              "&family=Source+Serif+4:wght@400;600;700&display=swap")
 
@@ -115,6 +122,9 @@ CAPTION_PX = 14              # captions and labels: 13 px or more, never smaller
 CHIP_PX = 13
 TABLE_PX = 15
 TILE_VALUE_REM = 1.75
+CODE_PX = 14
+TILE_MIN_PX = 160            # a KPI tile is at least this wide before the row wraps
+TABLE_MIN_PX = 720           # a breaks table scrolls inside its frame below this width
 
 SPACING = (4, 8, 12, 16, 24, 32, 48)   # the only spacing values
 CARD_PAD, CARD_PAD_WIDE = 16, 24
@@ -220,6 +230,17 @@ table, table th, table td {{
   border: 1px solid {RULE};
   border-radius: {CARD_RADIUS}px;
   padding: {CARD_PAD}px;
+  display: flex;
+  flex-direction: column;
+}}
+/* Tiles in a row are one height, so a tile without a comparison line keeps
+   that space; each line sits under its value, level with its neighbours'
+   (finding 2). */
+.p7-tile-row {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax({TILE_MIN_PX}px, 1fr));
+  gap: {CARD_PAD}px;
+  align-items: stretch;
 }}
 .p7-tile-label {{ color: {MUTED}; font-size: {CAPTION_PX}px; font-weight: 500; margin: 0 0 4px; }}
 .p7-tile-value {{ color: {INK}; font-size: {TILE_VALUE_REM}rem; font-weight: 600; line-height: {HEADING_LINE_HEIGHT}; font-variant-numeric: tabular-nums; }}
@@ -245,6 +266,106 @@ table, table th, table td {{
 }}
 {_status_rules()}
 .p7-row {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }}
+.p7-notice {{ color: {INK}; margin: 0; }}
+
+/* The sidebar's current page and hover, from tokens: Streamlit derives a pale
+   olive from the page colour (finding 5). */
+[data-testid="stSidebarNavLink"]:hover {{ background: {NEUTRAL_TINT}; }}
+[data-testid="stSidebarNavLink"][aria-current="page"] {{ background: {INFO_TINT}; color: {INK}; }}
+
+/* The kit's table: right-aligned tabular figures, and a frame of its own that
+   scrolls sideways when the table is wider than the column, never the page
+   (finding 3). */
+.p7-table-wrap {{
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid {RULE};
+  border-radius: {CARD_RADIUS}px;
+  background: {SURFACE};
+}}
+.p7-table {{ border-collapse: collapse; width: 100%; min-width: {TABLE_MIN_PX}px; color: {INK}; }}
+.p7-table caption {{
+  caption-side: bottom;
+  text-align: left;
+  font-size: {CAPTION_PX}px !important;
+  color: {MUTED};
+  padding: 8px 12px;
+}}
+.p7-table th, .p7-table td {{
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid {RULE};
+}}
+.p7-table th {{ font-weight: 600; color: {INK}; }}
+.p7-table td.num, .p7-table th.num {{
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}}
+.p7-table tbody tr:last-child td {{ border-bottom: none; }}
+
+/* Provenance: every field in full; the SQL in a code block, the hash on one
+   copyable line, never on hover only. */
+.p7-provenance, .p7-refusal {{
+  background: {SURFACE};
+  border: 1px solid {RULE};
+  border-radius: {CARD_RADIUS}px;
+  padding: {CARD_PAD}px;
+  color: {INK};
+}}
+.p7-card-title {{ font-weight: 600; color: {INK}; margin: 0 0 8px !important; }}
+.p7-provenance dl {{
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0 0 12px;
+  padding: 0;
+}}
+.p7-provenance dt {{ color: {MUTED}; font-size: {CAPTION_PX}px; }}
+.p7-provenance dd {{ margin: 0; min-width: 0; }}
+.p7-code {{
+  background: {NEUTRAL_TINT};
+  color: {INK};
+  border-radius: {CARD_RADIUS}px;
+  padding: 12px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+  font-size: {CODE_PX}px;
+  line-height: {BODY_LINE_HEIGHT};
+}}
+.p7-code, .p7-code code, .p7-hash, .p7-code-inline {{ font-family: {MONO} !important; }}
+.p7-hash {{
+  display: block;
+  font-size: {CODE_PX}px;
+  color: {INK};
+  background: {NEUTRAL_TINT};
+  padding: 4px 8px;
+  border-radius: {CARD_RADIUS}px;
+  word-break: break-all;
+  user-select: all;
+}}
+.p7-code-inline {{ font-size: {CODE_PX}px; color: {INK}; background: {NEUTRAL_TINT}; padding: 0 4px; }}
+
+/* A refusal is a designed outcome: neutral, never error red. */
+.p7-refusal p {{ margin: 0; }}
+.p7-refusal ul {{ margin: 8px 0 0; padding-left: 24px; }}
+
+/* An evaluation result: the rate, its interval and n, on one line. */
+.p7-eval {{ color: {INK}; margin: 0; }}
+.p7-eval-figures {{ font-variant-numeric: tabular-nums; }}
+
+/* An empty state: calm, and no colour. */
+.p7-empty {{
+  border: 1px solid {RULE};
+  border-radius: {CARD_RADIUS}px;
+  padding: {CARD_PAD_WIDE}px;
+  color: {MUTED};
+}}
+.p7-empty p {{ margin: 0; }}
+.p7-empty-title {{ font-family: {SERIF}; font-size: {HEADING_REM["h3"]}rem; color: {INK}; margin: 0 0 8px !important; }}
+.p7-empty-action {{ color: {INK}; font-weight: 500; margin: 8px 0 0 !important; }}
 
 @media (min-width: {WIDE_MIN_PX}px) {{
   .p7-tile {{ padding: {CARD_PAD_WIDE}px; }}
@@ -253,6 +374,8 @@ table, table th, table td {{
   [data-testid="stMainBlockContainer"] {{ padding-left: {PHONE_GUTTER}px; padding-right: {PHONE_GUTTER}px; }}
   .p7-banner {{ padding: {CARD_PAD}px; }}
   .p7-banner h1 {{ font-size: {HEADING_REM["h2"]}rem; }}
+  .p7-provenance dl {{ grid-template-columns: minmax(0, 1fr); gap: 4px; }}
+  .p7-provenance dd {{ margin: 0 0 8px; }}
 }}
 </style>"""
 
@@ -263,12 +386,20 @@ class _Markup(str):
     """Markup that _element built: safe as it stands, never escaped twice."""
 
 
-def _element(tag: str, css_class: str, *content) -> _Markup:
-    """The one place markup is built: a plain string is escaped here; built markup is kept."""
-    inner = "".join(part if isinstance(part, _Markup) else html.escape(str(part), quote=True)
-                    for part in content)
-    attribute = f' class="{css_class}"' if css_class else ""
-    return _Markup(f"<{tag}{attribute}>{inner}</{tag}>")
+def _esc(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _element(tag: str, css_class: str, *content,
+             attrs: Sequence[tuple[str, str]] = ()) -> _Markup:
+    """
+    The one place markup is built. A plain string, as content or as an
+    attribute's value, is escaped here; markup this module built is kept.
+    """
+    inner = "".join(part if isinstance(part, _Markup) else _esc(part) for part in content)
+    attributes = (f' class="{_esc(css_class)}"' if css_class else "") + "".join(
+        f' {name}="{_esc(value)}"' for name, value in attrs)
+    return _Markup(f"<{tag}{attributes}>{inner}</{tag}>")
 
 
 def banner(title: str, subtitle: str) -> str:
@@ -307,6 +438,151 @@ def kpi_tile(label: str, value: str, versus: Optional[str] = None,
 def row(*items: str) -> str:
     """Components side by side, wrapping on a narrow screen."""
     return _element("div", "p7-row", *items)
+
+
+def kpi_row(*tiles: str) -> str:
+    """KPI tiles in one grid row: one height each, wrapping to the next row on a phone."""
+    return _element("div", "p7-tile-row", *tiles)
+
+
+def notice(kind: str, label: str, text: str) -> str:
+    """A labelled chip, then one line of text."""
+    return _element("p", "p7-notice", status_chip(kind, label), " ", text)
+
+
+# -- Figures --------------------------------------------------------------------------
+
+def format_amount(value) -> str:
+    """A whole amount with thousands separators, a negative in brackets: (112,450)."""
+    whole = Decimal(str(value)).quantize(Decimal(1), rounding=ROUND_HALF_UP)
+    text = f"{abs(whole):,}"
+    return f"({text})" if whole < 0 else text
+
+
+# -- Provenance and refusal -----------------------------------------------------------
+
+RECONCILIATION = {"reconciled": ("info", "Reconciled"), "breaks": ("warning", "Breaks open"),
+                  "not_run": ("neutral", "Not reconciled yet")}
+_HASH = re.compile(r"[0-9a-f]{64}")
+_REASON_CODE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def provenance_card(*, specification: str, sql: str, sql_hash: str, row_count: int,
+                    source_batch: str, reconciliation: str, registry_version: str) -> str:
+    """Where a figure came from: every field in full, the SQL as code, the whole hash."""
+    if reconciliation not in RECONCILIATION:
+        raise ValueError(f"reconciliation is one of {', '.join(RECONCILIATION)}")
+    if not _HASH.fullmatch(sql_hash):
+        raise ValueError("the SQL hash is 64 lowercase hex characters (SHA-256)")
+    kind, label = RECONCILIATION[reconciliation]
+    fields = (("Specification", specification), ("Row count", format_amount(row_count)),
+              ("Source batch", source_batch), ("Reconciliation", status_chip(kind, label)),
+              ("Registry version", registry_version),
+              ("SQL hash", _element("code", "p7-hash", f"sha256:{sql_hash}")))
+    listing = _element("dl", "", *(part for name, value in fields
+                                   for part in (_element("dt", "", name),
+                                                _element("dd", "", value))))
+    return _element("div", "p7-provenance", _element("p", "p7-card-title", "Provenance"),
+                    listing, _element("pre", "p7-code", _element("code", "", sql)))
+
+
+def refusal_card(code: str, text: str, suggestions: Sequence[str] = ()) -> str:
+    """A question not answered, by design: its fixed reason code and wording, in neutral."""
+    if not _REASON_CODE.fullmatch(code or ""):
+        raise ValueError("a refusal carries a fixed reason code, such as unknown_metric")
+    parts = [_element("div", "p7-row", status_chip("neutral", "Not answered"),
+                      _element("code", "p7-code-inline", code)),
+             _element("p", "", text)]
+    if suggestions:
+        parts.append(_element("ul", "", *(_element("li", "", s) for s in suggestions)))
+    return _element("div", "p7-refusal", *parts)
+
+
+# -- Breaks and their acknowledgement --------------------------------------------------
+
+SEVERITIES = {"high": ("adverse", "High"), "medium": ("warning", "Medium"),
+              "low": ("neutral", "Low")}
+BREAK_STATUSES = {"open": ("warning", "Open"), "accepted": ("info", "Accepted"),
+                  "dismissed": ("neutral", "Dismissed"), "investigated": ("info", "Investigated")}
+ACTIONS = ("Accepted", "Dismissed", "Investigated")
+_BREAK_COLUMNS = (("Severity", False), ("Member", False), ("Plan", True), ("Actual", True),
+                  ("Difference", True), ("Break", False), ("Status", False))
+
+
+@dataclass(frozen=True)
+class BreakRow:
+    """One break: its severity, the member, plan and actual, what is wrong, and its status."""
+    severity: str
+    member: str
+    plan: object
+    actual: object
+    text: str
+    status: str = "open"
+
+    @property
+    def difference(self) -> Decimal:
+        return Decimal(str(self.actual)) - Decimal(str(self.plan))
+
+
+def breaks_table(rows: Sequence[BreakRow], caption: str) -> str:
+    """
+    The breaks as a table of the kit's own: headers with scope, figures right-
+    aligned in tabular figures with negatives in brackets, and a frame that
+    scrolls sideways inside itself when the table is wider than the column.
+    """
+    head = _element("thead", "", _element("tr", "", *(
+        _element("th", "num" if numeric else "", name, attrs=(("scope", "col"),))
+        for name, numeric in _BREAK_COLUMNS)))
+    body = []
+    for r in rows:
+        if r.severity not in SEVERITIES or r.status not in BREAK_STATUSES:
+            raise ValueError(f"severity is one of {', '.join(SEVERITIES)} and status one of "
+                             f"{', '.join(BREAK_STATUSES)}")
+        body.append(_element(
+            "tr", "",
+            _element("td", "", status_chip(*SEVERITIES[r.severity])),
+            _element("td", "", r.member),
+            *(_element("td", "num", format_amount(v)) for v in (r.plan, r.actual, r.difference)),
+            _element("td", "", r.text),
+            _element("td", "", status_chip(*BREAK_STATUSES[r.status]))))
+    table = _element("table", "p7-table", _element("caption", "", caption), head,
+                     _element("tbody", "", *body))
+    return _element("div", "p7-table-wrap", table,
+                    attrs=(("role", "region"), ("aria-label", "Breaks"), ("tabindex", "0")))
+
+
+def acknowledge_form(break_label: str, key: str) -> Optional[dict]:
+    """
+    The acknowledgement of one break: the person's name, their action and a
+    note. Visual only in Phase 0: it returns what was entered, or None until
+    it is submitted, and records nothing (the logic is Phase 1).
+    """
+    with st.form(key):
+        show(_element("p", "p7-card-title", f"Acknowledge: {break_label}"))
+        name = st.text_input("Your name", key=f"{key}_name")
+        action = st.radio("Action", ACTIONS, key=f"{key}_action", horizontal=True)
+        note = st.text_area("Note", key=f"{key}_note")
+        submitted = st.form_submit_button("Record acknowledgement", key=f"{key}_submit")
+    return {"name": name, "action": action, "note": note} if submitted else None
+
+
+# -- Evaluation and empty states ---------------------------------------------------------
+
+def evaluation_result(label: str, k: int, n: int) -> str:
+    """A rate with its Wilson 95% interval and n, on one line. k and n are required."""
+    lower, upper = wilson_interval(k, n)
+    figures = (f"{percent(k / n)}% ({k} of {n}); 95% interval {percent(lower)}% to "
+               f"{percent(upper)}%")
+    return _element("p", "p7-eval", _element("span", "p7-eval-label", label), ": ",
+                    _element("span", "p7-eval-figures", figures))
+
+
+def empty_state(title: str, text: str, action: Optional[str] = None) -> str:
+    """A calm placeholder: a title, a line of text, and the next step if there is one."""
+    parts = [_element("p", "p7-empty-title", title), _element("p", "", text)]
+    if action:
+        parts.append(_element("p", "p7-empty-action", f"Next: {action}"))
+    return _element("div", "p7-empty", *parts)
 
 
 # -- Rendering ------------------------------------------------------------------------

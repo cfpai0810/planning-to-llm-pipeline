@@ -15,6 +15,16 @@ showWidgetBorder = true
 font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
 headingFont = "Source Serif 4:https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&display=swap, serif"
 headingFontSizes = ["2rem", "1.5rem", "1.25rem", "1.0625rem"]
+# Streamlit's alerts in the kit's status pairs: st.warning in warning,
+# st.error in adverse, st.success in favourable, st.info in info.
+yellowTextColor = "#7A4200"          # WARNING_TEXT
+yellowBackgroundColor = "#FBF0E3"    # WARNING_TINT
+redTextColor = "#9B2C2C"             # ADVERSE_TEXT
+redBackgroundColor = "#FBEAEA"       # ADVERSE_TINT
+greenTextColor = "#2E6B3F"           # FAVOURABLE_TEXT
+greenBackgroundColor = "#E7F2EA"     # FAVOURABLE_TINT
+blueTextColor = "#1A3A5C"            # INFO_TEXT
+blueBackgroundColor = "#E6EDF5"      # INFO_TINT
 
 # Visitors see the app, not the developer menu or the Deploy button.
 [client]

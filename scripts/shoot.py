@@ -14,6 +14,10 @@ browser and records, for the reviewer:
   again after moving between them in one session;
 - the keyboard focus ring on each control of the gallery;
 - that a poisoned name on the gallery renders as text;
+- KPI tiles in a row are one height (finding 2); the breaks table's figures
+  are right-aligned in tabular figures, and a table wider than the column
+  scrolls inside its own frame, never the page (finding 3); the sidebar's
+  current page takes its colour from a token (finding 5);
 - a failed model call on screen: a stand-in key typed into the gate, the
   gallery's call made through the real SDK to a local stand-in API that
   answers "model not found", and the plain line and code it shows;
@@ -57,13 +61,15 @@ from streamlit_app.lib import key_gate, nav, theme  # noqa: E402
 # A stand-in key, built from parts so the whole key is written in no file.
 SHOT_KEY = "-".join(["sk", "ant", "api03", "SHOOT", "standin", "not", "a", "real", "key"])
 HEIGHTS = {1280: 900, 768: 1024, 390: 844}
+# The gallery's last element: once it is drawn, every section above it is.
+GALLERY_READY = 'button:has-text("Run a stand-in call")'
 LABEL = "Stand-in data"
 POISON = "<script>alert(\"x\")</script> & Co's \"Q1\" plan"
 FONT_TARGETS = {
     "input": '[data-testid="stTextInput"] input',
     "select": '[data-testid="stSelectbox"] input[role="combobox"]',
     "button": '[data-testid="stBaseButton-primary"]',
-    "table cell": '[data-testid="stTable"] td',
+    "table cell": ".p7-table td",
     "h1": ".p7-banner h1",
     "h4": '[data-testid="stMarkdownContainer"] h4',
 }
@@ -92,9 +98,23 @@ MEASURE = """(targets) => {
     sidebar_open: sideRect ? (sidebar.getAttribute('aria-expanded') === 'true'
                               && sideRect.right > 0 && sideRect.width > 0) : null,
     caption: caption ? [getComputedStyle(caption).color, getComputedStyle(caption).opacity] : null,
-    table_header: (() => { const th = document.querySelector('[data-testid="stTable"] th p')
-                             || document.querySelector('[data-testid="stTable"] th');
+    table_header: (() => { const th = document.querySelector('.p7-table th');
                            return th ? getComputedStyle(th).color : null; })(),
+    tile_rows: [...document.querySelectorAll('.p7-tile-row')].map(row =>
+      [...row.children].map(t => { const r = t.getBoundingClientRect();
+                                   return [Math.round(r.top), Math.round(r.height)]; })),
+    figures: (() => { const cells = [...document.querySelectorAll('.p7-table td.num, .p7-table th.num')];
+                      return {count: cells.length,
+                              right: cells.filter(c => getComputedStyle(c).textAlign === 'right').length,
+                              tabular: cells.filter(c => getComputedStyle(c).fontVariantNumeric.includes('tabular-nums')).length}; })(),
+    table_frame: (() => { const w = document.querySelector('.p7-table-wrap');
+                          if (!w) return null; const s = getComputedStyle(w);
+                          return {scroll: w.scrollWidth, client: w.clientWidth, overflow: s.overflowX,
+                                  border: s.borderTopWidth + ' ' + s.borderTopStyle + ' ' + s.borderTopColor}; })(),
+    current_page: (() => { const a = document.querySelector('[data-testid="stSidebarNavLink"][aria-current="page"]');
+                           return a ? getComputedStyle(a).backgroundColor : null; })(),
+    hash_fits: (() => { const h = document.querySelector('.p7-hash');
+                        return h ? h.scrollWidth <= h.clientWidth + 1 : null; })(),
     fonts,
     // The weights of each family that actually loaded. document.fonts.check() is
     // not used: the CSS and Streamlit's config both declare the fonts, and check()
@@ -181,7 +201,7 @@ def _model_call(browser, url: str, width: int, out: Path) -> dict:
     context = browser.new_context(viewport={"width": width, "height": HEIGHTS[width]})
     page = context.new_page()
     page.goto(f"{url}/gallery")
-    frame = _app_frame(page, '[data-testid="stTable"]')
+    frame = _app_frame(page, GALLERY_READY)
     _settle(page, frame)
     opened = False
     if not frame.evaluate(MEASURE, {})["sidebar_open"]:
@@ -205,12 +225,19 @@ def _model_call(browser, url: str, width: int, out: Path) -> dict:
     shown = [t for t in frame.eval_on_selector_all(alert, "els => els.map(e => e.innerText)")
              if "Code:" in t]
     text = frame.evaluate("() => document.body.innerText")
+    colours = frame.evaluate("""(sel) => {
+      const p = [...document.querySelectorAll(sel)].find(e => e.innerText.includes('Code:'));
+      let box = p;
+      while (box && getComputedStyle(box).backgroundColor === 'rgba(0, 0, 0, 0)') box = box.parentElement;
+      return {text: getComputedStyle(p).color, background: box ? getComputedStyle(box).backgroundColor : null};
+    }""", alert)
     shot = out / f"gallery_model_not_found_{width}_stand-in-data.png"
     _shoot(page, frame, shot)
     context.close()
     return {"width": width, "line": shown[0] if shown else None,
             "line_is_the_mapping": bool(shown) and shown[0] == errors.line("model_not_found"),
             "key_on_page": SHOT_KEY in text, "class_name_on_page": "NotFoundError" in text,
+            "colours": colours,
             "screenshot": str(shot)}
 
 
@@ -303,11 +330,11 @@ def _layout_sequence(browser, url: str) -> list[dict]:
     _settle(page, frame)
     steps.append(("Home, loaded", frame.evaluate(MEASURE, {})["column_width"]))
     frame.locator('[data-testid="stSidebarNavLink"]', has_text="Kit gallery").click()
-    frame = _app_frame(page, '[data-testid="stTable"]')
+    frame = _app_frame(page, GALLERY_READY)
     _settle(page, frame)
     steps.append(("Kit gallery, by the sidebar", frame.evaluate(MEASURE, {})["column_width"]))
     frame.locator('[data-testid="stSidebarNavLink"]', has_text="Home").click()
-    frame.wait_for_function("() => !document.querySelector('[data-testid=\"stTable\"]')")
+    frame.wait_for_function("() => !document.querySelector('.p7-table')")
     frame = _app_frame(page, ".p7-banner")
     _settle(page, frame)
     steps.append(("Home again, by the sidebar", frame.evaluate(MEASURE, {})["column_width"]))
@@ -335,7 +362,7 @@ def run(url: str, out: Path, widths: list[int], channel: str | None,
                 for spec in pages:
                     page = context.new_page()
                     page.goto(f"{url}/{spec.url_path or ''}")
-                    ready = '[data-testid="stTable"]' if spec is nav.GALLERY else ".p7-banner"
+                    ready = GALLERY_READY if spec is nav.GALLERY else ".p7-banner"
                     frame = _app_frame(page, ready)
                     _settle(page, frame)
                     row = {"page": spec.title, "width": width,
@@ -360,6 +387,10 @@ def run(url: str, out: Path, widths: list[int], channel: str | None,
         finally:
             browser.close()
     return results
+
+
+def _rgb(token: str) -> str:
+    return "rgb({}, {}, {})".format(*(int(token[i:i + 2], 16) for i in (1, 3, 5)))
 
 
 def _report(results: dict, widths: list[int]) -> bool:
@@ -398,6 +429,26 @@ def _report(results: dict, widths: list[int]) -> bool:
               f"caption colour and opacity {gallery[w]['caption']}; table header "
               f"{gallery[w]['table_header']}{'' if good_header else '  FADED'}")
 
+    print("\nKPI tiles in a row, breaks table and sidebar, on the kit gallery")
+    for w in widths:
+        g = gallery[w]
+        rows = {}
+        for tiles in g["tile_rows"]:
+            for top, height in tiles:
+                rows.setdefault(top, []).append(height)
+        equal = all(max(h) - min(h) <= 1 for h in rows.values())
+        f, frame_ = g["figures"], g["table_frame"]
+        right = f["count"] > 0 and f["right"] == f["count"] == f["tabular"]
+        inside = frame_["overflow"] == "auto"      # the document itself is checked above
+        current = g["current_page"] == _rgb(theme.INFO_TINT)
+        ok &= equal and right and inside and current and bool(g["hash_fits"])
+        print(f"  {w:>5} px: tile heights by row {sorted(rows.values())} equal {equal}; "
+              f"figure cells {f['count']}, right-aligned {f['right']}, tabular {f['tabular']}; "
+              f"table frame {frame_['scroll']}/{frame_['client']} px (scrolls inside "
+              f"{frame_['scroll'] > frame_['client']}), overflow "
+              f"{frame_['overflow']}, edge {frame_['border']}; current page "
+              f"{g['current_page']} (INFO_TINT {current}); hash fits {g['hash_fits']}")
+
     print("\nBanner h1 on every page")
     for r in results["pages"]:
         good = (r["fonts"]["h1"] or "").strip("'\"").startswith("Source Serif 4")
@@ -425,10 +476,12 @@ def _report(results: dict, widths: list[int]) -> bool:
         print("\nA failed model call on screen (real SDK, local stand-in API, stand-in key)")
         for c in calls:
             good = (c["line_is_the_mapping"] and not c["key_on_page"]
-                    and not c["class_name_on_page"])
+                    and not c["class_name_on_page"]
+                    and c["colours"] == {"text": _rgb(theme.WARNING_TEXT),
+                                         "background": _rgb(theme.WARNING_TINT)})
             ok &= good
             print(f"  {c['width']:>5} px: {c['line']!r}; key on the page {c['key_on_page']}; "
-                  f"class name on the page {c['class_name_on_page']}"
+                  f"class name on the page {c['class_name_on_page']}; colours {c['colours']}"
                   f"{'' if good else '  WRONG'}")
         sent_ok = (len(received) == len(calls)
                    and all(r["key"] == SHOT_KEY and not r["sampling"] for r in received))

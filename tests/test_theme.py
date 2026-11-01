@@ -94,6 +94,8 @@ class TestContrast:
             assert (status.text, status.background) in pairs
         assert any(p.foreground == theme.NAVY and p.kind == "ui" for p in theme.PAIRS)
         assert (theme.CONTROL_BORDER, theme.PAPER) in pairs
+        # Slice 2: the sidebar's current page and hover, and code on its tint.
+        assert {(theme.INK, theme.INFO_TINT), (theme.INK, theme.NEUTRAL_TINT)} <= pairs
 
 
 class TestCss:
@@ -148,6 +150,33 @@ class TestCss:
         assert any('[data-testid="stTable"] th' in selectors and f"color: {theme.INK};" in body
                    for selectors, body in rules)
 
+    def test_table_figures_are_right_aligned_in_tabular_figures(self):
+        rules = _rules(theme.inject_css())
+        assert any(".p7-table td.num" in s and ".p7-table th.num" in s
+                   and "text-align: right;" in b and "tabular-nums" in b for s, b in rules)
+
+    def test_a_wide_table_scrolls_inside_a_visible_edge(self):
+        rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
+        wrap = rules[(".p7-table-wrap",)]
+        assert "overflow-x: auto;" in wrap and f"border: 1px solid {theme.RULE};" in wrap
+        assert "max-width: 100%;" in wrap
+
+    def test_tiles_in_a_row_are_one_height_with_the_status_line_kept(self):
+        rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
+        assert "display: grid;" in rules[(".p7-tile-row",)]
+        assert "align-items: stretch;" in rules[(".p7-tile-row",)]
+        assert any(s == [".p7-tile"] and "flex-direction: column;" in b
+                   for s, b in _rules(theme.inject_css()))
+        assert "margin: 8px 0 0;" in rules[(".p7-tile-versus",)]   # under the value
+
+    def test_the_sidebar_current_page_and_hover_come_from_tokens(self):
+        # Finding 5: Streamlit derives a pale olive from the page colour.
+        rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
+        current = rules[('[data-testid="stSidebarNavLink"][aria-current="page"]',)]
+        assert f"background: {theme.INFO_TINT};" in current and f"color: {theme.INK};" in current
+        hover = rules[('[data-testid="stSidebarNavLink"]:hover',)]
+        assert f"background: {theme.NEUTRAL_TINT};" in hover
+
     def test_numbers_are_never_coloured(self):
         rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
         assert f"color: {theme.INK};" in rules[(".p7-tile-value",)]
@@ -166,6 +195,15 @@ class TestConfig:
         assert t["headingFont"].startswith("Source Serif 4:https://fonts.googleapis.com/")
         assert t["headingFontSizes"] == [f"{theme.HEADING_REM[h]}rem" for h in HEADINGS[:4]]
         assert t["showWidgetBorder"] is True
+        # Streamlit's alerts (st.warning, st.error, st.success, st.info) in the status pairs.
+        assert (t["yellowTextColor"], t["yellowBackgroundColor"]) == (theme.WARNING_TEXT,
+                                                                       theme.WARNING_TINT)
+        assert (t["redTextColor"], t["redBackgroundColor"]) == (theme.ADVERSE_TEXT,
+                                                                 theme.ADVERSE_TINT)
+        assert (t["greenTextColor"], t["greenBackgroundColor"]) == (theme.FAVOURABLE_TEXT,
+                                                                     theme.FAVOURABLE_TINT)
+        assert (t["blueTextColor"], t["blueBackgroundColor"]) == (theme.INFO_TEXT,
+                                                                   theme.INFO_TINT)
         assert config["client"]["toolbarMode"] == "minimal"
         assert config["browser"]["gatherUsageStats"] is False
 
@@ -232,13 +270,13 @@ class TestEscaping:
                 "&quot;Q1&quot; plan") in out
 
     def test_escaping_happens_in_one_place(self):
+        # One html.escape call, in _esc, which only _element calls (slice 2:
+        # the builder escapes attribute values too).
         tree = ast.parse((APP / "lib" / "theme.py").read_text(encoding="utf-8"))
+        functions = {f.name: f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)}
         escapes = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                    and isinstance(n.func, ast.Attribute) and n.func.attr == "escape"]
-        assert len(escapes) == 1
-        (builder,) = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
-                      and escapes[0] in ast.walk(f)]
-        assert builder.name == "_element"
+        assert len(escapes) == 1 and escapes[0] in ast.walk(functions["_esc"])
 
 
 class TestGallery:
@@ -258,11 +296,24 @@ class TestGallery:
             assert f"p7-chip-{kind}" in bodies, kind
         assert bodies.count('class="p7-tile"') >= 4
         assert bodies.count('class="p7-banner"') >= 2
+        # Slice 2: every new component, in every state.
+        assert bodies.count('class="p7-provenance"') == 3
+        for state in ("Reconciled", "Breaks open", "Not reconciled yet"):
+            assert state in bodies
+        assert bodies.count('class="p7-refusal"') >= 2
+        # One of each below is the poisoned-name section's.
+        assert bodies.count('class="p7-table-wrap"') == 2
+        assert bodies.count('class="p7-eval"') == 5
+        assert bodies.count('class="p7-empty"') == 3
+        assert '<div class="p7-tile-row">' in bodies
+        assert at.get("form") and at.radio(key="ack_gallery_action")
         assert "<script>" not in bodies and "&lt;script&gt;" in bodies
         text = bodies + "\n".join(str(e.value) for e in at.get("caption"))
         assert "stand-in data" in text.lower()
-        # The controls the browser font check measures.
-        assert at.text_input and at.text_area and at.selectbox and at.button and at.table
+        # The controls the browser font check measures; the kit's own table
+        # holds the figures, never st.table (finding 3).
+        assert at.text_input and at.text_area and at.selectbox and at.button
+        assert not at.table and '<table class="p7-table">' in bodies
 
     def test_every_page_shows_the_kit_banner(self):
         for page in nav.pages({}):
