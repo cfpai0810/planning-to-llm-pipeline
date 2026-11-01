@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from streamlit_app.lib import nav, theme  # noqa: E402
+from streamlit_app.lib import key_gate, nav, theme  # noqa: E402
 
 VIEWS = Path(__file__).resolve().parent / "views"
 
@@ -37,4 +37,7 @@ pg = st.navigation([
             url_path=page.url_path, default=page.url_path is None)
     for page in nav.pages()
 ])
+# Once per app, before the page runs: every page has the gate, and no page
+# renders its own, so a key entered anywhere holds on every page (item 4).
+key_gate.render_key_gate()
 pg.run()

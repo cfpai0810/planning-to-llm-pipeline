@@ -7,7 +7,11 @@ streamlit==1.60.0
 # Streamlit 1.60 cannot serve images with starlette 1.8 or later
 starlette==1.7.0
 
-# Reading a local .env (the model key arrives in Phase 0b)
+# The model client (Claude, via the Anthropic API): the series version, which
+# has structured outputs (output_config with a json_schema format), the
+# messages.parse helper and the effort setting
+anthropic==0.116.0
+# Reading a local .env for the command line
 python-dotenv==1.2.2
 
 # Pinned past GHSA-6q48-6c7w-9gw2: the bundle before 2026.10.18 trusts

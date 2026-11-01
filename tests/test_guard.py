@@ -72,6 +72,19 @@ def _getaddrinfo():
     socket.getaddrinfo(PUBLIC_NAME, 443)
 
 
+# The older resolver functions do not go through getaddrinfo (finding 1).
+def _gethostbyname():
+    socket.gethostbyname(PUBLIC_NAME)
+
+
+def _gethostbyname_ex():
+    socket.gethostbyname_ex(PUBLIC_NAME)
+
+
+def _gethostbyaddr():
+    socket.gethostbyaddr(PUBLIC[0])
+
+
 def _echo_once(family, host):
     """Start a one-shot echo listener on host; return its port and thread."""
     server = socket.socket(family, socket.SOCK_STREAM)
@@ -92,7 +105,8 @@ def _echo_once(family, host):
 
 class TestNetworkGuard:
     @pytest.mark.parametrize("action", [_connect, _connect_ex, _create_connection, _sendto,
-                                        _getaddrinfo], ids=lambda a: a.__name__.lstrip("_"))
+                                        _getaddrinfo, _gethostbyname, _gethostbyname_ex,
+                                        _gethostbyaddr], ids=lambda a: a.__name__.lstrip("_"))
     def test_a_public_destination_fails_at_once(self, action):
         assert isinstance(_attempt(action), conftest.NetworkBlocked)
 
@@ -106,6 +120,13 @@ class TestNetworkGuard:
                 client.sendall(b"stand-in")
                 assert client.recv(16) == b"stand-in"
             thread.join(5)
+
+    def test_a_loopback_name_still_resolves(self):
+        assert isinstance(_attempt(_gethostbyname), conftest.NetworkBlocked)
+        assert socket.gethostbyname("localhost").startswith("127.")
+        assert socket.gethostbyname_ex("localhost")[2]
+        assert not isinstance(_attempt(lambda: socket.gethostbyaddr("127.0.0.1")),
+                              conftest.NetworkBlocked)
 
     def test_ipv6_loopback_stays_open(self):
         assert isinstance(_attempt(_connect), conftest.NetworkBlocked)

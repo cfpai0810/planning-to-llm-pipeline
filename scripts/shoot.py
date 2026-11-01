@@ -14,6 +14,9 @@ browser and records, for the reviewer:
   again after moving between them in one session;
 - the keyboard focus ring on each control of the gallery;
 - that a poisoned name on the gallery renders as text;
+- a failed model call on screen: a stand-in key typed into the gate, the
+  gallery's call made through the real SDK to a local stand-in API that
+  answers "model not found", and the plain line and code it shows;
 - a screenshot of every page at every width, labelled "stand-in data".
 
 It is acceptance evidence, not a CI test: the suite does not need a browser.
@@ -21,10 +24,13 @@ It is acceptance evidence, not a CI test: the suite does not need a browser.
     python scripts/shoot.py --out shots
     python scripts/shoot.py --url http://localhost:8770 --out shots   (a server already running)
 
-Without --url it starts Streamlit itself on --port (8770), with P7_GALLERY=1
-and an empty ANTHROPIC_API_KEY, and stops it at the end. It needs Playwright
-(--playwright-path names a folder that holds it) and a Chromium browser
-(--channel, msedge by default; "chromium" for Playwright's own).
+Without --url it starts Streamlit itself on --port (8770), with P7_GALLERY=1,
+an empty ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL pointing at the stand-in
+API on --api-port (8771, loopback only), and stops both at the end. With
+--url the model call is skipped, since that server's settings are not known.
+It needs Playwright (--playwright-path names a folder that holds it) and a
+Chromium browser (--channel, msedge by default; "chromium" for Playwright's
+own). No real key is used and nothing leaves the machine but the font files.
 """
 
 from __future__ import annotations
@@ -34,16 +40,22 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from streamlit_app.lib import nav, theme  # noqa: E402
+import config  # noqa: E402
+from src import errors  # noqa: E402
+from streamlit_app.lib import key_gate, nav, theme  # noqa: E402
 
+# A stand-in key, built from parts so the whole key is written in no file.
+SHOT_KEY = "-".join(["sk", "ant", "api03", "SHOOT", "standin", "not", "a", "real", "key"])
 HEIGHTS = {1280: 900, 768: 1024, 390: 844}
 LABEL = "Stand-in data"
 POISON = "<script>alert(\"x\")</script> & Co's \"Q1\" plan"
@@ -62,7 +74,7 @@ MEASURE = """(targets) => {
   const main = document.querySelector('[data-testid="stMain"]');
   const block = document.querySelector('[data-testid="stMainBlockContainer"]');
   const sidebar = document.querySelector('[data-testid="stSidebar"]');
-  const caption = document.querySelector('[data-testid="stCaptionContainer"]');
+  const caption = document.querySelector('[data-testid="stMain"] [data-testid="stCaptionContainer"]');
   const fonts = {};
   for (const [name, selector] of Object.entries(targets)) {
     const el = document.querySelector(selector);
@@ -132,12 +144,74 @@ ADD_LABEL = """([text, fg, bg, font]) => {
 }"""
 
 
-def _child_env(port: int) -> dict:
+def _child_env(api_port: int) -> dict:
     keep = ("PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "TEMP", "TMP",
             "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "LANG", "LC_ALL")
     env = {name: os.environ[name] for name in keep if name in os.environ}
-    env.update({"ANTHROPIC_API_KEY": "", "P7_GALLERY": "1", "PYTHONIOENCODING": "utf-8"})
+    env.update({"ANTHROPIC_API_KEY": "", "P7_GALLERY": "1", "PYTHONIOENCODING": "utf-8",
+                "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{api_port}"})
     return env
+
+
+class _StandInAPI(BaseHTTPRequestHandler):
+    """A loopback stand-in for the API: every call is answered 404, model not found."""
+    received: list = []
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        type(self).received.append({"path": self.path, "key": headers.get("x-api-key"),
+                                    "messages": body.get("messages"),
+                                    "sampling": sorted({"temperature", "top_p", "top_k"} & set(body))})
+        reply = json.dumps({"type": "error", "error": {
+            "type": "not_found_error", "message": f"model: {config.MODEL}"}}).encode()
+        self.send_response(404)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):
+        pass
+
+
+def _model_call(browser, url: str, width: int, out: Path) -> dict:
+    """The gallery's call with a stand-in key, through the stand-in API: what the page shows."""
+    context = browser.new_context(viewport={"width": width, "height": HEIGHTS[width]})
+    page = context.new_page()
+    page.goto(f"{url}/gallery")
+    frame = _app_frame(page, '[data-testid="stTable"]')
+    _settle(page, frame)
+    opened = False
+    if not frame.evaluate(MEASURE, {})["sidebar_open"]:
+        frame.click('[data-testid="stExpandSidebarButton"]')
+        opened = True
+    frame.click('[data-testid="stSidebar"] [data-testid="stExpander"] summary')
+    field = '[data-testid="stSidebar"] input[type="password"]'
+    frame.fill(field, SHOT_KEY)
+    frame.press(field, "Enter")
+    frame.wait_for_function(
+        "(text) => document.querySelector('[data-testid=\"stSidebar\"]').innerText.includes(text)",
+        arg=key_gate.LIVE_ON)
+    if opened:
+        frame.click('[data-testid="stSidebarCollapseButton"]')
+    frame.get_by_role("button", name="Run a stand-in call").click()
+    alert = '[data-testid="stAlert"] [data-testid="stMarkdownContainer"]'
+    frame.wait_for_function(
+        "(sel) => [...document.querySelectorAll(sel)].some(e => e.innerText.includes('Code:'))",
+        arg=alert)
+    page.wait_for_timeout(500)
+    shown = [t for t in frame.eval_on_selector_all(alert, "els => els.map(e => e.innerText)")
+             if "Code:" in t]
+    text = frame.evaluate("() => document.body.innerText")
+    shot = out / f"gallery_model_not_found_{width}_stand-in-data.png"
+    _shoot(page, frame, shot)
+    context.close()
+    return {"width": width, "line": shown[0] if shown else None,
+            "line_is_the_mapping": bool(shown) and shown[0] == errors.line("model_not_found"),
+            "key_on_page": SHOT_KEY in text, "class_name_on_page": "NotFoundError" in text,
+            "screenshot": str(shot)}
 
 
 def _healthy(url: str) -> bool:
@@ -207,7 +281,7 @@ FOCUS_CONTROLS = ("input", "textarea", "combobox", "stBaseButton-primary",
 
 def _focus_ring(page, frame) -> list[dict]:
     """Tab through the page from the caption; the ring on the first of each kind of control."""
-    frame.click('[data-testid="stCaptionContainer"]')
+    frame.click('[data-testid="stMain"] [data-testid="stCaptionContainer"]')
     rings = {}
     for _ in range(40):
         page.keyboard.press("Tab")
@@ -246,12 +320,13 @@ def _layout_sequence(browser, url: str) -> list[dict]:
     return [{"step": s, "column_width": w} for s, w in steps]
 
 
-def run(url: str, out: Path, widths: list[int], channel: str | None) -> dict:
+def run(url: str, out: Path, widths: list[int], channel: str | None,
+        model_call: bool) -> dict:
     from playwright.sync_api import sync_playwright
 
     out.mkdir(parents=True, exist_ok=True)
     pages = nav.pages({"P7_GALLERY": "1"})
-    results = {"pages": [], "focus": [], "layout": [], "poison": None}
+    results = {"pages": [], "focus": [], "layout": [], "poison": None, "model_call": []}
     with sync_playwright() as p:
         browser = p.chromium.launch(channel=channel, headless=True)
         try:
@@ -280,6 +355,8 @@ def run(url: str, out: Path, widths: list[int], channel: str | None) -> dict:
                     page.close()
                 context.close()
             results["layout"] = _layout_sequence(browser, url)
+            if model_call:
+                results["model_call"] = [_model_call(browser, url, w, out) for w in widths]
         finally:
             browser.close()
     return results
@@ -341,8 +418,28 @@ def _report(results: dict, widths: list[int]) -> bool:
     print(f"\nPoisoned name: {results['poison']}")
     ok &= bool(results["poison"] and results["poison"]["shown_as_text"]
                and results["poison"]["injected_scripts"] == 0)
+
+    calls = results["model_call"]
+    if calls:
+        received = results["api_received"]
+        print("\nA failed model call on screen (real SDK, local stand-in API, stand-in key)")
+        for c in calls:
+            good = (c["line_is_the_mapping"] and not c["key_on_page"]
+                    and not c["class_name_on_page"])
+            ok &= good
+            print(f"  {c['width']:>5} px: {c['line']!r}; key on the page {c['key_on_page']}; "
+                  f"class name on the page {c['class_name_on_page']}"
+                  f"{'' if good else '  WRONG'}")
+        sent_ok = (len(received) == len(calls)
+                   and all(r["key"] == SHOT_KEY and not r["sampling"] for r in received))
+        ok &= sent_ok
+        print(f"  the stand-in API received {len(received)} calls, each with the typed key and "
+              f"no sampling parameter: {sent_ok}")
+    else:
+        print("\nA failed model call on screen: skipped (--url given)")
+
     print("\nScreenshots:")
-    for r in results["pages"]:
+    for r in results["pages"] + calls:
         print(f"  {r['screenshot']}")
     return ok
 
@@ -352,6 +449,7 @@ def main(argv=None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="folder for screenshots and results")
     parser.add_argument("--url", help="a running app; without it, Streamlit is started here")
     parser.add_argument("--port", type=int, default=8770)
+    parser.add_argument("--api-port", type=int, default=8771, help="the stand-in API, loopback")
     parser.add_argument("--widths", default="1280,768,390")
     parser.add_argument("--channel", default="msedge", help='browser channel, or "chromium"')
     parser.add_argument("--playwright-path", help="a folder to put on sys.path for Playwright")
@@ -361,28 +459,37 @@ def main(argv=None) -> int:
     widths = [int(w) for w in args.widths.split(",")]
     channel = None if args.channel == "chromium" else args.channel
 
-    server, log = None, None
+    server, log, api = None, None, None
     url = args.url
     if not url:
         url = f"http://localhost:{args.port}"
         if _healthy(url):
             raise SystemExit(f"Something already answers at {url}: stop it, or pass --url to "
                              "measure it on purpose.")
+        _StandInAPI.received = []
+        api = ThreadingHTTPServer(("127.0.0.1", args.api_port), _StandInAPI)
+        threading.Thread(target=api.serve_forever, daemon=True).start()
         args.out.mkdir(parents=True, exist_ok=True)
         log = open(args.out / "streamlit.log", "w", encoding="utf-8")
         server = subprocess.Popen(
             [sys.executable, "-m", "streamlit", "run", "streamlit_app/Home.py",
-             "--server.headless", "true", "--server.port", str(args.port)],
-            cwd=ROOT, env=_child_env(args.port), stdout=log, stderr=subprocess.STDOUT,
+             "--server.headless", "true", "--server.port", str(args.port),
+             "--server.address", "127.0.0.1"],
+            cwd=ROOT, env=_child_env(args.api_port), stdout=log, stderr=subprocess.STDOUT,
             start_new_session=os.name != "nt")
     try:
         _wait_healthy(url)
-        results = run(url, args.out, widths, channel)
+        results = run(url, args.out, widths, channel, model_call=api is not None)
+        results["api_received"] = list(_StandInAPI.received)
     finally:
         if server is not None:
             _stop(server)
             log.close()
             print(f"Streamlit stopped; {url} answers: {_healthy(url)}")
+        if api is not None:
+            api.shutdown()
+            api.server_close()
+            print("The stand-in API is stopped.")
     (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     ok = _report(results, widths)
     print("\nAll checks passed." if ok else "\nSome checks FAILED.")

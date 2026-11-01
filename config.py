@@ -3,8 +3,8 @@
 # =============================================================================
 """
 Project-level configuration. Paths resolve from this file, so every tool works
-from any working directory. Phase 0b adds the model block here (MODEL, EFFORT,
-MAX_TOKENS and COMPARISON_MODEL), the one place a model is named.
+from any working directory. The model block below is the one place a model is
+named: no other source file may hold a model identifier (a test checks it).
 """
 
 from pathlib import Path
@@ -15,3 +15,16 @@ GENERATED_DIR = ROOT / "generated"
 
 APP_TITLE = "Planning-to-Warehouse-to-LLM Pipeline"
 REPO_URL = "https://github.com/cfpai0810/planning-to-llm-pipeline"
+
+# -- The model ----------------------------------------------------------------
+# Claude, via the Anthropic API (anthropic==0.116.0). Plain strings, not the
+# SDK's typed model list, which does not name these models in 0.116.0.
+# src/model_call.py is the only code that calls the model, and it reads this
+# block; it never sends temperature, top_p or top_k, which current models
+# reject. EFFORT is a starting value: Phase 4 sweeps it on the golden set.
+# COMPARISON_MODEL is used only by the Phase 4 comparison run.
+
+MODEL = "claude-sonnet-5-5"
+COMPARISON_MODEL = "claude-haiku-5-5"
+EFFORT = "medium"
+MAX_TOKENS = 16000

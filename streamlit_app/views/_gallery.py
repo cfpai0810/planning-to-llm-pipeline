@@ -4,12 +4,15 @@
 # Every component of the theme kit in every state, for the screenshots and the
 # AppTest. In the navigation only when P7_GALLERY=1 (lib/nav.py), so it never
 # ships. Every name and figure here is made up. The page holds a table, so it
-# takes the full width, as every table page will.
+# takes the full width, as every table page will. Its model call is the one
+# place in Phase 0 a call can be made, with the key in the sidebar: it proves
+# a failed call is shown in plain words with its code (brief 4.1).
 # =============================================================================
 
 import streamlit as st
 
-from streamlit_app.lib import theme
+from src import model_call
+from streamlit_app.lib import errors, key_gate, stand_in, theme
 
 POISON = "<script>alert(\"x\")</script> & Co's \"Q1\" plan"
 CHIP_LABELS = {
@@ -65,3 +68,14 @@ st.table([
     {"Member": "Cost of sales", "Plan": "1,577,000", "Actual": "1,611,180", "Variance": "(34,180)"},
     {"Member": "Opex", "Plan": "630,000", "Actual": "612,000", "Variance": "18,000"},
 ])
+
+st.markdown("#### A model call")
+st.caption("Sends the stand-in figures as text, with the key held in the sidebar. A failed "
+           "call shows its plain line and its code.")
+if st.button("Run a stand-in call", key="gallery_call", disabled=not key_gate.live()):
+    result = model_call.call_model(key_gate.session_client(), system=stand_in.SYSTEM,
+                                   user=stand_in.prompt())
+    if result.ok:
+        st.text(result.text)
+    else:
+        errors.show_failure(result.code)

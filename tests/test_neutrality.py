@@ -1,4 +1,4 @@
-"""Neutrality: no planning, EPM, BI or warehouse vendor is named, unless the code depends on it.
+"""Neutrality: no planning, EPM, BI, warehouse or ERP vendor is named, unless the code depends on it.
 
 The scan reads every text file in the repository (README.md, docs/,
 streamlit_app/ and the rest; later the PDF text too), except this file, which
@@ -7,9 +7,12 @@ must hold the names. Matching is by whole word, so a name inside another word
 product code imports one of its modules: that is the one way the code can
 depend on a product, so it is the one exception.
 
-The list is the engineer's proposal, awaiting the reviewer's approval.
-Ordinary English words that are also vendor names are listed in
-EXCLUDED_WORDS and deliberately not scanned: they would fire on plain prose.
+The list was approved at the pilot review (1 November 2026), with the ERP
+and accounting names added. Ordinary English words that are also vendor
+names are listed in EXCLUDED_WORDS and deliberately not scanned: they would
+fire on plain prose. Excel and Microsoft are not vendors for this test (the
+product reads spreadsheets and says so), and the model vendor is named
+wherever the product calls it.
 """
 
 import ast
@@ -60,7 +63,10 @@ WAREHOUSE = (
     + _v("Snowflake", modules=("snowflake",), case_sensitive=True)
     + _v("Redshift", "Yellowbrick", case_sensitive=True)
 )
-VENDORS = PLANNING_EPM + BI + WAREHOUSE
+ERP_AND_ACCOUNTING = _v("NetSuite", "Xero", "QuickBooks", "Intacct", "Microsoft Dynamics",
+                        "Dynamics 365", "Acumatica", "Epicor", "Unit4", "Odoo", "Workiva",
+                        "BlackLine", "FloQast", "Coupa")
+VENDORS = PLANNING_EPM + BI + WAREHOUSE + ERP_AND_ACCOUNTING
 
 # Vendor names that are ordinary words: not scanned, because they would fire
 # on plain prose ("a board pack", "an OLAP cube", "the oracle in a test").
@@ -90,6 +96,8 @@ EXCLUDED_WORDS = {
     "Adaptive": "adaptive thinking, the model setting",
     "Planning Analytics": "planning analytics in general",
     "Business Objects": "business objects in general",
+    "Concur": "to concur",
+    "Business Central": "a business's central functions",
 }
 
 
@@ -173,6 +181,18 @@ class TestNeutrality:
         assert {"README.md", "docs/releasing.md", "streamlit_app/Home.py"} <= scanned
         assert any(name.startswith("streamlit_app/views/") for name in scanned)
         assert "tests/test_neutrality.py" not in scanned
+
+    def test_the_approved_list_is_scanned(self):
+        # The reviewer's decisions at the pilot (1 November 2026).
+        scanned = {v.name: v.case_sensitive for v in VENDORS}
+        for name in ("Tableau", "Looker", "Snowflake", "Redshift", "Yellowbrick", "SAP"):
+            assert scanned[name] is True, name
+        erp = ("NetSuite", "Xero", "QuickBooks", "Intacct", "Microsoft Dynamics", "Dynamics 365",
+               "Acumatica", "Epicor", "Unit4", "Odoo", "Workiva", "BlackLine", "FloQast", "Coupa")
+        assert {name: scanned.get(name) for name in erp} == dict.fromkeys(erp, False)
+        assert {"Concur", "Business Central", "Sage", "Workday"} <= set(EXCLUDED_WORDS)
+        assert findings("The ledger sits in NetSuite.", set()) == ["NetSuite"]
+        assert findings("We concur with the figures.", set()) == []
 
     def test_no_excluded_word_is_scanned(self):
         scanned = {v.name.lower() for v in VENDORS}

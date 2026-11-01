@@ -13,10 +13,10 @@ LOCK = ROOT / "requirements.txt"
 DEV_LOCK = ROOT / "requirements-dev.txt"
 RELEASING = ROOT / "docs" / "releasing.md"
 
-# The series stack (brief, rule 3). anthropic joins in Phase 0b, at the version
-# the day-one question settles.
+# The series stack (brief, rule 3), with anthropic at the version the day-one
+# question settled (0.116.0, the series version, decided at the pilot review).
 SERIES = {"streamlit": "1.60.0", "starlette": "1.7.0", "python-dotenv": "1.2.2",
-          "certifi": "2026.10.19"}
+          "certifi": "2026.10.19", "anthropic": "0.116.0"}
 PIN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[A-Za-z0-9.+!_-]+)"
                  r"(?:\s*;\s*\S.*)?$")
 REBOOT_RULE = "The owner reboots the app after every push to a deployed branch."
@@ -61,8 +61,8 @@ class TestPinnedStack:
         assert _pins(DEV_LOCK)["pytest"] == "9.1.1"
 
     def test_the_direct_pins_are_the_phase_stack_and_nothing_else(self):
-        # No anthropic until Phase 0b, and no data or spreadsheet library as a
-        # direct dependency until a phase uses it.
+        # No data or spreadsheet library as a direct dependency until a phase
+        # uses it.
         assert _pins(DIRECT) == SERIES
 
     def test_the_lock_is_closed_over_dependencies(self):

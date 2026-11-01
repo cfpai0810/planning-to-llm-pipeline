@@ -5,9 +5,10 @@ including during imports and fixtures. Connections to localhost are allowed
 for local stand-in servers. The guard is installed in pytest_configure, which
 runs before any test module is imported, and a session-scoped autouse fixture
 checks it is still in place for every test. It patches socket.socket.connect,
-connect_ex, sendto and sendmsg, socket.create_connection and
-socket.getaddrinfo: any destination other than loopback (127.0.0.0/8, ::1,
-localhost) raises NetworkBlocked at once. A child process started by a test
+connect_ex, sendto and sendmsg, socket.create_connection, and the resolvers
+socket.getaddrinfo, gethostbyname, gethostbyname_ex and gethostbyaddr (the
+older three do not go through getaddrinfo): any destination other than
+loopback (127.0.0.0/8, ::1, localhost) raises NetworkBlocked at once. A child process started by a test
 gets its environment from subprocess_env(), never the parent's.
 """
 
@@ -98,6 +99,24 @@ def _getaddrinfo(host, *args, **kwargs):
     return _REAL["getaddrinfo"](host, *args, **kwargs)
 
 
+def _gethostbyname(host):
+    if not is_loopback(host):
+        _refuse("gethostbyname", host)
+    return _REAL["gethostbyname"](host)
+
+
+def _gethostbyname_ex(host):
+    if not is_loopback(host):
+        _refuse("gethostbyname_ex", host)
+    return _REAL["gethostbyname_ex"](host)
+
+
+def _gethostbyaddr(address):
+    if not is_loopback(address):
+        _refuse("gethostbyaddr", address)
+    return _REAL["gethostbyaddr"](address)
+
+
 _PATCHES = (
     (socket.socket, "connect", _connect),
     (socket.socket, "connect_ex", _connect_ex),
@@ -105,6 +124,9 @@ _PATCHES = (
     (socket.socket, "sendmsg", _sendmsg),
     (socket, "create_connection", _create_connection),
     (socket, "getaddrinfo", _getaddrinfo),
+    (socket, "gethostbyname", _gethostbyname),
+    (socket, "gethostbyname_ex", _gethostbyname_ex),
+    (socket, "gethostbyaddr", _gethostbyaddr),
 )
 
 
