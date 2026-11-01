@@ -17,17 +17,20 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from streamlit_app.lib import nav  # noqa: E402
+from streamlit_app.lib import nav, theme  # noqa: E402
 
 VIEWS = Path(__file__).resolve().parent / "views"
 
 # "auto" keeps the sidebar closed on a phone, so the page itself is the first
-# view (finding 53); a desktop still opens with it shown.
+# view (finding 53); a desktop still opens with it shown. "centered" gives text
+# pages their reading width (46rem); a page with tables widens itself for its
+# own run with theme.full_width().
 st.set_page_config(
     page_icon=":material/account_tree:",
     layout="centered",
     initial_sidebar_state="auto",
 )
+theme.apply()
 
 pg = st.navigation([
     st.Page(str(VIEWS / page.file), title=page.title, icon=page.icon,

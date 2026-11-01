@@ -5,7 +5,8 @@
 One list of pages, read by Home.py's st.navigation and by the tests. Each
 page's address (url_path) is pinned: links to the pages will be published, and
 a renamed file must not change them. Home comes first and is the default page,
-at the root address.
+at the root address. The kit gallery joins the list only when the environment
+sets P7_GALLERY=1, so it never ships.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from typing import Mapping, Optional
 
 from config import APP_TITLE
 
-__all__ = ["APP_TITLE", "PageSpec", "PAGES", "pages"]
+__all__ = ["APP_TITLE", "GALLERY", "PageSpec", "PAGES", "pages"]
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,9 @@ PAGES = (
 )
 
 
+GALLERY = PageSpec("_gallery.py", "Kit gallery", "gallery", ":material/palette:")
+
+
 def pages(environ: Mapping[str, str] = os.environ) -> tuple[PageSpec, ...]:
-    """The pages the navigation shows, in order."""
-    return PAGES
+    """The pages the navigation shows, in order: the gallery last, and only with P7_GALLERY=1."""
+    return PAGES + ((GALLERY,) if environ.get("P7_GALLERY") == "1" else ())

@@ -1,7 +1,20 @@
-# Streamlit settings. Phase 0c sets the theme from the tokens in
-# streamlit_app/lib/theme.py.
+# Streamlit settings. Every colour here is a token from
+# streamlit_app/lib/theme.py, and tests/test_theme.py checks each one, so the
+# theme changes in one place. Streamlit loads the two fonts itself, so its own
+# controls (inputs, selects, buttons, tables) use them too.
 [theme]
-primaryColor = "#1A3A5C"
+base = "light"
+primaryColor = "#1A3A5C"             # NAVY: primary buttons, selected states
+backgroundColor = "#FBFAF7"          # PAPER
+secondaryBackgroundColor = "#FFFFFF" # SURFACE: inputs and the sidebar
+textColor = "#1E2A2E"                # INK
+linkColor = "#1A3A5C"                # NAVY
+borderColor = "#6A7378"              # CONTROL_BORDER: input and button borders
+dataframeBorderColor = "#D5D9DB"     # RULE: table lines are decorative
+showWidgetBorder = true
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+headingFont = "Source Serif 4:https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&display=swap, serif"
+headingFontSizes = ["2rem", "1.5rem", "1.25rem", "1.0625rem"]
 
 # Visitors see the app, not the developer menu or the Deploy button.
 [client]

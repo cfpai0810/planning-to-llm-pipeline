@@ -4,11 +4,12 @@
 
 import streamlit as st
 
+from streamlit_app.lib import theme
+
 LATER = "Built in a later phase"
 
 
 def stub_page(title: str, subtitle: str) -> None:
-    """The banner, then one plain line. The banner is provisional until the theme kit (0c)."""
-    st.title(title)
-    st.caption(subtitle)
+    """The kit's banner, then one plain line."""
+    theme.show(theme.banner(title, subtitle))
     st.markdown(LATER)

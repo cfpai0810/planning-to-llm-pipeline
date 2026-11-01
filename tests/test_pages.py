@@ -7,6 +7,7 @@ navigation as a visitor reaches them.
 """
 
 import ast
+import html
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -23,8 +24,8 @@ def _home() -> AppTest:
 
 
 def _text(at: AppTest) -> str:
-    return "\n".join(str(e.value) for kind in ("title", "caption", "markdown")
-                     for e in at.get(kind))
+    texts = [str(e.value) for kind in ("title", "caption", "markdown") for e in at.get(kind)]
+    return "\n".join(texts + [html.unescape(e.proto.body) for e in at.get("html")])
 
 
 def _page_config_call() -> ast.Call:
