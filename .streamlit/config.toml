@@ -1,0 +1,11 @@
+# Streamlit settings. Phase 0c sets the theme from the tokens in
+# streamlit_app/lib/theme.py.
+[theme]
+primaryColor = "#1A3A5C"
+
+# Visitors see the app, not the developer menu or the Deploy button.
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,10 @@
+# Source files keep LF line endings on every checkout.
+* text=auto eol=lf
+
+# Input data is hashed into the audit (SHA-256 of the raw bytes, src/hashing.py),
+# so it must reach every clone byte for byte: no line-ending conversion, ever.
+*.csv -text
+*.xlsx binary
+
+*.pdf binary
+*.png binary

@@ -1,0 +1,15 @@
+# The direct pins. requirements.txt is compiled from this file (the command is
+# in docs/releasing.md) and pins every package, transitive ones included.
+
+# The web app (streamlit run streamlit_app/Home.py). Streamlit stays at 1.60.0:
+# the theme's CSS depends on its page structure, and the series moves together.
+streamlit==1.60.0
+# Streamlit 1.60 cannot serve images with starlette 1.8 or later
+starlette==1.7.0
+
+# Reading a local .env (the model key arrives in Phase 0b)
+python-dotenv==1.2.2
+
+# Pinned past GHSA-6q48-6c7w-9gw2: the bundle before 2026.10.18 trusts
+# compromised emSign intermediates
+certifi==2026.10.19

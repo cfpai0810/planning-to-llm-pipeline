@@ -1,0 +1,25 @@
+{
+  "written_by": "tests/conftest.py, after a full, passing run of the whole suite",
+  "total": 58,
+  "by_file": {
+    "tests/test_counts.py": 14,
+    "tests/test_guard.py": 10,
+    "tests/test_hashing.py": 3,
+    "tests/test_neutrality.py": 7,
+    "tests/test_pages.py": 5,
+    "tests/test_repository.py": 19
+  },
+  "by_class": {
+    "TestCommandLine": 1,
+    "TestCommittedCounts": 3,
+    "TestContinuousIntegration": 1,
+    "TestDocs": 4,
+    "TestFileSha256": 3,
+    "TestFilesAndEndings": 5,
+    "TestNetworkGuard": 10,
+    "TestNeutrality": 7,
+    "TestOnlyAFullPassingRunWrites": 11,
+    "TestPages": 5,
+    "TestPinnedStack": 8
+  }
+}

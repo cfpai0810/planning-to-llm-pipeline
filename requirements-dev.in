@@ -1,0 +1,4 @@
+# The test tools, on top of the exact runtime lock. requirements-dev.txt is
+# compiled from this file (the command is in docs/releasing.md).
+-r requirements.txt
+pytest==9.1.1
