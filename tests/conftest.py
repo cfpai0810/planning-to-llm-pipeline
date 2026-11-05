@@ -179,6 +179,27 @@ def subprocess_env(**extra: str) -> dict:
     return env
 
 
+# -- One warehouse per session ------------------------------------------------------
+# The committed sources are built into a warehouse once per test session, as
+# the app builds them at start. Tests that only read open it; a test that
+# writes takes warehouse_copy (a copy of its file in the test's own folder) or
+# builds a small warehouse from small or in-memory sources. No other test
+# builds from the committed sources (tests/test_boundaries.py checks it).
+
+@pytest.fixture(scope="session")
+def built_warehouse(tmp_path_factory):
+    """The committed sample and ledger, built once per session; never written to."""
+    from src import warehouse
+    return warehouse.build_warehouse(tmp_path_factory.mktemp("session_warehouse"))
+
+
+@pytest.fixture
+def warehouse_copy(built_warehouse, tmp_path):
+    """A copy of the session warehouse's file in this test's folder, free to write to."""
+    import shutil
+    copy = tmp_path / built_warehouse.path.name
+    shutil.copyfile(built_warehouse.path, copy)
+    return copy
 
 
 # -- The generated test count -------------------------------------------------------

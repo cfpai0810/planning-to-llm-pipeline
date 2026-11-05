@@ -1,4 +1,4 @@
-"""Landing in the warehouse (src/warehouse.py), part 1c, brief 5.4.
+"""Landing in the warehouse (src/warehouse.py), part 1c, brief 5.4, with the 1d follow-up.
 
 DuckDB opens in one function, warehouse.connect, and nowhere else (the
 boundary test in tests/test_boundaries.py). The four raw tables are append
@@ -6,8 +6,17 @@ only: a batch is landed once, its id comes from the file's content hash, and
 landing the same file again returns a typed "already landed" and adds no row.
 Money is stored as DECIMAL(38, 12), which holds every amount the readers give
 exactly; an amount it could not hold exactly refuses the batch before any row
-is written. The warehouse is built from the committed sources into a fresh
-folder, closed and reopened.
+is written. The warehouse is built from the committed sample and ledger into
+a fresh folder, closed and reopened.
+
+The 1d follow-up (the reviewer's ruling on the build time): a batch lands in
+one transaction with one INSERT per table, every value a bound parameter; the
+CREATE statements declare no key and no index, and the build creates the
+unique index on raw_batch's batch id after the load; the build lands the
+sample and the ledger only. The suite builds the committed sources once per
+session (tests/conftest.py, built_warehouse): tests that only read open that
+warehouse, and tests that write use a copy of its file or a small warehouse
+of their own.
 
 DuckDB has an HTTP client of its own, which the suite's network guard cannot
 see. So the connection is opened with extension autoinstall and autoload off,
@@ -17,6 +26,7 @@ itself: that test is the guard.
 """
 
 import dataclasses
+import inspect
 import json
 import re
 import shutil
@@ -26,12 +36,16 @@ from pathlib import Path
 import pytest
 
 from src.hashing import file_sha256
+from tests.extractions import extraction
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = ROOT / "data" / "planning_model.xlsx"
 CLEAN = ROOT / "data" / "planning_model_clean.xlsx"
 LEDGER = ROOT / "data" / "erp_trial_balance.csv"
-READERS = ROOT / "tests" / "fixtures" / "readers"
+FIXTURES = ROOT / "tests" / "fixtures"
+READERS = FIXTURES / "readers"
+SMALL_BOOK = FIXTURES / "extra_tab.xlsx"         # the small base: one entity, 507 cells
+SMALL_LEDGER = READERS / "ledger_bom.csv"         # one line
 RAW_TABLES = ("raw_batch", "raw_plan_cell", "raw_ledger_line", "raw_control_total")
 MONEY = "DECIMAL(38,12)"
 COLUMNS = {
@@ -73,14 +87,8 @@ def warehouse():
 
 
 @pytest.fixture(scope="module")
-def extract():
-    from src import extract
-    return extract
-
-
-@pytest.fixture(scope="module")
-def sample(extract):
-    return extract.extract_workbook(SAMPLE)
+def sample():
+    return extraction(SAMPLE)
 
 
 @pytest.fixture(scope="module")
@@ -92,14 +100,61 @@ def ledger_lines(sample):
 
 @pytest.fixture
 def con(warehouse, tmp_path):
+    """An empty warehouse of the test's own, for landing small or in-memory sources."""
     connection = warehouse.connect(tmp_path / "warehouse.duckdb")
     warehouse.create_tables(connection)
     yield connection
     connection.close()
 
 
+@pytest.fixture
+def built(warehouse, built_warehouse):
+    """The session warehouse, opened for reading."""
+    with warehouse.connect(built_warehouse.path) as connection:
+        yield connection
+
+
 def counts(con) -> dict:
     return {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in RAW_TABLES}
+
+
+class Recording:
+    """A connection that writes down every statement it is given, then passes it on."""
+
+    def __init__(self, connection):
+        self._connection = connection
+        self.statements = []
+
+    def execute(self, statement, parameters=None):
+        self.statements.append((statement, parameters))
+        if parameters is None:
+            return self._connection.execute(statement)
+        return self._connection.execute(statement, parameters)
+
+    def begin(self):
+        self.statements.append(("BEGIN", None))
+        return self._connection.begin()
+
+    def commit(self):
+        self.statements.append(("COMMIT", None))
+        return self._connection.commit()
+
+    def rollback(self):
+        self.statements.append(("ROLLBACK", None))
+        return self._connection.rollback()
+
+    def close(self):
+        return self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._connection.close()
+
+    def inserts(self) -> list:
+        return [re.match(r"INSERT INTO (\w+)", s).group(1) for s, _ in self.statements
+                if s.startswith("INSERT INTO")]
 
 
 class TestTheNetworkSettings:
@@ -165,20 +220,28 @@ class TestTheTables:
         warehouse.create_tables(con)
         assert counts(con) == dict.fromkeys(RAW_TABLES, 0)
 
+    def test_the_create_statements_declare_no_key_and_no_index(self, con, warehouse):
+        # The ruling: indexes after the load. A key declared on the table would
+        # be checked row by row while the batch lands.
+        for statement in warehouse.TABLES:
+            assert not re.search(r"PRIMARY\s+KEY|UNIQUE|REFERENCES|FOREIGN\s+KEY|\bINDEX\b",
+                                 statement, re.IGNORECASE), statement
+        assert con.execute(
+            "SELECT count(*) FROM duckdb_constraints() WHERE constraint_type IN "
+            "('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY')").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM duckdb_indexes()").fetchone()[0] == 0
+
 
 class TestLanding:
-    def test_the_sample_lands_row_for_row(self, con, warehouse, sample):
-        landed = warehouse.land(con, sample)
-        assert isinstance(landed, warehouse.Landed)
-        assert (landed.batch_id, landed.rows) == (sample.batch.batch_id, len(sample.cells))
-        stored = con.execute("SELECT * EXCLUDE (row_number) FROM raw_plan_cell "
-                             "WHERE batch_id = ? ORDER BY row_number",
-                             [sample.batch.batch_id]).fetchall()
+    def test_the_sample_lands_row_for_row(self, built, sample):
+        stored = built.execute("SELECT * EXCLUDE (row_number) FROM raw_plan_cell "
+                               "WHERE batch_id = ? ORDER BY row_number",
+                               [sample.batch.batch_id]).fetchall()
         assert stored == [tuple(dataclasses.asdict(c).values()) for c in sample.cells]
 
-    def test_the_batch_record_lands(self, con, warehouse, sample):
-        warehouse.land(con, sample)
-        row = con.execute("SELECT * FROM raw_batch").fetchall()
+    def test_the_batch_record_lands(self, built, sample):
+        row = built.execute("SELECT * FROM raw_batch WHERE batch_id = ?",
+                            [sample.batch.batch_id]).fetchall()
         assert len(row) == 1
         record = dict(zip([c for c, _ in COLUMNS["raw_batch"]], row[0]))
         b = sample.batch
@@ -191,36 +254,58 @@ class TestLanding:
         assert record["has_formulas"] is True and json.loads(record["external_links"]) == []
         assert record["row_count"] == len(sample.cells)
 
-    def test_the_control_totals_are_pythons_and_tie_to_the_rows(self, con, warehouse, sample):
-        warehouse.land(con, sample)
-        stored = con.execute("SELECT version, period, row_count, amount_sum FROM "
-                             "raw_control_total ORDER BY version, period").fetchall()
+    def test_the_control_totals_are_pythons_and_tie_to_the_rows(self, built, sample):
+        batch = sample.batch.batch_id
+        stored = built.execute("SELECT version, period, row_count, amount_sum FROM "
+                               "raw_control_total WHERE batch_id = ? ORDER BY version, period",
+                               [batch]).fetchall()
         assert stored == sorted((t.version, t.period, t.row_count, t.amount_sum)
                                 for t in sample.control_totals)
-        recomputed = con.execute(
+        recomputed = built.execute(
             "SELECT version, period, count(*), coalesce(sum(amount), 0) FROM raw_plan_cell "
-            "GROUP BY version, period ORDER BY version, period").fetchall()
+            "WHERE batch_id = ? GROUP BY version, period ORDER BY version, period",
+            [batch]).fetchall()
         assert recomputed == stored
 
-    def test_landing_the_same_file_twice_adds_no_rows(self, con, warehouse, sample, extract):
-        warehouse.land(con, sample)
-        before = counts(con)
-        again = warehouse.land(con, extract.extract_workbook(SAMPLE))
-        assert isinstance(again, warehouse.AlreadyLanded)
-        assert (again.batch_id, again.file_name) == (sample.batch.batch_id, "planning_model.xlsx")
-        assert counts(con) == before
+    def test_landing_the_same_file_twice_adds_no_rows(self, warehouse, warehouse_copy, sample):
+        with warehouse.connect(warehouse_copy) as con:
+            before = counts(con)
+            again = warehouse.land(con, sample)
+            assert isinstance(again, warehouse.AlreadyLanded)
+            assert (again.batch_id, again.file_name) == (sample.batch.batch_id,
+                                                         "planning_model.xlsx")
+            assert counts(con) == before
 
-    def test_the_ledger_lands(self, con, warehouse, ledger_lines):
-        landed = warehouse.land(con, ledger_lines)
-        assert landed.rows == 162
-        stored = con.execute("SELECT * FROM raw_ledger_line ORDER BY line_number").fetchall()
+    def test_a_duplicate_landed_later_is_still_refused_by_the_index(self, warehouse,
+                                                                     warehouse_copy):
+        # land() refuses a batch already there itself; the unique index the
+        # build creates after the load refuses one that goes round it.
+        import duckdb
+        with warehouse.connect(warehouse_copy) as con:
+            before = counts(con)
+            with pytest.raises(duckdb.ConstraintException):
+                con.execute("INSERT INTO raw_batch SELECT * FROM raw_batch "
+                            "WHERE source = 'workbook'")
+            assert counts(con) == before
+
+    def test_the_ledger_lands(self, built, ledger_lines):
+        batch = ledger_lines.batch.batch_id
+        stored = built.execute("SELECT * FROM raw_ledger_line WHERE batch_id = ? "
+                               "ORDER BY line_number", [batch]).fetchall()
+        assert len(stored) == 162
         assert stored == [tuple(dataclasses.asdict(l).values()) for l in ledger_lines.lines]
-        assert con.execute("SELECT source, has_formulas, calculation FROM raw_batch").fetchone() \
+        assert built.execute("SELECT source, has_formulas, calculation FROM raw_batch "
+                             "WHERE batch_id = ?", [batch]).fetchone() \
             == ("ledger", False, "not applicable: the source has no formulas")
-        assert con.execute("SELECT count(*) FROM raw_control_total WHERE version IS NULL") \
+        assert built.execute("SELECT count(*) FROM raw_control_total WHERE version IS NULL") \
             .fetchone()[0] == 6
-        assert warehouse.land(con, ledger_lines) == warehouse.AlreadyLanded(
-            ledger_lines.batch.batch_id, "erp_trial_balance.csv")
+
+    def test_landing_the_ledger_twice_adds_no_rows(self, warehouse, warehouse_copy, ledger_lines):
+        with warehouse.connect(warehouse_copy) as con:
+            before = counts(con)
+            assert warehouse.land(con, ledger_lines) == warehouse.AlreadyLanded(
+                ledger_lines.batch.batch_id, "erp_trial_balance.csv")
+            assert counts(con) == before
 
     def test_a_long_format_file_lands_as_plan_cells(self, con, warehouse):
         from src import long_format
@@ -232,9 +317,8 @@ class TestLanding:
         assert stored == [tuple(dataclasses.asdict(c).values()) for c in source.cells]
         assert con.execute("SELECT has_formulas FROM raw_batch").fetchone() == (False,)
 
-    def test_amounts_round_trip_exactly(self, con, warehouse, sample, tmp_path, extract):
-        warehouse.land(con, sample)
-        headcount = con.execute(
+    def test_amounts_round_trip_exactly(self, con, built, warehouse, sample):
+        headcount = built.execute(
             "SELECT amount FROM raw_plan_cell WHERE version = 'Forecast' AND entity = 'ES' "
             "AND line = 'Headcount' AND period = '2026-01'").fetchone()[0]
         assert headcount == Decimal("63.5") and headcount.normalize() == Decimal("63.5")
@@ -242,7 +326,8 @@ class TestLanding:
         made = [dataclasses.replace(cell, batch_id="made", address=f"Z{i}", amount=Decimal(text))
                 for i, text in enumerate(["0.1", "9007199254740993", "-1490400.00",
                                           "12345678901234567890123456.123456789012",
-                                          "-0.000000000001"])]
+                                          "-0.000000000001", "0"])]
+        made.append(dataclasses.replace(cell, batch_id="made", address="Z9", amount=None))
         warehouse.land(con, dataclasses.replace(
             sample, batch=dataclasses.replace(sample.batch, batch_id="made"), cells=tuple(made),
             control_totals=()))
@@ -269,37 +354,138 @@ class TestLanding:
         assert counts(con) == dict.fromkeys(RAW_TABLES, 0)
 
 
+class TestOneStatementPerTable:
+    """The ruling: each table of a batch lands with one batched INSERT, in one transaction."""
+
+    @pytest.fixture
+    def small(self):
+        return extraction(SMALL_BOOK)
+
+    def test_a_batch_is_one_transaction_and_one_insert_per_table(self, warehouse, con, small):
+        recording = Recording(con)
+        assert len(small.cells) > 250            # more rows than 9741b0e put in one INSERT
+        warehouse.land(recording, small)
+        transaction = [s for s, _ in recording.statements if s in ("BEGIN", "COMMIT")]
+        assert transaction == ["BEGIN", "COMMIT"]
+        assert recording.inserts() == ["raw_batch", "raw_plan_cell", "raw_control_total"]
+        assert counts(con) == {"raw_batch": 1, "raw_plan_cell": len(small.cells),
+                               "raw_ledger_line": 0,
+                               "raw_control_total": len(small.control_totals)}
+
+    def test_every_value_is_a_bound_parameter(self, warehouse, con, small):
+        recording = Recording(con)
+        warehouse.land(recording, small)
+        inserts = [(s, p) for s, p in recording.statements if s.startswith("INSERT INTO")]
+        assert inserts
+        for statement, parameters in inserts:
+            assert parameters and statement.count("?") == len(parameters), statement
+            # No value is pasted into the text: no batch id, no figure.
+            assert small.batch.batch_id not in statement
+            assert not re.search(r"\d{3}", statement), statement
+
+    def test_money_goes_as_text_and_is_cast(self, warehouse, con, small):
+        recording = Recording(con)
+        warehouse.land(recording, small)
+        inserts = [(s, p) for s, p in recording.statements
+                   if s.startswith("INSERT INTO raw_plan_cell")]
+        assert inserts and all(f"AS {warehouse.MONEY})" in s for s, _ in inserts)
+        sent = [x for _, parameters in inserts for p in parameters
+                for x in (p if isinstance(p, list) else [p])]
+        assert not [v for v in sent if isinstance(v, float)]
+        amounts = {warehouse._money(c.amount) for c in small.cells if c.amount is not None}
+        assert amounts <= {v for v in sent if isinstance(v, str)}
+
+    def test_the_ledger_lands_the_same_way(self, warehouse, con):
+        from src import ledger
+        lines = ledger.read_ledger(READERS / "ledger_cases.csv", entities=("ES", "AT", "DE"),
+                                   accounts=("4000", "4100", "5000"))
+        recording = Recording(con)
+        warehouse.land(recording, lines)
+        assert recording.inserts() == ["raw_batch", "raw_ledger_line", "raw_control_total"]
+        stored = con.execute("SELECT * FROM raw_ledger_line ORDER BY line_number").fetchall()
+        assert stored == [tuple(dataclasses.asdict(l).values()) for l in lines.lines]
+
+    def test_a_failed_insert_lands_nothing(self, warehouse, con, small):
+        recording = Recording(con)
+        real = recording.execute
+
+        def fail_on_totals(statement, parameters=None):
+            if statement.startswith("INSERT INTO raw_control_total"):
+                raise RuntimeError("stopped on purpose")
+            return real(statement, parameters)
+
+        recording.execute = fail_on_totals
+        with pytest.raises(RuntimeError):
+            warehouse.land(recording, small)
+        assert counts(con) == dict.fromkeys(RAW_TABLES, 0)
+
+
 class TestTheBuild:
-    def test_the_warehouse_is_built_from_the_committed_sources_and_reopened(self, warehouse,
-                                                                            tmp_path):
-        folder = tmp_path / "built"
-        built = warehouse.build_warehouse(folder)
-        assert built.path.parent == folder and built.path.is_file()
-        assert [b.batch_id for b in built.landed] == [file_sha256(p)[:16]
-                                                      for p in (SAMPLE, CLEAN, LEDGER)]
-        with warehouse.connect(built.path) as con:
-            assert counts(con) == {"raw_batch": 3, "raw_plan_cell": 2 * 1521,
-                                   "raw_ledger_line": 162,
-                                   "raw_control_total": 2 * 39 + 6}
-            assert con.execute("SELECT file_name FROM raw_batch ORDER BY file_name").fetchall() \
-                == [("erp_trial_balance.csv",), ("planning_model.xlsx",),
-                    ("planning_model_clean.xlsx",)]
-            untied = con.execute("""
-                WITH raw AS (
-                    SELECT batch_id, version, period, count(*) AS n,
-                           coalesce(sum(amount), 0) AS total FROM raw_plan_cell
-                    GROUP BY ALL
-                    UNION ALL
-                    SELECT batch_id, NULL, period, count(*), coalesce(sum(amount), 0)
-                    FROM raw_ledger_line GROUP BY ALL)
-                SELECT count(*) FROM raw_control_total t FULL JOIN raw r
-                  ON t.batch_id = r.batch_id AND t.version IS NOT DISTINCT FROM r.version
-                 AND t.period = r.period
-                WHERE t.row_count IS DISTINCT FROM r.n OR t.amount_sum IS DISTINCT FROM r.total
-                """).fetchone()[0]
-            assert untied == 0
+    def test_the_build_lands_the_sample_and_the_ledger_only(self, warehouse, built_warehouse,
+                                                            built):
+        assert [b.batch_id for b in built_warehouse.landed] == [file_sha256(p)[:16]
+                                                                for p in (SAMPLE, LEDGER)]
+        assert counts(built) == {"raw_batch": 2, "raw_plan_cell": 1521, "raw_ledger_line": 162,
+                                 "raw_control_total": 39 + 6}
+        assert built.execute("SELECT file_name FROM raw_batch ORDER BY file_name").fetchall() \
+            == [("erp_trial_balance.csv",), ("planning_model.xlsx",)]
+        defaults = inspect.signature(warehouse.build_warehouse).parameters
+        assert defaults["workbooks"].default == (SAMPLE,)
+        assert defaults["ledger"].default == LEDGER
+
+    def test_raw_equals_what_was_read(self, built):
+        untied = built.execute("""
+            WITH raw AS (
+                SELECT batch_id, version, period, count(*) AS n,
+                       coalesce(sum(amount), 0) AS total FROM raw_plan_cell
+                GROUP BY ALL
+                UNION ALL
+                SELECT batch_id, NULL, period, count(*), coalesce(sum(amount), 0)
+                FROM raw_ledger_line GROUP BY ALL)
+            SELECT count(*) FROM raw_control_total t FULL JOIN raw r
+              ON t.batch_id = r.batch_id AND t.version IS NOT DISTINCT FROM r.version
+             AND t.period = r.period
+            WHERE t.row_count IS DISTINCT FROM r.n OR t.amount_sum IS DISTINCT FROM r.total
+            """).fetchone()[0]
+        assert untied == 0
+
+    def test_the_unique_index_on_the_batch_id_is_there_after_the_build(self, built):
+        indexes = built.execute("SELECT table_name, is_unique, expressions FROM "
+                                "duckdb_indexes()").fetchall()
+        assert len(indexes) == 1
+        table, unique, expressions = indexes[0]
+        assert (table, unique) == ("raw_batch", True) and "batch_id" in str(expressions)
+
+    def test_the_index_is_created_after_the_load(self, warehouse, tmp_path, monkeypatch):
+        recordings = []
+        real = warehouse.connect
+
+        def recorded(path):
+            recordings.append(Recording(real(path)))
+            return recordings[-1]
+
+        monkeypatch.setattr(warehouse, "connect", recorded)
+        warehouse.build_warehouse(tmp_path / "small", workbooks=(SMALL_BOOK,),
+                                  ledger=SMALL_LEDGER)
+        statements = [s.lstrip().upper() for s, _ in recordings[0].statements]
+        last_insert = max(i for i, s in enumerate(statements) if s.startswith("INSERT INTO"))
+        indexes = [i for i, s in enumerate(statements) if s.startswith("CREATE UNIQUE INDEX")]
+        assert indexes and min(indexes) > last_insert
+
+    def test_the_build_records_its_steps_with_the_clock_it_is_given(self, warehouse, tmp_path):
+        ticks = iter([10.0, 10.5, 11.0, 13.0])
+        built = warehouse.build_warehouse(tmp_path / "small", workbooks=(SMALL_BOOK,),
+                                          ledger=SMALL_LEDGER, clock=lambda: next(ticks))
+        assert built.steps == (("read workbook", 0.5), ("read ledger", 0.5), ("land", 2.0))
+
+    def test_a_built_folder_can_be_removed(self, warehouse, tmp_path):
         # Every connection is closed, so the folder can go (Windows keeps an
         # open database file, or its .wal, locked).
+        folder = tmp_path / "small"
+        built = warehouse.build_warehouse(folder, workbooks=(SMALL_BOOK,), ledger=SMALL_LEDGER)
+        assert built.path.parent == folder and built.path.is_file()
+        with warehouse.connect(built.path) as con:
+            assert counts(con)["raw_batch"] == 2
         assert not list(folder.glob("*.wal"))
         shutil.rmtree(folder)
         assert not folder.exists()
@@ -312,9 +498,9 @@ class TestTheBuild:
                     if not {".git", ".venv", "venv"} & set(p.relative_to(ROOT).parts)]
 
     def test_a_build_needs_a_fresh_location(self, warehouse, tmp_path):
-        warehouse.build_warehouse(tmp_path / "once")
+        (tmp_path / warehouse.DATABASE_NAME).write_bytes(b"")
         with pytest.raises(warehouse.WarehouseError):
-            warehouse.build_warehouse(tmp_path / "once")
+            warehouse.build_warehouse(tmp_path, workbooks=(SMALL_BOOK,), ledger=SMALL_LEDGER)
 
 
 class TestAppendOnly:

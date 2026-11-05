@@ -254,9 +254,8 @@ after the plan's as-of date of 30 June 2026, and that gives no break.
 
 The FAST Standard is a published standard for building financial models. Each
 control is related to it as below. The relations are described in words, and
-no rule number is given here: any rule number must be checked against the
-current version of the standard on its owner's site before it is quoted
-publicly.
+no rule number is given here: rule numbers are added once the current
+published version of the standard has been consulted.
 
 - Structure: related to the FAST guidance on a consistent layout (the same
   column holds the same period on every calculation sheet), on labelling every

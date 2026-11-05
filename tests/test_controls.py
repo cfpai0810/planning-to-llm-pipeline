@@ -726,7 +726,11 @@ class TestTheDocs:
     def test_the_fast_rules_are_related_and_carry_no_number(self):
         doc = self.text()
         assert "related to" in doc and "FAST" in doc
-        assert "checked against the current version" in doc
+        # The reviewer's words: rule numbers are added once the current published
+        # version has been consulted.
+        assert ("rule numbers are added once the current published version of the standard "
+                "has been consulted") in doc
+        assert "checked against the current version" not in doc
         assert not re.search(r"FAST\W{0,3}(rule\s*)?\d", doc)
 
     def test_the_build_time_is_the_measured_one(self):

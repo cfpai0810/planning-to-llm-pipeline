@@ -174,8 +174,10 @@ class TestTheWarehouseBoundary:
     def test_the_pages_import_no_pipeline_module_yet(self):
         # The pages stay stubs in this phase: nothing in streamlit_app reaches
         # the extractor, the readers, the allow-list, the controls or the
-        # warehouse, nor the libraries they read files with.
-        banned = {f"src.{m}" for m in PIPELINE} | {"openpyxl", "duckdb"}
+        # warehouse, nor the libraries they read files with, nor the
+        # maintainer's scripts (scripts/time_build.py among them).
+        banned = {f"src.{m}" for m in PIPELINE} | {"openpyxl", "duckdb", "scripts",
+                                                    "time_build"}
         found = {}
         for path in _sources(("streamlit_app",)):
             names = imports_of(path.read_text(encoding="utf-8"))
@@ -191,3 +193,42 @@ class TestTheWarehouseBoundary:
             names = imports_of(source)
             assert any(n in names for n in ("src.extract", "src.warehouse", "src.ledger",
                                              "src.names", "openpyxl")), source
+
+
+# -- The 1d follow-up: the suite builds the committed sources once ----------------------
+
+# The functions that build a warehouse; a call that leaves the workbooks or the
+# ledger at their defaults builds from the committed sources.
+BUILDS = {"build_warehouse": ("workbooks", "ledger")}
+
+
+def committed_builds(source: str) -> list[int]:
+    """The lines of every call that builds a warehouse from the committed sources."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+            else:
+                name = getattr(node.func, "id", "")
+            if name in BUILDS:
+                given = {k.arg for k in node.keywords}
+                if not set(BUILDS[name]) <= given:
+                    found.append(node.lineno)
+    return found
+
+
+class TestTheSuitesWarehouse:
+    def test_the_walker_finds_a_build_from_the_committed_sources(self):
+        source = ("built = warehouse.build_warehouse(tmp_path)\n"
+                  "small = warehouse.build_warehouse(tmp_path, workbooks=(a,), ledger=b)\n"
+                  "half = build_warehouse(tmp_path, workbooks=(a,))\n")
+        assert committed_builds(source) == [1, 3]
+
+    def test_only_the_session_fixture_builds_from_the_committed_sources(self):
+        # One session-scoped warehouse (tests/conftest.py); every other test
+        # reads it, copies its file, or builds a small warehouse of its own.
+        found = {p.relative_to(ROOT).as_posix(): lines
+                 for p in sorted((ROOT / "tests").glob("*.py"))
+                 if (lines := committed_builds(p.read_text(encoding="utf-8")))}
+        assert list(found) == ["tests/conftest.py"] and len(found["tests/conftest.py"]) == 1

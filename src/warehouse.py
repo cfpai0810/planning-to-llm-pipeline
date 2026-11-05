@@ -14,8 +14,16 @@ Lands what the readers return in four raw tables (brief 5.4):
 The raw tables are append only: this module only ever inserts into them, and
 a test scans src/ and sql/ for any statement that would change or remove a
 landed row. A batch id comes from the file's content hash, so landing the
-same file twice returns AlreadyLanded and adds no row. A batch lands in one
-transaction, all of it or none.
+same file twice returns AlreadyLanded and adds no row.
+
+How a batch lands (the reviewer's ruling on the build time, 5 November 2026):
+one transaction for the whole batch, every table of it included, so all of it
+lands or none; and one INSERT per table, which sends each column as one bound
+list and unnests the lists side by side. Every value is a bound parameter,
+never part of the SQL text. The CREATE statements declare no key and no
+index: the build creates its indexes after the load (a unique index on
+raw_batch's batch id, so DuckDB itself refuses a batch landed twice by any
+route; land() still checks first and returns AlreadyLanded).
 
 Money is DECIMAL(38, 12): 26 digits before the point and 12 after, which
 holds whole euros, cents, a headcount of 63.5 and any amount the readers give
@@ -33,17 +41,25 @@ switch any of it back on. tests/test_warehouse.py reads those settings back
 from DuckDB itself. The read-only connection factory of Phase 2 will sit
 beside connect().
 
-The warehouse is built from the committed sources into a fresh folder and
-closed; it is reopened with connect(). No database file is committed.
+The build lands the committed sample workbook and the ledger, and nothing
+else: the clean workbook and the fixtures are landed by the tests only. It
+builds into a fresh folder and closes the file; it is reopened with
+connect(). No database file is committed.
+
+DuckDB's Python binding imports numpy, pandas and pyarrow, when they are
+installed, the first time a statement is given a bound parameter. That is
+import time spent once per process, inside the first landing; this module
+never imports them (scripts/time_build.py measures it).
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import astuple, dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import duckdb
 
@@ -53,9 +69,10 @@ from src.ledger import LedgerExtraction, read_ledger
 from src.long_format import LongFormatExtraction
 
 ROOT = Path(__file__).resolve().parent.parent
-COMMITTED_WORKBOOKS = (ROOT / "data" / "planning_model.xlsx",
-                       ROOT / "data" / "planning_model_clean.xlsx")
+SAMPLE_WORKBOOK = ROOT / "data" / "planning_model.xlsx"
 COMMITTED_LEDGER = ROOT / "data" / "erp_trial_balance.csv"
+# What the build lands at start: the sample and the ledger, nothing else.
+STARTUP_WORKBOOKS = (SAMPLE_WORKBOOK,)
 DATABASE_NAME = "warehouse.duckdb"
 
 MONEY_DIGITS, MONEY_SCALE = 38, 12
@@ -68,73 +85,48 @@ SETTINGS = {
     "enable_external_access": False,
     "lock_configuration": True,
 }
-RAW_TABLES = ("raw_batch", "raw_plan_cell", "raw_ledger_line", "raw_control_total")
-ROWS_PER_INSERT = 250            # one prepared INSERT per 250 rows: executemany is far slower
 
-TABLES = (f"""
-CREATE TABLE IF NOT EXISTS raw_batch (
-    batch_id VARCHAR PRIMARY KEY,
-    source VARCHAR NOT NULL,
-    file_name VARCHAR NOT NULL,
-    file_sha256 VARCHAR NOT NULL,
-    file_bytes BIGINT NOT NULL,
-    sheets VARCHAR NOT NULL,
-    creator VARCHAR,
-    last_modified_by VARCHAR,
-    created VARCHAR,
-    modified VARCHAR,
-    application VARCHAR,
-    calculation VARCHAR NOT NULL,
-    has_formulas BOOLEAN NOT NULL,
-    external_links VARCHAR NOT NULL,
-    row_count BIGINT NOT NULL
-)""", f"""
-CREATE TABLE IF NOT EXISTS raw_plan_cell (
-    batch_id VARCHAR NOT NULL,
-    row_number INTEGER NOT NULL,
-    sheet VARCHAR,
-    address VARCHAR,
-    block VARCHAR,
-    source_line INTEGER,
-    version VARCHAR,
-    entity VARCHAR,
-    line VARCHAR,
-    account VARCHAR,
-    period VARCHAR,
-    column_kind VARCHAR,
-    unit VARCHAR,
-    kind VARCHAR NOT NULL,
-    formula VARCHAR,
-    cached BOOLEAN,
-    value_type VARCHAR NOT NULL,
-    value_text VARCHAR,
-    amount {MONEY},
-    row_error VARCHAR,
-    duplicate BOOLEAN NOT NULL,
-    unknown_entity BOOLEAN NOT NULL,
-    unknown_account BOOLEAN NOT NULL,
-    name_allowed BOOLEAN NOT NULL
-)""", f"""
-CREATE TABLE IF NOT EXISTS raw_ledger_line (
-    batch_id VARCHAR NOT NULL,
-    line_number INTEGER NOT NULL,
-    entity VARCHAR,
-    period VARCHAR,
-    account VARCHAR,
-    amount {MONEY},
-    amount_text VARCHAR,
-    row_error VARCHAR,
-    duplicate BOOLEAN NOT NULL,
-    unknown_entity BOOLEAN NOT NULL,
-    unknown_account BOOLEAN NOT NULL
-)""", f"""
-CREATE TABLE IF NOT EXISTS raw_control_total (
-    batch_id VARCHAR NOT NULL,
-    version VARCHAR,
-    period VARCHAR,
-    row_count BIGINT NOT NULL,
-    amount_sum {MONEY} NOT NULL
-)""")
+# Each raw table's columns, in order: (name, type, NOT NULL or "").
+COLUMNS = {
+    "raw_batch": (
+        ("batch_id", "VARCHAR", "NOT NULL"), ("source", "VARCHAR", "NOT NULL"),
+        ("file_name", "VARCHAR", "NOT NULL"), ("file_sha256", "VARCHAR", "NOT NULL"),
+        ("file_bytes", "BIGINT", "NOT NULL"), ("sheets", "VARCHAR", "NOT NULL"),
+        ("creator", "VARCHAR", ""), ("last_modified_by", "VARCHAR", ""),
+        ("created", "VARCHAR", ""), ("modified", "VARCHAR", ""),
+        ("application", "VARCHAR", ""), ("calculation", "VARCHAR", "NOT NULL"),
+        ("has_formulas", "BOOLEAN", "NOT NULL"), ("external_links", "VARCHAR", "NOT NULL"),
+        ("row_count", "BIGINT", "NOT NULL")),
+    "raw_plan_cell": (
+        ("batch_id", "VARCHAR", "NOT NULL"), ("row_number", "INTEGER", "NOT NULL"),
+        ("sheet", "VARCHAR", ""), ("address", "VARCHAR", ""), ("block", "VARCHAR", ""),
+        ("source_line", "INTEGER", ""), ("version", "VARCHAR", ""), ("entity", "VARCHAR", ""),
+        ("line", "VARCHAR", ""), ("account", "VARCHAR", ""), ("period", "VARCHAR", ""),
+        ("column_kind", "VARCHAR", ""), ("unit", "VARCHAR", ""), ("kind", "VARCHAR", "NOT NULL"),
+        ("formula", "VARCHAR", ""), ("cached", "BOOLEAN", ""),
+        ("value_type", "VARCHAR", "NOT NULL"), ("value_text", "VARCHAR", ""),
+        ("amount", MONEY, ""), ("row_error", "VARCHAR", ""), ("duplicate", "BOOLEAN", "NOT NULL"),
+        ("unknown_entity", "BOOLEAN", "NOT NULL"), ("unknown_account", "BOOLEAN", "NOT NULL"),
+        ("name_allowed", "BOOLEAN", "NOT NULL")),
+    "raw_ledger_line": (
+        ("batch_id", "VARCHAR", "NOT NULL"), ("line_number", "INTEGER", "NOT NULL"),
+        ("entity", "VARCHAR", ""), ("period", "VARCHAR", ""), ("account", "VARCHAR", ""),
+        ("amount", MONEY, ""), ("amount_text", "VARCHAR", ""), ("row_error", "VARCHAR", ""),
+        ("duplicate", "BOOLEAN", "NOT NULL"), ("unknown_entity", "BOOLEAN", "NOT NULL"),
+        ("unknown_account", "BOOLEAN", "NOT NULL")),
+    "raw_control_total": (
+        ("batch_id", "VARCHAR", "NOT NULL"), ("version", "VARCHAR", ""),
+        ("period", "VARCHAR", ""), ("row_count", "BIGINT", "NOT NULL"),
+        ("amount_sum", MONEY, "NOT NULL")),
+}
+RAW_TABLES = tuple(COLUMNS)
+
+# No key and no index here: the build creates the indexes after the load.
+TABLES = tuple(
+    f"CREATE TABLE IF NOT EXISTS {table} (\n"
+    + ",\n".join(f"    {name} {kind}{' ' + rule if rule else ''}" for name, kind, rule in columns)
+    + "\n)" for table, columns in COLUMNS.items())
+INDEXES = ("CREATE UNIQUE INDEX IF NOT EXISTS raw_batch_batch_id ON raw_batch (batch_id)",)
 
 # The position of the money column in each table's rows, as landed.
 PLAN_AMOUNT, LEDGER_AMOUNT, TOTAL_AMOUNT = 18, 5, 4
@@ -166,6 +158,7 @@ class AlreadyLanded:
 class Built:
     path: Path
     landed: tuple
+    steps: tuple = ()        # (step, seconds) in the order the build ran them
 
 
 def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
@@ -175,6 +168,12 @@ def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
 
 def create_tables(con: duckdb.DuckDBPyConnection) -> None:
     for statement in TABLES:
+        con.execute(statement)
+
+
+def create_indexes(con: duckdb.DuckDBPyConnection) -> None:
+    """The raw tables' indexes, created once the batches have landed."""
+    for statement in INDEXES:
         con.execute(statement)
 
 
@@ -204,14 +203,18 @@ def _check_money(batch: BatchRecord, rows, where) -> None:
 # == Landing =================================================================================
 
 def _insert(con, table: str, rows: list[tuple], money_column: int) -> None:
+    """All the rows of one table in one INSERT: each column is one bound list, unnested.
+
+    DuckDB unnests the lists of one SELECT side by side, so row i takes the
+    i-th item of every list. The money column goes as a list of text and is
+    cast to DECIMAL(38, 12) by DuckDB, so no amount is ever a float.
+    """
     if not rows:
         return
-    width = len(rows[0])
-    marks = ", ".join(f"CAST(? AS {MONEY})" if i == money_column else "?" for i in range(width))
-    for start in range(0, len(rows), ROWS_PER_INSERT):
-        chunk = rows[start:start + ROWS_PER_INSERT]
-        statement = f"INSERT INTO {table} VALUES " + ", ".join([f"({marks})"] * len(chunk))
-        con.execute(statement, [value for row in chunk for value in row])
+    columns = COLUMNS[table]
+    select = ", ".join(f"CAST(unnest(?::VARCHAR[]) AS {MONEY})" if i == money_column
+                       else f"unnest(?::{kind}[])" for i, (_, kind, _) in enumerate(columns))
+    con.execute(f"INSERT INTO {table} SELECT {select}", [list(column) for column in zip(*rows)])
 
 
 def _batch_row(batch: BatchRecord, rows: int) -> tuple:
@@ -240,7 +243,8 @@ def land(con: duckdb.DuckDBPyConnection, source: Source) -> Union[Landed, Alread
         values = [(cell.batch_id, number, *astuple(cell)[1:]) for number, cell in
                   enumerate(rows, start=1)]
     totals = source.control_totals
-    if any(row[0] != batch.batch_id for row in values) or             any(t.batch_id != batch.batch_id for t in totals):
+    if (any(row[0] != batch.batch_id for row in values)
+            or any(t.batch_id != batch.batch_id for t in totals)):
         raise WarehouseError(f"{batch.file_name}: some rows belong to another batch than "
                              f"{batch.batch_id}; nothing was landed")
     for total in totals:
@@ -264,22 +268,40 @@ def land(con: duckdb.DuckDBPyConnection, source: Source) -> Union[Landed, Alread
 
 # == The build ===============================================================================
 
-def build_warehouse(folder: Path | str, workbooks=COMMITTED_WORKBOOKS, ledger=COMMITTED_LEDGER,
-                    manifest=DEFAULT_MANIFEST) -> Built:
+def build_warehouse(folder: Path | str, workbooks=STARTUP_WORKBOOKS, ledger=COMMITTED_LEDGER,
+                    manifest=DEFAULT_MANIFEST,
+                    clock: Callable[[], float] = time.perf_counter) -> Built:
     """Lands the workbooks and the ledger in a fresh warehouse file in folder, and closes it.
 
-    The ledger's codes are checked against the Lists tab of the first workbook:
-    its entities and its accounts that carry a ledger sign.
+    At start that is the sample and the ledger. The ledger's codes are checked
+    against the Lists tab of the first workbook: its entities and its accounts
+    that carry a ledger sign. The build records the time of each step, read
+    workbook, read ledger and land, with clock: it calls clock once before the
+    first step and once after each, so scripts/time_build.py can pass a clock
+    of its own and see what happened between two calls.
     """
     path = Path(folder) / DATABASE_NAME
     if path.exists():
         raise WarehouseError(f"{path.name} already exists in that folder: a warehouse is built "
                              "fresh, never on top of another")
     Path(folder).mkdir(parents=True, exist_ok=True)
+    steps = []
+    mark = clock()
+
+    def done(step: str) -> None:
+        nonlocal mark
+        now = clock()
+        steps.append((step, now - mark))
+        mark = now
+
     extractions = [extract_workbook(book, manifest=manifest) for book in workbooks]
+    done("read workbook")
     lists = extractions[0].lists
     lines = read_ledger(ledger, entities=lists.entity_codes(), accounts=lists.ledger_accounts())
+    done("read ledger")
     with connect(path) as con:
         create_tables(con)
         landed = tuple(land(con, source) for source in (*extractions, lines))
-    return Built(path, landed)
+        create_indexes(con)
+    done("land")
+    return Built(path, landed, tuple(steps))
