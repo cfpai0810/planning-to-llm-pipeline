@@ -100,6 +100,12 @@ def check(workbook: Path, ledger: Path) -> int:
     except OSError as error:
         print(f"check: the check could not finish ({type(error).__name__}).")
         return 1
+    print("\n".join(report_lines(built)))
+    return 0
+
+
+def report_lines(built) -> list[str]:
+    """What check prints for a start-up build: both batch records, the breaks, their count."""
     out = batch_summary(built.plan.batch)
     out += batch_summary(built.ledger.batch)
     out.insert(len(out) - 1, f"  lines: {len(built.ledger.lines)}")
@@ -112,8 +118,7 @@ def check(workbook: Path, ledger: Path) -> int:
     out += ["", f"{len(built.breaks)} break{'' if len(built.breaks) == 1 else 's'}: "
                 f"{controls} from the controls, {reconciled} from reconcile.",
             "Nothing was promoted: the check never promotes."]
-    print("\n".join(out))
-    return 0
+    return out
 
 
 def main(argv: Optional[list[str]] = None) -> int:
