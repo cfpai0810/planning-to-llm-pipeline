@@ -165,6 +165,16 @@ class TestCss:
         assert (f"padding-right: calc({cell_right}px + {theme.BRACKET_EM}em);"
                 in rules[(".p7-table td.num:not(.neg)",)])
 
+    def test_stop1_finding1_figure_headers_are_padded_like_the_figures(self):
+        # A figure column's header ends level with the digits it heads, so it
+        # takes the right padding of a non-negative figure (scripts/shoot.py
+        # measures the header's right edge against the digits).
+        rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
+        padding = re.search(r"padding-right: [^;]+;",
+                            rules[(".p7-table td.num:not(.neg)",)]).group(0)
+        assert padding == f"padding-right: calc(12px + {theme.BRACKET_EM}em);"
+        assert padding in rules[(".p7-table th.num",)]
+
     def test_finding5_tabular_figures_only_where_figures_are(self):
         # Figure cells, tile values and evaluation figures; never a whole table,
         # so a caption and a break's text keep ordinary figures.

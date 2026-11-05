@@ -97,3 +97,97 @@ class TestTheBoundaries:
         builders = {p.relative_to(ROOT).as_posix() for p in _sources(CODE)
                     if client_builds(p.read_text(encoding="utf-8"))}
         assert builders == {"streamlit_app/lib/claude_client.py"}
+
+
+# -- Part 1c: DuckDB opens in one function; the pages import no pipeline module --
+
+# Names on the duckdb module that open nothing: exception classes and types.
+DUCKDB_HARMLESS = re.compile(r"^duckdb\.(\w*(Error|Exception)|DuckDBPyConnection|__version__)$")
+PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch")
+
+
+def duckdb_uses(source: str) -> list[tuple[str, str]]:
+    """(enclosing function, what) for every way source reaches DuckDB.
+
+    Every attribute chain on the duckdb module is listed (called or not, so an
+    alias such as `open_ = duckdb.connect` is seen), but exception classes and
+    types; so is any `from duckdb import ...` and any `import duckdb as ...`.
+    """
+    found = []
+
+    def walk(node, function):
+        for child in ast.iter_child_nodes(node):
+            inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                else function
+            if isinstance(child, ast.ImportFrom) and (child.module or "").split(".")[0] == "duckdb":
+                found.append((inner, f"from {child.module} import"))
+            elif isinstance(child, ast.Import):
+                for alias in child.names:
+                    if alias.name.split(".")[0] == "duckdb" and alias.asname:
+                        found.append((inner, f"import {alias.name} as {alias.asname}"))
+            elif isinstance(child, ast.Attribute) and not isinstance(child.value, ast.Attribute):
+                chain = _dotted(child)
+                if chain.startswith("duckdb.") and not DUCKDB_HARMLESS.match(chain):
+                    found.append((inner, chain))
+            walk(child, inner)
+
+    walk(ast.parse(source), "<module>")
+    return found
+
+
+def imports_of(source: str) -> set[str]:
+    """Every module source imports, in any form, at any depth, as dotted names."""
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
+class TestTheWarehouseBoundary:
+    def test_the_walker_sees_every_way_in(self):
+        source = ("import duckdb\nimport duckdb as db\nfrom duckdb import connect\n"
+                  "def connect_(p):\n    return duckdb.connect(p)\n"
+                  "def other():\n    opener = duckdb.connect\n    duckdb.sql('SELECT 1')\n"
+                  "    duckdb.default_connection().execute('x')\n"
+                  "    try:\n        pass\n    except duckdb.Error:\n        pass\n")
+        assert duckdb_uses(source) == [
+            ("<module>", "import duckdb as db"), ("<module>", "from duckdb import"),
+            ("connect_", "duckdb.connect"), ("other", "duckdb.connect"), ("other", "duckdb.sql"),
+            ("other", "duckdb.default_connection")]
+
+    def test_duckdb_opens_in_one_function(self):
+        uses = {p.relative_to(ROOT).as_posix(): duckdb_uses(p.read_text(encoding="utf-8"))
+                for p in _sources(CODE)}
+        assert {path: found for path, found in uses.items() if found} == {
+            "src/warehouse.py": [("connect", "duckdb.connect")]}
+
+    def test_only_the_warehouse_imports_duckdb(self):
+        importers = {p.relative_to(ROOT).as_posix() for p in _sources(CODE)
+                     if any(n.split(".")[0] == "duckdb"
+                            for n in imports_of(p.read_text(encoding="utf-8")))}
+        assert importers == {"src/warehouse.py"}
+
+    def test_the_pages_import_no_pipeline_module_yet(self):
+        # The pages stay stubs in this phase: nothing in streamlit_app reaches
+        # the extractor, the readers, the allow-list or the warehouse, nor the
+        # libraries they read files with.
+        banned = {f"src.{m}" for m in PIPELINE} | {"openpyxl", "duckdb"}
+        found = {}
+        for path in _sources(("streamlit_app",)):
+            names = imports_of(path.read_text(encoding="utf-8"))
+            hits = {n for n in names if any(n == b or n.startswith(b + ".") for b in banned)}
+            if hits:
+                found[path.relative_to(ROOT).as_posix()] = sorted(hits)
+        assert found == {}
+
+    def test_the_import_reader_sees_every_form(self):
+        for source in ("from src import extract\n", "import src.warehouse as w\n",
+                       "from src.ledger import read_ledger\n",
+                       "def f():\n    from src import names\n", "import openpyxl\n"):
+            names = imports_of(source)
+            assert any(n in names for n in ("src.extract", "src.warehouse", "src.ledger",
+                                             "src.names", "openpyxl")), source

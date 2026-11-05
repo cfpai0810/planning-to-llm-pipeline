@@ -15,17 +15,34 @@ LibreOffice: they read the committed files.
    wrote. Any difference stops the build, and nothing is written.
 2. It writes the sample, the ten mutation variants and the fixtures,
    recalculates them in one LibreOffice run, and checks each the same way.
+   `external_link` is hand-edited after the recalculation and checked after
+   the edit (see below).
 3. It makes `shared_formula` by editing the XML of the recalculated small base
-   (the one hand-edited fixture), and writes `no_cache`, which is never
-   recalculated.
+   (hand-edited too), and writes `no_cache`, which is never recalculated.
 4. Only then it copies the files into `data/` and `tests/fixtures/`, writes
    `data/erp_trial_balance.csv` from the model, and writes
    `data/sample_manifest.json`: the planted truth, the checks, the hash of
-   every file and the LibreOffice version.
+   every file, the hand edits and the LibreOffice version.
 
 The build is not byte for byte reproducible: LibreOffice writes the time of
 the conversion into each file, so every rebuild changes the hashes in the
 manifest. Commit the files and the manifest together.
+
+## Building only named fixtures
+
+    python scripts/build_sample.py --only external_link extra_tab typed_subtotal
+
+A full build changes the hash of every committed workbook. To add a fixture
+without touching the files already recorded, name it with `--only` (the file
+name without `.xlsx`). The build still recalculates and checks the clean
+workbook first, but does not install it; it converts, checks and installs only
+the named books; it does not write the ledger; and the manifest gains entries
+for the named books (their checks, fixture notes and file hashes) and their
+hand edits, while every other entry and every top-level field stays exactly as
+it was. It refuses a book the manifest already records, a LibreOffice other
+than the one the manifest records, and a manifest whose recorded files no
+longer match their hashes. `external_link`, `extra_tab` and `typed_subtotal`
+were added this way.
 
 ## Finding LibreOffice
 
@@ -72,11 +89,25 @@ with one plain line. A conversion runs as:
 machine the whole build takes about 40 seconds, about 30 of them in
 LibreOffice.
 
-## Not built: external_link
+## The hand-edited fixtures
 
-The fixture with a link to another workbook is not built. Written with
-openpyxl's external-link objects, LibreOffice 26.8.2.2 kept the linked formula
-and its cached value but rewrote the link's target against its output folder:
-`calder_plan_fy2025.xlsx` became `../written_2/calder_plan_fy2025.xlsx`. The
-only hand-edited fixture allowed is `shared_formula`, so this one is left out
-until the reviewer decides.
+Two fixtures are edited after LibreOffice has recalculated them, each in one
+part of the file, and each is checked after the edit like every other
+workbook. `data/sample_manifest.json` records the edit of `external_link`
+under `hand_edited`.
+
+- `shared_formula`: the Plan_ES sheet's XML stores two groups of formulas
+  (the ES Budget Product sales months, and the ES Budget FY2026 column from
+  Product sales to Volume) as shared formulas, as Excel writes them.
+  LibreOffice never writes shared formulas, so the fixture that tests their
+  expansion has to be edited.
+- `external_link`: one Control formula, `=[1]Plan_ES!$O$33`, reads a cell of
+  another workbook, `calder_plan_fy2025.xlsx`. The workbook is written with
+  openpyxl's external-link objects, and LibreOffice keeps the formula and its
+  cached value but rewrites the link's target against its output folder, to
+  `../written_2/calder_plan_fy2025.xlsx`. The build sets the `Target` of the
+  one relationship in `xl/externalLinks/_rels/externalLink1.xml.rels` back to
+  `calder_plan_fy2025.xlsx` and copies every other part byte for byte, so no
+  committed file names a folder of the build machine. A target that names a
+  drive, a user or a temporary folder is recorded with that part as
+  `<work folder>`; a different file name stops the build.

@@ -9,3 +9,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 output/
+# The warehouse is built at start into a temporary folder; no database file is committed
+*.duckdb
+*.duckdb.wal

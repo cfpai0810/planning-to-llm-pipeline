@@ -74,6 +74,15 @@ NAMES = {"Product sales": "Product sales; net of returns",
          "Freight out": "Logística y almacén",
          "Rent and facilities": "Rent and facilities"}
 PRICE_CHECK = "Price check, Actual 2026-07"
+# Part 1c: the external link (the one Control formula linking to another
+# workbook, whose target the build restores to the plain file name), the
+# extra visible tab, and the June Actual EBIT typed as its formula gave.
+LINK_LABEL = "Budget FY2025 EBIT, from the FY2025 plan"
+LINK_TARGET = "calder_plan_fy2025.xlsx"
+LINK_FORMULA = "=[1]Plan_ES!$O$33"
+LINK_VALUE = Decimal(3104250)
+EXTRA_TAB = "Notes"
+TYPED_SUBTOTAL = ("Actual", "ES", "EBIT", "2026-06")
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,9 @@ RECALCULATED = {
     FIXTURES / "duplicate_period.xlsx": Book(sheets=SMALL),
     FIXTURES / "unknown_account.xlsx": Book(sheets=SMALL),
     FIXTURES / "names.xlsx": Book(sheets=SMALL),
+    FIXTURES / "external_link.xlsx": Book(sheets=SMALL, specials=((LINK_LABEL, LINK_VALUE),)),
+    FIXTURES / "extra_tab.xlsx": Book(sheets=SMALL),
+    FIXTURES / "typed_subtotal.xlsx": Book(sheets=SMALL),
 }
 SMALL_FIXTURES = [p for p, b in RECALCULATED.items() if b.sheets == SMALL]
 NO_CACHE = FIXTURES / "no_cache.xlsx"
@@ -534,14 +546,13 @@ class TestTheLedger:
 
 class TestTheFixtures:
     def test_every_fixture_of_the_brief_is_committed(self):
-        # All of brief 4.5 but external_link: LibreOffice 26.8.2.2 rewrote the
-        # link's target against its output folder, and the brief allows no
-        # hand-patched fixture but shared_formula (the 1b report says what it did).
+        # All of brief 4.5, and the two the stop 1 verdict added for 1d.
         names = {p.name for p in FIXTURES.glob("*.xlsx")}
         assert names == {"no_cache.xlsx", "error_values.xlsx", "array_formula.xlsx",
                          "shared_formula.xlsx", "merged_cells.xlsx", "no_units.xlsx",
-                         "missing_tab.xlsx", "missing_header.xlsx", "duplicate_period.xlsx",
-                         "unknown_account.xlsx", "shifted.xlsx", "names.xlsx"}
+                         "external_link.xlsx", "missing_tab.xlsx", "missing_header.xlsx",
+                         "duplicate_period.xlsx", "unknown_account.xlsx", "shifted.xlsx",
+                         "names.xlsx", "extra_tab.xlsx", "typed_subtotal.xlsx"}
         assert len(list(MUTATIONS.glob("*.xlsx"))) == 10
 
     @pytest.mark.parametrize("path", SMALL_FIXTURES, ids=_id)
@@ -549,16 +560,22 @@ class TestTheFixtures:
         # no_cache is the small base exactly as openpyxl wrote it, so every
         # recalculated small fixture must hold the same formulas in the same
         # cells (the array one as an array of the same text), plus at most the
-        # one formula its fault adds on Control.
+        # one formula its fault adds on Control; typed_subtotal lacks exactly
+        # the one formula it types.
         base = {(s, c.coordinate): c.value for s, c in every_formula(NO_CACHE)}
         mine = {(s, c.coordinate): formula_text(c.value) for s, c in every_formula(path)}
         extra = sorted(set(mine) - set(base))
-        if path.name == "error_values.xlsx":
+        added = {"error_values.xlsx": PRICE_CHECK, "external_link.xlsx": LINK_LABEL}
+        if path.name in added:
             assert len(extra) == 1 and extra[0][0] == "Control"
             row = formulas(path)["Control"][extra[0][1]].row
-            assert PRICE_CHECK in [c.value for c in formulas(path)["Control"][row]]
+            assert added[path.name] in [c.value for c in formulas(path)["Control"][row]]
         else:
             assert extra == []
+        if path.name == "typed_subtotal.xlsx":
+            typed = anchor(formulas(path), *TYPED_SUBTOTAL)
+            assert sorted(set(base) - set(mine)) == [("Plan_ES", typed.coordinate)]
+            base.pop(("Plan_ES", typed.coordinate))
         assert set(base) <= set(mine)
         if path.name == "missing_tab.xlsx":
             # Two entities on Assumptions, so its lookups reach further down.
@@ -618,10 +635,78 @@ class TestTheFixtures:
                     empty.append((version, entity, wb[sheet].cell(r, c1).value))
         assert empty == [("Budget", "ES", "Rent and facilities")]
 
-    def test_no_workbook_links_to_another(self):
+    def test_only_external_link_links_to_another_workbook(self):
+        # Was test_no_workbook_links_to_another: the stop 1 verdict (option A)
+        # added exactly this one linked fixture.
         books = committed_workbooks()
-        assert len(books) == 24
-        assert [_id(p) for p in books if formulas(p)._external_links] == []
+        assert len(books) == 27
+        assert [_id(p) for p in books if formulas(p)._external_links] == [
+            "tests/fixtures/external_link.xlsx"]
+
+    def test_external_link(self):
+        path = FIXTURES / "external_link.xlsx"
+        links = formulas(path)._external_links
+        assert len(links) == 1 and links[0].file_link.Target == LINK_TARGET
+        with zipfile.ZipFile(path) as archive:
+            rels = [n for n in archive.namelist() if n.startswith("xl/externalLinks/_rels/")]
+            assert len(rels) == 1
+            xml = archive.read(rels[0]).decode("utf-8")
+            book = archive.read(rels[0].replace("_rels/", "").removesuffix(".rels"))
+        # The relationship target is exactly the plain file name, as the build
+        # restored it; the external cache still holds the linked value.
+        assert re.findall(r'Target="([^"]*)"', xml) == [LINK_TARGET]
+        assert 'TargetMode="External"' in xml
+        assert f"<v>{LINK_VALUE}</v>".encode() in book
+        # The formula and its cached value, as LibreOffice wrote them.
+        cell = next(c for c in control_rows(formulas(path))[LINK_LABEL] if is_formula(c.value))
+        assert cell.value == LINK_FORMULA
+        assert values(path)["Control"][cell.coordinate].value == LINK_VALUE
+
+    def test_the_hand_edit_of_external_link_is_recorded(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        edits = {e["file"]: e for e in manifest["hand_edited"]}
+        assert list(edits) == ["tests/fixtures/external_link.xlsx"]
+        edit = edits["tests/fixtures/external_link.xlsx"]
+        assert edit["part"] == "xl/externalLinks/_rels/externalLink1.xml.rels"
+        assert edit["attribute"] == "Target" and edit["after"] == LINK_TARGET
+        assert edit["before"] != LINK_TARGET and edit["before"].endswith("/" + LINK_TARGET)
+
+    def test_no_build_product_names_a_machine_folder(self):
+        # A user name or temp folder of the build machine never reaches a
+        # committed file: not the manifest, not any part inside a workbook.
+        machine = re.compile(r"AppData|[\\/]Users[\\/]|[\\/]Temp[\\/]|[\\/]tmp[\\/]|"
+                             r"calder_build_|lo_profile_|file:", re.IGNORECASE)
+        found = machine.findall(MANIFEST.read_text(encoding="utf-8"))
+        for path in committed_workbooks():
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    found += [(_id(path), name, m) for m in
+                              machine.findall(archive.read(name).decode("utf-8", "replace"))]
+        assert found == []
+
+    def test_extra_tab(self):
+        wb = formulas(FIXTURES / "extra_tab.xlsx")
+        assert wb.sheetnames == ["Control", "Assumptions", "Plan_ES", "Lists", EXTRA_TAB]
+        assert [ws.sheet_state for ws in wb.worksheets] == ["visible"] * 5
+        cells = [c.value for row in wb[EXTRA_TAB].iter_rows() for c in row if c.value is not None]
+        assert cells and all(isinstance(v, str) and not is_formula(v) for v in cells)
+        assert not any(EXTRA_TAB in str(d.attr_text) for d in wb.defined_names.values())
+        assert not any(EXTRA_TAB in formula_text(c.value)
+                       for s, c in every_formula(FIXTURES / "extra_tab.xlsx"))
+        assert hidden(FIXTURES / "extra_tab.xlsx") == ([], [], [])
+
+    def test_typed_subtotal(self, model):
+        path = FIXTURES / "typed_subtotal.xlsx"
+        wb = formulas(path)
+        typed = anchor(wb, *TYPED_SUBTOTAL)
+        figure = model.block("ES", "Actual")["EBIT"]["2026-06"]
+        assert isinstance(typed.value, int) and Decimal(typed.value) == figure
+        version, entity, line, period = TYPED_SUBTOTAL
+        assert all(is_formula(anchor(wb, version, entity, line, p).value) for p in CLOSED[:-1])
+        assert is_formula(anchor(wb, version, entity, line, FY).value)
+        # The totals still agree: the FY2026 cell's cached value is the model's.
+        assert Decimal(str(anchor(values(path), version, entity, line, FY).value)) == \
+            model.block("ES", "Actual")["EBIT"][FY]
 
     def test_missing_tab(self):
         wb = formulas(FIXTURES / "missing_tab.xlsx")
@@ -696,5 +781,7 @@ class TestTheBuildNote:
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         assert manifest["libreoffice"] in note
         for phrase in ("python scripts/build_sample.py", "soffice.com", "soffice.exe",
-                       "taskkill /T /F /PID", "-env:UserInstallation", "SOFFICE"):
+                       "taskkill /T /F /PID", "-env:UserInstallation", "SOFFICE", "--only",
+                       LINK_TARGET, "external_link", "extra_tab", "typed_subtotal"):
             assert phrase in note, phrase
+        assert "Not built" not in note and "until the reviewer" not in note

@@ -24,6 +24,11 @@ browser and records, for the reviewer:
   must be equal within DIGIT_EDGE_TOLERANCE_PX; the closing bracket's width
   is measured too, in px and in em of the cell's font, which is where
   theme.BRACKET_EM comes from;
+- figure column headers (Phase 1 stop 1 verdict, finding 1): the right edge
+  of each figure column's header text, measured with a DOM Range, against the
+  right edge of the digits below it: in the Difference column, of both
+  "(112,450)" and "34,180"; in Plan and Actual, of the first figure. Each must
+  be equal within DIGIT_EDGE_TOLERANCE_PX;
 - tabular figures only where figures are (Phase 0 verdict, finding 5): the
   computed font-variant-numeric of a figure cell and a KPI tile value
   (tabular-nums), and of the table caption and a break's text (normal);
@@ -154,7 +159,21 @@ MEASURE = """(targets) => {
       const s = getComputedStyle(neg);
       const contentRight = neg.getBoundingClientRect().right - parseFloat(s.paddingRight)
                            - parseFloat(s.borderRightWidth);
-      return {negative: neg.textContent.trim(), positive: pos.textContent.trim(),
+      // Phase 1 stop 1 verdict, finding 1: each figure column's header text against
+      // the digits below it (the Difference column's negative and non-negative,
+      // and the first figure of every other figure column).
+      const headers = [...table.querySelectorAll('thead th')].map((th, i) => [th, i])
+        .filter(([th]) => th.classList.contains('num'))
+        .map(([th, i]) => {
+          const column = [...table.querySelectorAll('tbody tr')].map(tr => tr.children[i]);
+          const below = i === col ? [neg, pos] : [column[0]];
+          const node = th.firstChild;
+          return {header: th.textContent.trim(),
+                  header_right: range(node, 0, node.textContent.length).right,
+                  padding_right: getComputedStyle(th).paddingRight,
+                  digits: below.map(c => ({text: c.textContent.trim(), right: digits(c)}))};
+        });
+      return {negative: neg.textContent.trim(), positive: pos.textContent.trim(), headers,
               negative_digits_right: digits(neg), positive_digits_right: digits(pos),
               bracket_px: close.width, bracket_hang_px: contentRight - digits(neg),
               font_size_px: parseFloat(s.fontSize), font: s.fontFamily.split(',')[0] + ' '
@@ -523,6 +542,19 @@ def _report(results: dict, widths: list[int]) -> bool:
               f"{b['bracket_px'] / b['font_size_px']:.4f} em of {b['font']} at "
               f"{b['font_size_px']:g} px; padding-right negative {b['padding_right']['negative']}, "
               f"non-negative {b['padding_right']['positive']}")
+
+    print(f"\nFigure column headers (Phase 1 stop 1 verdict, finding 1): the right edge of the "
+          f"header text against the digits below it, tolerance {DIGIT_EDGE_TOLERANCE_PX} px")
+    for w in widths:
+        for h in gallery[w]["brackets"]["headers"]:
+            for d in h["digits"]:
+                gap = h["header_right"] - d["right"]
+                level = abs(gap) <= DIGIT_EDGE_TOLERANCE_PX
+                ok &= level
+                print(f"  {w:>5} px: header {h['header']!r} ends at {h['header_right']:.4f}, "
+                      f"the digits of {d['text']} at {d['right']:.4f}; header minus digits "
+                      f"{gap:+.4f} px (padding-right {h['padding_right']})"
+                      f"{'' if level else '  NOT LEVEL'}")
 
     print("\nTabular figures only where figures are (Phase 0 verdict, finding 5): computed "
           "font-variant-numeric")

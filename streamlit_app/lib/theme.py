@@ -311,6 +311,9 @@ table, table th, table td {{
    width, so a negative's bracket hangs in that space and every figure's
    digits end level (scripts/shoot.py measures both). */
 .p7-table td.num:not(.neg) {{ padding-right: calc(12px + {BRACKET_EM}em); }}
+/* A figure column's header is padded the same, so it ends level with the
+   digits it heads (scripts/shoot.py measures it). */
+.p7-table th.num {{ padding-right: calc(12px + {BRACKET_EM}em); }}
 .p7-table tbody tr:last-child td {{ border-bottom: none; }}
 
 /* Provenance: every field in full; the SQL in a code block, the hash on one

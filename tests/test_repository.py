@@ -17,9 +17,9 @@ RELEASING = ROOT / "docs" / "releasing.md"
 # question settled (0.116.0, the series version, decided at the pilot review).
 SERIES = {"streamlit": "1.60.0", "starlette": "1.7.0", "python-dotenv": "1.2.2",
           "certifi": "2026.10.19", "anthropic": "0.116.0"}
-# Phase 1 adds the workbook library with the sample build (part 1b). The
-# warehouse engine arrives with the code that uses it (part 1c).
-PHASE = SERIES | {"openpyxl": "3.1.5"}
+# Phase 1 adds the workbook library with the sample build (part 1b) and the
+# warehouse engine with the code that uses it (part 1c): 1.5.6, never 2.0.0.
+PHASE = SERIES | {"openpyxl": "3.1.5", "duckdb": "1.5.6"}
 PIN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[A-Za-z0-9.+!_-]+)"
                  r"(?:\s*;\s*\S.*)?$")
 REBOOT_RULE = "The owner reboots the app after every push to a deployed branch."
@@ -73,6 +73,15 @@ class TestPinnedStack:
         lines = text.splitlines()
         reason = lines[lines.index("openpyxl==3.1.5") - 1]
         assert reason.startswith("# ") and "workbook" in reason
+
+    def test_the_duckdb_reason_is_kept(self):
+        lines = DIRECT.read_text(encoding="utf-8").splitlines()
+        reason = lines[lines.index("duckdb==1.5.6") - 1]
+        assert reason.startswith("# ") and "warehouse" in reason and "2.0.0" in reason
+
+    def test_the_warehouse_engine_is_not_the_2_0_line(self):
+        for path in (DIRECT, LOCK, DEV_LOCK):
+            assert _pins(path)["duckdb"] == "1.5.6", path.name
 
     def test_the_lock_is_closed_over_dependencies(self):
         # Every dependency of every locked package (for this Python and

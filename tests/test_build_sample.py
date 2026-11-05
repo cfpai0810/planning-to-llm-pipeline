@@ -185,3 +185,222 @@ class TestTheTreeKill:
         finished = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
                                   capture_output=True, text=True, env=subprocess_env())
         assert not build.process_running(int(finished.stdout))
+
+
+# -- Part 1c: the new fixtures, the restored link target and the partial build ----
+# None of these runs LibreOffice. The partial build exists so that adding the
+# three fixtures of part 1c leaves every approved file and manifest entry as
+# the reviewer approved it (stop 1 verdict; the reviewer's rule of 5 November).
+
+NEW_FIXTURES = ("external_link", "extra_tab", "typed_subtotal")
+PLAIN_TARGET = "calder_plan_fy2025.xlsx"
+LINK_PATH = ("http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+             "externalLinkPath")
+LINK_PART = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink"
+APPROVED_VERSION = "LibreOffice 26.8.2.2 9dea406ab7695df6325b11b0e19fdca8db4b7276"
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ROOT / "data" / "sample_manifest.json"
+
+
+def _linked_archive(path: Path, target: str) -> dict:
+    """A workbook-shaped archive with one external link, as LibreOffice writes one."""
+    parts = {
+        "[Content_Types].xml": b"<Types/>",
+        "xl/workbook.xml": b"<workbook><externalReferences><externalReference r:id=\"rId9\"/>"
+                           b"</externalReferences></workbook>",
+        "xl/_rels/workbook.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="x">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/'
+            '2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            f'<Relationship Id="rId9" Type="{LINK_PART}" '
+            'Target="externalLinks/externalLink1.xml"/></Relationships>').encode(),
+        "xl/externalLinks/externalLink1.xml": b"<externalLink><v>3104250</v></externalLink>",
+        "xl/externalLinks/_rels/externalLink1.xml.rels": (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="x">'
+            f'<Relationship Id="rId1" Type="{LINK_PATH}" Target="{target}" '
+            'TargetMode="External"/>\n</Relationships>').encode(),
+        "xl/worksheets/sheet1.xml": b"<c r=\"C21\"><f aca=\"false\">[1]Plan_ES!$O$33</f>"
+                                    b"<v>3104250</v></c>",
+    }
+    import zipfile
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in parts.items():
+            archive.writestr(name, data)
+    return parts
+
+
+def _parts(path: Path) -> dict:
+    import zipfile
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+class TestTheNewFixtures:
+    def test_the_full_build_makes_the_three_new_fixtures(self, build):
+        names = [book.dest.stem for book in build.FIXTURE_BOOKS]
+        assert set(NEW_FIXTURES) <= set(names)
+        for name in NEW_FIXTURES:
+            book = build.BOOKS[name]
+            assert book.shape == build.SMALL and book.purpose and book.expected
+
+    def test_extra_tab_is_the_small_base_plus_one_visible_tab_of_text(self, build):
+        wb, specials = build.fixture_extra_tab()
+        assert specials == {}
+        assert wb.sheetnames == ["Control", "Assumptions", "Plan_ES", "Lists", "Notes"]
+        notes = wb["Notes"]
+        assert notes.sheet_state == "visible"
+        values = [c.value for row in notes.iter_rows() for c in row if c.value is not None]
+        assert values and all(isinstance(v, str) and not v.startswith("=") for v in values)
+
+    def test_typed_subtotal_types_the_june_actual_ebit_as_its_formula_gave(self, build):
+        from src import sample_model as model
+        wb, specials = build.fixture_typed_subtotal()
+        ws = wb["Plan_ES"]
+        june = ws[build.coordinate(build.SMALL, "Actual", "EBIT", "2026-06")]
+        assert june.value == int(model.block("ES", "Actual")["EBIT"]["2026-06"])
+        for period in model.CLOSED_PERIODS[:-1]:
+            assert ws[build.coordinate(build.SMALL, "Actual", "EBIT", period)].value.startswith("=")
+        assert ws[build.coordinate(build.SMALL, "Actual", "EBIT", model.FY)].value.startswith("=")
+
+    def test_external_link_links_one_control_formula_to_the_plain_target(self, build):
+        wb, specials = build.fixture_external_link()
+        links = wb._external_links
+        assert len(links) == 1 and links[0].file_link.Target == PLAIN_TARGET
+        assert links[0].file_link.TargetMode == "External"
+        ((sheet, ref), value), = specials.items()
+        assert sheet == "Control"
+        assert wb[sheet][ref].value == "=[1]Plan_ES!$O$33"
+        assert value == 3104250
+
+
+class TestTheRestoredTarget:
+    def test_only_the_target_attribute_changes(self, build, tmp_path):
+        source, target = tmp_path / "in.xlsx", tmp_path / "out.xlsx"
+        before = _linked_archive(source, f"../written_2/{PLAIN_TARGET}")
+        record = build.restore_link_target(source, target, work=tmp_path / "calder_build_x")
+        after = _parts(target)
+        rels = "xl/externalLinks/_rels/externalLink1.xml.rels"
+        assert set(after) == set(before)
+        assert {n: d for n, d in after.items() if n != rels} == \
+            {n: d for n, d in before.items() if n != rels}
+        assert after[rels] == before[rels].replace(f'Target="../written_2/{PLAIN_TARGET}"'.encode(),
+                                                   f'Target="{PLAIN_TARGET}"'.encode())
+        assert record == {"part": rels, "attribute": "Target",
+                          "before": f"../written_2/{PLAIN_TARGET}", "after": PLAIN_TARGET}
+
+    def test_a_target_already_plain_is_left_alone(self, build, tmp_path):
+        source, target = tmp_path / "in.xlsx", tmp_path / "out.xlsx"
+        before = _linked_archive(source, PLAIN_TARGET)
+        record = build.restore_link_target(source, target, work=tmp_path)
+        assert _parts(target) == before and record["before"] == record["after"] == PLAIN_TARGET
+
+    def test_a_different_file_name_stops_the_build(self, build, tmp_path):
+        source = tmp_path / "in.xlsx"
+        _linked_archive(source, "../written_2/another_book.xlsx")
+        with pytest.raises(build.BuildError, match="another_book.xlsx"):
+            build.restore_link_target(source, tmp_path / "out.xlsx", work=tmp_path)
+
+    @pytest.mark.parametrize("written", [
+        r"C:\Users\someone\AppData\Local\Temp\calder_build_ab12\written_2\calder_plan_fy2025.xlsx",
+        "file:///C:/Users/someone/AppData/Local/Temp/calder_build_ab12/written_2/"
+        "calder_plan_fy2025.xlsx",
+        "/tmp/calder_build_ab12/written_2/calder_plan_fy2025.xlsx",
+        "../calder_build_ab12/written_2/calder_plan_fy2025.xlsx",
+        "../../someone/written_2/calder_plan_fy2025.xlsx",
+    ], ids=["windows path", "file uri", "posix path", "temp folder name", "user name"])
+    def test_a_machine_folder_is_never_recorded(self, build, written, tmp_path):
+        work = tmp_path / "calder_build_ab12"
+        recorded = build.recorded_target(written, work, user="someone")
+        assert recorded == "<work folder>/calder_plan_fy2025.xlsx"
+
+    def test_a_relative_target_inside_the_build_is_recorded_as_written(self, build, tmp_path):
+        recorded = build.recorded_target(f"../written_2/{PLAIN_TARGET}",
+                                         tmp_path / "calder_build_ab12", user="someone")
+        assert recorded == f"../written_2/{PLAIN_TARGET}"
+
+
+class TestThePartialBuild:
+    def test_the_only_option(self, build):
+        args = build.parse_args(["--only", *NEW_FIXTURES])
+        assert args.only == list(NEW_FIXTURES)
+        assert build.parse_args([]).only is None
+
+    def test_books_are_chosen_by_name(self, build):
+        chosen = build.select_books(list(NEW_FIXTURES))
+        assert [b.dest.stem for b in chosen] == list(NEW_FIXTURES)
+        with pytest.raises(build.BuildError, match="no_such_fixture"):
+            build.select_books(["no_such_fixture"])
+
+    def test_a_partial_build_adds_books_and_never_replaces_one(self, build):
+        import json
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        with pytest.raises(build.BuildError, match="shifted"):
+            build.check_partial(manifest, build.select_books(["shifted"]), APPROVED_VERSION)
+        with pytest.raises(build.BuildError, match="planning_model"):
+            build.check_partial(manifest, build.select_books(["planning_model"]), APPROVED_VERSION)
+
+    def test_a_partial_build_needs_the_approved_libreoffice(self, build):
+        manifest = {"libreoffice": APPROVED_VERSION, "files": {}}
+        books = build.select_books(["extra_tab"])
+        build.check_partial(manifest, books, APPROVED_VERSION)
+        with pytest.raises(build.BuildError, match="LibreOffice 26.8.3.1"):
+            build.check_partial(manifest, books, "LibreOffice 26.8.3.1 0123")
+
+    def test_the_manifest_round_trips_byte_for_byte(self):
+        import json
+        text = MANIFEST.read_text(encoding="utf-8")
+        assert json.dumps(json.loads(text), indent=2, ensure_ascii=False) + "\n" == text
+
+    def test_the_partial_manifest_only_adds(self, build, tmp_path):
+        # Every approved entry and every top-level field keeps its key, value
+        # and place; the new books' entries and their hand edit are added.
+        import difflib
+        import json
+        books = build.select_books(list(NEW_FIXTURES))
+        new_rels = [b.rel for b in books]
+        approved = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        # The manifest as approved at stop 1, without anything part 1c added.
+        approved.pop("hand_edited", None)
+        for key in ("files", "checks"):
+            approved[key] = {k: v for k, v in approved[key].items() if k not in new_rels}
+        approved["fixtures"] = [f for f in approved["fixtures"] if f["file"] not in new_rels]
+        files = {}
+        for book in books:
+            files[book.rel] = tmp_path / book.name
+            files[book.rel].write_bytes(book.name.encode())
+        checks = {rel: build.Check(formula_cells=371) for rel in new_rels}
+        edit = {"file": "tests/fixtures/external_link.xlsx",
+                "part": "xl/externalLinks/_rels/externalLink1.xml.rels", "attribute": "Target",
+                "before": f"../written_2/{PLAIN_TARGET}", "after": PLAIN_TARGET, "why": "x"}
+        new = build.partial_manifest(approved, checks, books, files, [edit])
+        assert list(new) == list(approved) + ["hand_edited"] and new["hand_edited"] == [edit]
+        for key in approved:
+            if key not in ("files", "checks", "fixtures"):
+                assert new[key] == approved[key], key
+        for key in ("files", "checks"):
+            assert [k for k in new[key] if k in approved[key]] == list(approved[key])
+            assert {k: new[key][k] for k in approved[key]} == approved[key]
+            assert set(new[key]) - set(approved[key]) == set(new_rels)
+        assert new["files"]["tests/fixtures/extra_tab.xlsx"]["bytes"] == len(b"extra_tab.xlsx")
+        assert new["fixtures"][:len(approved["fixtures"])] == approved["fixtures"]
+        assert [f["file"] for f in new["fixtures"][len(approved["fixtures"]):]] == new_rels
+        before = build.render_manifest(approved).splitlines()
+        after = build.render_manifest(new).splitlines()
+        # As text, the new manifest is the approved one with lines inserted; the
+        # only line of it that changes is the last of a block, which gains the
+        # comma that JSON puts before an added entry.
+        opcodes = difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
+        assert "insert" in {tag for tag, *_ in opcodes}
+        for tag, i1, i2, j1, j2 in opcodes:
+            assert tag in ("equal", "insert", "replace"), tag
+            if tag == "replace":
+                assert i2 - i1 == 1 and after[j1] == before[i1] + "," and before[i1].strip() in (
+                    "}", "]"), (before[i1:i2], after[j1:j2])
+
+    def test_the_manifest_is_rendered_as_it_is_committed(self, build):
+        import json
+        text = MANIFEST.read_text(encoding="utf-8")
+        assert build.render_manifest(json.loads(text)) == text
+
+    def test_the_full_build_records_the_hand_edit(self, build):
+        assert build.EXTERNAL_LINK.edit is build.restore_link_target

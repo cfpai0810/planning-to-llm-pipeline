@@ -209,6 +209,18 @@
     "tests/fixtures/shared_formula.xlsx": {
       "formula_cells": 372,
       "largest_difference": "0"
+    },
+    "tests/fixtures/external_link.xlsx": {
+      "formula_cells": 373,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/extra_tab.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/typed_subtotal.xlsx": {
+      "formula_cells": 371,
+      "largest_difference": "0"
     }
   },
   "fixtures": [
@@ -321,6 +333,21 @@
       "file": "tests/fixtures/no_cache.xlsx",
       "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), as openpyxl wrote it and never recalculated: no formula cell has a cached value.",
       "expected_in_1d": "Calculation state: one break for every formula cell."
+    },
+    {
+      "file": "tests/fixtures/external_link.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), plus one Control formula, =[1]Plan_ES!$O$33, reading the Budget FY2025 EBIT of another workbook, calder_plan_fy2025.xlsx, with the value in the link's cache. Hand-edited after the recalculation: the link's target is restored to the plain file name (hand_edited records it).",
+      "expected_in_1d": "Hidden content and links: one link-to-another-workbook break, and nothing else."
+    },
+    {
+      "file": "tests/fixtures/extra_tab.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), plus a visible tab, Notes, outside the expected set (Control, Assumptions, Lists and a Plan_ tab for each entity on Lists), holding two lines of text and no formula.",
+      "expected_in_1d": "Structure: one low severity break, tab not on the expected list (Notes), and nothing else."
+    },
+    {
+      "file": "tests/fixtures/typed_subtotal.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the ES Actual EBIT for 2026-06 typed as the number its formula gave, so every total still agrees.",
+      "expected_in_1d": "Formula integrity: one break, a typed constant in a formula row (EBIT, a subtotal), and nothing else."
     }
   ],
   "timing_seconds": {
@@ -352,6 +379,14 @@
     "tests/fixtures/error_values.xlsx": {
       "sha256": "e092dc58de7cb263284699442b21207c5f6fbd8bcb60cf0c79e60c07174f5ce3",
       "bytes": 19890
+    },
+    "tests/fixtures/external_link.xlsx": {
+      "sha256": "24541d2e4c9d1318beec4aeed577db1ab2f7edc601fcf2f37f4b0a9db0d48cd8",
+      "bytes": 20527
+    },
+    "tests/fixtures/extra_tab.xlsx": {
+      "sha256": "69085ecaa6faa9d4841a54eaf45eeb0f891658aa87ede6119a0822291ec881e4",
+      "bytes": 20918
     },
     "tests/fixtures/merged_cells.xlsx": {
       "sha256": "714215625d5a61bd7f4ec264c3e001f09177cd7a80c277128f7ae5339b156ff3",
@@ -425,9 +460,23 @@
       "sha256": "045cac4eae16545dc228a0872e2495cca2effd47a4960d818d19469e828a5433",
       "bytes": 37357
     },
+    "tests/fixtures/typed_subtotal.xlsx": {
+      "sha256": "e62f116330ef43de5dbbcc169bfad5f4bc097e38439e6bff41ef57a6f549dff3",
+      "bytes": 19827
+    },
     "tests/fixtures/unknown_account.xlsx": {
       "sha256": "504f67d0e9f8cb75db0852f581506d14f867183123c35e2e94104ed9c3fb49e3",
       "bytes": 19849
     }
-  }
+  },
+  "hand_edited": [
+    {
+      "file": "tests/fixtures/external_link.xlsx",
+      "part": "xl/externalLinks/_rels/externalLink1.xml.rels",
+      "attribute": "Target",
+      "before": "../written_2/calder_plan_fy2025.xlsx",
+      "after": "calder_plan_fy2025.xlsx",
+      "why": "LibreOffice rewrote the link's target against the build's output folder; it is restored to the plain file name the workbook was written with, so no committed file names a folder of the build machine. The formula and its cached value are as LibreOffice wrote them."
+    }
+  ]
 }

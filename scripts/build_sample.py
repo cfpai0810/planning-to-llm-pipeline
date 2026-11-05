@@ -5,6 +5,7 @@ r"""
 Builds the committed sample of part 1b from src/sample_model.py:
 
     python scripts/build_sample.py
+    python scripts/build_sample.py --only external_link extra_tab typed_subtotal
 
 1. The clean control workbook first. It is written with openpyxl (formulas,
    no cached values), recalculated by LibreOffice headless, and checked before
@@ -15,13 +16,27 @@ Builds the committed sample of part 1b from src/sample_model.py:
    T3 applied to its Actual block and D1 to D5 planted, so that every cached
    value, the Actual subtotals included, is computed by LibreOffice), the ten
    mutation variants and the fixtures, each checked the same way.
+   The external_link fixture is hand-edited after its recalculation:
+   LibreOffice rewrites its link's target against the output folder, so the
+   one relationship file gets the plain file name back, and the formula and
+   its cached value stay as LibreOffice wrote them. It is checked after the
+   edit, and the manifest records the edit with the target before and after.
 3. The shared_formula fixture (the recalculated small base with two groups of
-   formulas stored as shared formulas, the one hand-edited fixture) and the
-   no_cache fixture (written by openpyxl and never recalculated).
+   formulas stored as shared formulas, hand-edited too) and the no_cache
+   fixture (written by openpyxl and never recalculated).
 4. Only when every check has passed: the files are copied into data/ and
    tests/fixtures/, the ledger extract is written from the unmodified model in
    ledger sign, and data/sample_manifest.json records the planted truth, the
-   checks, the file hashes and the LibreOffice version.
+   checks, the file hashes, the hand edits and the LibreOffice version.
+
+With --only, the build makes the named books and nothing else: step 1 still
+recalculates and checks the clean workbook, but does not install it; only the
+named books are converted, checked and installed; the ledger is not written;
+and the manifest gains entries for the named books and their hand edits while
+every other entry, and every top-level field, stays exactly as it was. A
+partial build adds books and never replaces one: a book the manifest already
+records is refused, so is a LibreOffice other than the one the manifest
+records, and so is a manifest whose recorded files no longer match their hashes.
 
 LibreOffice is found in this order: the SOFFICE environment variable, then
 PATH, then C:\Program Files\LibreOffice\program\soffice.com. Where the path
@@ -42,6 +57,7 @@ import csv
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -62,8 +78,12 @@ if str(ROOT) not in sys.path:
 
 from openpyxl import Workbook, load_workbook  # noqa: E402
 from openpyxl.styles import Font  # noqa: E402
+from openpyxl.packaging.relationship import Relationship  # noqa: E402
 from openpyxl.utils import get_column_letter  # noqa: E402
 from openpyxl.workbook.defined_name import DefinedName  # noqa: E402
+from openpyxl.workbook.external_link.external import (  # noqa: E402
+    ExternalBook, ExternalCell, ExternalLink, ExternalRow, ExternalSheetData, ExternalSheetDataSet,
+    ExternalSheetNames)
 from openpyxl.worksheet.formula import ArrayFormula  # noqa: E402
 
 from src import sample_model as model  # noqa: E402
@@ -697,12 +717,46 @@ def fixture_no_units():
     return wb, {}
 
 
-# No external_link fixture. Written with openpyxl's external-link objects (a
-# Control formula =[1]Plan_ES!$O$33 with a cached value, linked to
-# calder_plan_fy2025.xlsx), LibreOffice 26.8.2.2 kept the formula and its
-# value but rewrote the link's target against its output folder, to
-# ../written_2/calder_plan_fy2025.xlsx. The brief allows no hand-patched
-# fixture but shared_formula, so this one is left out until the reviewer says.
+LINK_TARGET = "calder_plan_fy2025.xlsx"
+LINK_LABEL = "Budget FY2025 EBIT, from the FY2025 plan"
+LINK_VALUE = Decimal(3104250)
+NOTES = "Notes"
+NOTES_LINES = ("Notes", "Prices for the second half are under review with the commercial team.")
+
+
+def fixture_external_link():
+    # One Control formula reading the FY2025 plan's Budget EBIT: a link to
+    # another workbook, with its value in the link's cache.
+    wb = write_workbook(SMALL)
+    row, column = line_row(SMALL, "Budget", "EBIT"), key_col(SMALL, model.FY)
+    cache = ExternalSheetDataSet(sheetData=[ExternalSheetData(sheetId=0, row=[ExternalRow(
+        r=row, cell=[ExternalCell(r=f"{column}{row}", v=str(LINK_VALUE))])])])
+    link = ExternalLink(externalBook=ExternalBook(
+        sheetNames=ExternalSheetNames(sheetName=["Plan_ES"]), sheetDataSet=cache, id="rId1"))
+    link.file_link = Relationship(type="externalLinkPath", Target=LINK_TARGET,
+                                  TargetMode="External")
+    wb._external_links.append(link)
+    cell = _control_row(wb, SMALL, LINK_LABEL, "EUR", f"=[1]Plan_ES!${column}${row}")
+    return wb, {("Control", cell): LINK_VALUE}
+
+
+def fixture_extra_tab():
+    # A visible tab outside the expected set, holding text and no formula.
+    wb = write_workbook(SMALL)
+    ws = wb.create_sheet(NOTES)
+    for i, text in enumerate(NOTES_LINES, start=1):
+        ws.cell(i, 1).value = text
+    ws["A1"].font = BOLD
+    return wb, {}
+
+
+def fixture_typed_subtotal():
+    # The June Actual EBIT typed as the number its formula gave: every total
+    # still agrees, and only the formula row tells.
+    wb = write_workbook(SMALL)
+    figure = model.block("ES", "Actual")["EBIT"]["2026-06"]
+    wb["Plan_ES"][coordinate(SMALL, "Actual", "EBIT", "2026-06")] = _number(figure)
+    return wb, {}
 
 
 def fixture_missing_tab():
@@ -736,6 +790,62 @@ def fixture_unknown_account():
 
 SHIFTED = Shape(row0=4, col0=3, banner="Calder Foods Group: draft for review, not for issue")
 
+# A target written for this machine: a drive, a root, a URI, or a folder name
+# that names the machine (with the user name and the work folder, checked below).
+MACHINE_TARGET = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]|file:)", re.IGNORECASE)
+MACHINE_FOLDERS = {"users", "home", "appdata", "temp", "tmp"}
+LINK_EDIT_WHY = ("LibreOffice rewrote the link's target against the build's output folder; it is "
+                 "restored to the plain file name the workbook was written with, so no committed "
+                 "file names a folder of the build machine. The formula and its cached value are "
+                 "as LibreOffice wrote them.")
+
+
+def _user_name() -> str:
+    return os.environ.get("USERNAME") or os.environ.get("USER") or Path.home().name
+
+
+def recorded_target(target: str, work: Path, user: Optional[str] = None) -> str:
+    """The target as it may be recorded: a folder of this machine becomes <work folder>."""
+    user = _user_name() if user is None else user
+    *folders, name = re.split(r"[\\/]", target)
+    machine = (MACHINE_TARGET.match(target) or Path(work).name in folders
+               or any(f.lower() in MACHINE_FOLDERS for f in folders) or (user and user in folders)
+               or any(f.startswith(("calder_build_", "lo_profile_")) for f in folders))
+    return f"<work folder>/{name}" if machine else target
+
+
+def restore_link_target(source: Path, target: Path, work: Path, user: Optional[str] = None) -> dict:
+    """Copies the workbook with its one external link's target set back to the plain file name.
+
+    Every other part is copied byte for byte. A file name other than the one
+    written stops the build: only the folder LibreOffice prefixed is undone.
+    """
+    with zipfile.ZipFile(source) as archive:
+        entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
+    parts = {info.filename: data for info, data in entries}
+    rels = parts.get("xl/_rels/workbook.xml.rels", b"").decode("utf-8")
+    links = re.findall(r'<Relationship [^>]*Type="[^"]*/externalLink"[^>]*>', rels)
+    if len(links) != 1:
+        raise BuildError(f"external_link: {len(links)} links to another workbook, not one")
+    link = re.search(r'Target="([^"]+)"', links[0])[1]
+    link = link.lstrip("/") if link.startswith("/") else posixpath.normpath(f"xl/{link}")
+    part = posixpath.join(posixpath.dirname(link), "_rels", posixpath.basename(link) + ".rels")
+    xml = parts[part].decode("utf-8")
+    paths = re.findall(r'<Relationship [^>]*Type="[^"]*/externalLinkPath"[^>]*>', xml)
+    if len(paths) != 1:
+        raise BuildError(f"external_link: {len(paths)} link targets, not one")
+    before = re.search(r'Target="([^"]*)"', paths[0])[1]
+    if re.split(r"[\\/]", before)[-1] != LINK_TARGET:
+        raise BuildError(f"external_link: LibreOffice changed the linked file to {before}")
+    if before != LINK_TARGET:
+        restored = paths[0].replace(f'Target="{before}"', f'Target="{LINK_TARGET}"', 1)
+        parts[part] = xml.replace(paths[0], restored, 1).encode("utf-8")
+    with zipfile.ZipFile(target, "w") as out:
+        for info, _ in entries:
+            out.writestr(info, parts[info.filename], compress_type=zipfile.ZIP_DEFLATED)
+    return {"part": part, "attribute": "Target", "before": recorded_target(before, work, user),
+            "after": LINK_TARGET}
+
 
 @dataclass
 class Book:
@@ -748,6 +858,7 @@ class Book:
     purpose: str = ""
     expected: str = ""
     specials: dict = field(default_factory=dict)
+    edit: Optional[Callable] = None     # a hand edit after the recalculation, recorded
 
     @property
     def name(self) -> str:
@@ -844,6 +955,27 @@ FIXTURE_BOOKS = [
          expected="Structure: three rejected names (the semicolon, the 120 characters, the "
                   "nine words); the other three pass."),
 ]
+EXTERNAL_LINK = Book(
+    FIXTURES / "external_link.xlsx", fixture_external_link, SMALL, edit=restore_link_target,
+    purpose=f"{SMALL_NOTE}, plus one Control formula, =[1]Plan_ES!$O$33, reading the Budget "
+            f"FY2025 EBIT of another workbook, {LINK_TARGET}, with the value in the link's "
+            "cache. Hand-edited after the recalculation: the link's target is restored to the "
+            "plain file name (hand_edited records it).",
+    expected="Hidden content and links: one link-to-another-workbook break, and nothing else.")
+EXTRA_TAB = Book(
+    FIXTURES / "extra_tab.xlsx", fixture_extra_tab, SMALL,
+    purpose=f"{SMALL_NOTE}, plus a visible tab, Notes, outside the expected set (Control, "
+            "Assumptions, Lists and a Plan_ tab for each entity on Lists), holding two lines of "
+            "text and no formula.",
+    expected="Structure: one low severity break, tab not on the expected list (Notes), and "
+             "nothing else.")
+TYPED_SUBTOTAL = Book(
+    FIXTURES / "typed_subtotal.xlsx", fixture_typed_subtotal, SMALL,
+    purpose=f"{SMALL_NOTE}, with the ES Actual EBIT for 2026-06 typed as the number its "
+            "formula gave, so every total still agrees.",
+    expected="Formula integrity: one break, a typed constant in a formula row (EBIT, a "
+             "subtotal), and nothing else.")
+FIXTURE_BOOKS += [EXTERNAL_LINK, EXTRA_TAB, TYPED_SUBTOTAL]
 BASE = Book(FIXTURES / "shared_formula.xlsx", _simple(lambda: write_workbook(SMALL)), SMALL,
             purpose=f"{SMALL_NOTE}, recalculated, then the ES Budget Product sales months and "
                     "the ES Budget FY2026 column from Product sales to Volume stored as shared "
@@ -854,6 +986,8 @@ NO_CACHE = Book(FIXTURES / "no_cache.xlsx", _simple(lambda: write_workbook(SMALL
                 purpose=f"{SMALL_NOTE}, as openpyxl wrote it and never recalculated: no "
                         "formula cell has a cached value.",
                 expected="Calculation state: one break for every formula cell.")
+STEP_2 = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, BASE]
+BOOKS = {book.dest.stem: book for book in (CLEAN, *STEP_2, NO_CACHE)}
 
 
 # == Checking a recalculated workbook =================================================
@@ -1128,7 +1262,16 @@ def planted_truth() -> list[dict]:
     return items
 
 
-def write_manifest(version: str, checks: dict, books: list[Book], timing: dict) -> None:
+def render_manifest(manifest: dict) -> str:
+    return json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+
+
+def _check_entry(check: "Check") -> dict:
+    return {"formula_cells": check.formula_cells, "largest_difference": str(check.largest)}
+
+
+def write_manifest(version: str, checks: dict, books: list[Book], timing: dict,
+                   edits: list[dict]) -> None:
     files = {}
     for path in sorted([LEDGER] + [b.dest for b in books]):
         rel = path.relative_to(ROOT).as_posix()
@@ -1147,15 +1290,52 @@ def write_manifest(version: str, checks: dict, books: list[Book], timing: dict) 
             "Actual block matches the ledger exactly.",
         ],
         "planted": planted_truth(),
-        "checks": {rel: {"formula_cells": c.formula_cells, "largest_difference": str(c.largest)}
-                   for rel, c in checks.items()},
+        "checks": {rel: _check_entry(c) for rel, c in checks.items()},
         "fixtures": [{"file": b.rel, "purpose": b.purpose, "expected_in_1d": b.expected}
                      for b in books if b.dest.parent != DATA],
         "timing_seconds": timing,
         "files": files,
+        "hand_edited": edits,
     }
-    MANIFEST.write_bytes((json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
-                         .encode("utf-8"))
+    MANIFEST.write_bytes(render_manifest(manifest).encode("utf-8"))
+
+
+def select_books(names: list[str]) -> list[Book]:
+    """The books a partial build makes, by file name without .xlsx, in the order named."""
+    unknown = [n for n in names if n not in BOOKS]
+    if unknown:
+        raise BuildError(f"no book is called {', '.join(unknown)}; the books are "
+                         f"{', '.join(BOOKS)}")
+    return [BOOKS[n] for n in dict.fromkeys(names)]
+
+
+def check_partial(manifest: dict, books: list[Book], version: str) -> None:
+    """A partial build adds books with the LibreOffice the manifest records; it replaces none."""
+    recorded = [b.rel for b in books if b.rel in manifest.get("files", {})]
+    if recorded:
+        raise BuildError(f"already built and recorded in the manifest: {', '.join(recorded)}; a "
+                         "partial build adds books and never replaces one")
+    if version != manifest.get("libreoffice"):
+        raise BuildError(f"the recorded files were built with {manifest.get('libreoffice')} and "
+                         f"this is {version}; a partial build needs the same LibreOffice")
+
+
+def partial_manifest(manifest: dict, checks: dict, books: list[Book], files: dict,
+                     edits: list[dict]) -> dict:
+    """The manifest with the new books added: every recorded entry and field kept as it is."""
+    new = dict(manifest)
+    entries = dict(manifest["files"])
+    for book in books:
+        path = Path(files[book.rel])
+        entries[book.rel] = {"sha256": file_sha256(path), "bytes": path.stat().st_size}
+    new["files"] = dict(sorted(entries.items()))
+    new["checks"] = {**manifest["checks"],
+                     **{b.rel: _check_entry(checks[b.rel]) for b in books if b.rel in checks}}
+    new["fixtures"] = list(manifest["fixtures"]) + [
+        {"file": b.rel, "purpose": b.purpose, "expected_in_1d": b.expected}
+        for b in books if b.dest.parent != DATA]
+    new["hand_edited"] = list(manifest.get("hand_edited", [])) + list(edits)
+    return new
 
 
 # == The build =========================================================================
@@ -1173,8 +1353,15 @@ def _install(source: Path, dest: Path) -> None:
     shutil.copyfile(source, dest)
 
 
-def build(soffice: Path, version: str, work: Path, timeout: float) -> dict:
-    checks, failed = {}, []
+def build(soffice: Path, version: str, work: Path, timeout: float,
+          only: Optional[list[Book]] = None) -> dict:
+    """The full build, or with only, the named books (the clean workbook is still checked first)."""
+    chosen = None if only is None else {book.rel for book in only}
+
+    def wanted(book: Book) -> bool:
+        return chosen is None or book.rel in chosen
+
+    checks, failed, edits = {}, [], []
 
     def checked(book, written, output):
         check = check_book(book, written, output)
@@ -1184,7 +1371,7 @@ def build(soffice: Path, version: str, work: Path, timeout: float) -> dict:
             failed.append(book.rel)
 
     # 1. The clean workbook, alone, before anything else.
-    print("Step 1: the clean workbook")
+    print("Step 1: the clean workbook" + ("" if wanted(CLEAN) else " (checked, not installed)"))
     written = work / "written_1"
     written.mkdir()
     clean_in = _save(CLEAN, written)
@@ -1193,62 +1380,99 @@ def build(soffice: Path, version: str, work: Path, timeout: float) -> dict:
     if failed:
         raise BuildError("the clean workbook changed in the recalculation; nothing was written")
 
-    # 2. Everything else in one run.
-    print("Step 2: the sample, the mutation variants and the fixtures")
-    books = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, BASE]
-    written = work / "written_2"
-    written.mkdir()
-    inputs = [_save(book, written) for book in books]
-    outputs = convert(soffice, inputs, work / "converted_2", timeout)
-    results = dict(zip((b.rel for b in books), zip(inputs, outputs)))
-    for book, (book_in, book_out) in zip(books, zip(inputs, outputs)):
-        checked(book, book_in, book_out)
-    if failed:
-        raise BuildError(f"LibreOffice changed {len(failed)} workbook(s): {', '.join(failed)}; "
-                         "nothing was written")
+    # 2. Everything else in one run; a hand edit is made, then checked.
+    books = [book for book in STEP_2 if wanted(book)]
+    results = {}
+    if books:
+        print("Step 2: " + ("the sample, the mutation variants and the fixtures" if only is None
+                            else ", ".join(book.rel for book in books)))
+        written = work / "written_2"
+        written.mkdir()
+        inputs = [_save(book, written) for book in books]
+        outputs = convert(soffice, inputs, work / "converted_2", timeout)
+        for book, book_in, book_out in zip(books, inputs, outputs):
+            if book.edit is not None:
+                edited = work / "edited" / book.name
+                edited.parent.mkdir(exist_ok=True)
+                record = book.edit(book_out, edited, work)
+                edits.append({"file": book.rel, **record, "why": LINK_EDIT_WHY})
+                print(f"  {book.rel}: hand edit of {record['part']}: {record['attribute']} "
+                      f"{record['before']!r} became {record['after']!r}")
+                book_out = edited
+            results[book.rel] = (book_in, book_out)
+            checked(book, book_in, book_out)
+        if failed:
+            raise BuildError(f"LibreOffice changed {len(failed)} workbook(s): "
+                             f"{', '.join(failed)}; nothing was written")
 
     # 3. The hand-edited shared formulas and the workbook never recalculated.
-    print("Step 3: shared_formula and no_cache")
     shared = work / "shared" / BASE.name
-    shared.parent.mkdir()
-    base_in, base_out = results[BASE.rel]
-    write_shared_formula(base_out, shared)
-    check = check_values(shared, snapshot(base_in), expected_values(BASE))
-    check.problems = compare(snapshot(base_in), snapshot(shared)) + check.problems
-    report(BASE, check)
-    checks[BASE.rel] = check
-    with zipfile.ZipFile(shared) as archive:
-        xml = archive.read(_sheet_part(archive, "Plan_ES")).decode("utf-8")
-    if xml.count('t="shared"') != 24 or check.problems:
-        raise BuildError("shared_formula: the shared formulas did not expand to the base")
-    no_cache = _save(NO_CACHE, work / "shared")
-    cached = load_workbook(no_cache, data_only=True)
-    count = 0
-    for (sheet, ref), value in snapshot(no_cache)["cells"].items():
-        if _is_formula(value):
-            count += 1
-            if cached[sheet][ref].value is not None:
-                raise BuildError(f"no_cache: {sheet}!{ref} has a cached value")
-    print(f"  {NO_CACHE.rel}: {count} formula cells, none with a cached value")
+    no_cache = None
+    if wanted(BASE) or wanted(NO_CACHE):
+        print("Step 3: " + " and ".join(b.dest.stem for b in (BASE, NO_CACHE) if wanted(b)))
+        shared.parent.mkdir()
+    if wanted(BASE):
+        base_in, base_out = results[BASE.rel]
+        write_shared_formula(base_out, shared)
+        check = check_values(shared, snapshot(base_in), expected_values(BASE))
+        check.problems = compare(snapshot(base_in), snapshot(shared)) + check.problems
+        report(BASE, check)
+        checks[BASE.rel] = check
+        with zipfile.ZipFile(shared) as archive:
+            xml = archive.read(_sheet_part(archive, "Plan_ES")).decode("utf-8")
+        if xml.count('t="shared"') != 24 or check.problems:
+            raise BuildError("shared_formula: the shared formulas did not expand to the base")
+    if wanted(NO_CACHE):
+        no_cache = _save(NO_CACHE, work / "shared")
+        cached = load_workbook(no_cache, data_only=True)
+        count = 0
+        for (sheet, ref), value in snapshot(no_cache)["cells"].items():
+            if _is_formula(value):
+                count += 1
+                if cached[sheet][ref].value is not None:
+                    raise BuildError(f"no_cache: {sheet}!{ref} has a cached value")
+        print(f"  {NO_CACHE.rel}: {count} formula cells, none with a cached value")
 
-    # 4. Install, then the ledger and the manifest.
-    print("Step 4: the files, the ledger and the manifest")
-    _install(clean_out, CLEAN.dest)
+    # 4. Install, then the ledger (full build only).
+    print("Step 4: the files" + (", the ledger and the manifest" if only is None
+                                 else " and the manifest's new entries"))
+    installed = []
+    if wanted(CLEAN):
+        _install(clean_out, CLEAN.dest)
+        installed.append(CLEAN)
     for book in books:
         if book is not BASE:
             _install(results[book.rel][1], book.dest)
-    _install(shared, BASE.dest)
-    _install(no_cache, NO_CACHE.dest)
-    write_ledger(LEDGER)
-    return {"checks": checks, "books": [CLEAN, *books, NO_CACHE]}
+            installed.append(book)
+    if wanted(BASE):
+        _install(shared, BASE.dest)
+        installed.append(BASE)
+    if no_cache is not None:
+        _install(no_cache, NO_CACHE.dest)
+        installed.append(NO_CACHE)
+    if only is None:
+        write_ledger(LEDGER)
+    return {"checks": checks, "books": installed, "edits": edits}
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build the sample workbooks (needs LibreOffice).")
     parser.add_argument("--timeout", type=float, default=TIMEOUT,
                         help="seconds allowed for one LibreOffice run (default %(default)s)")
     parser.add_argument("--keep", action="store_true", help="keep the work folder")
-    args = parser.parse_args(argv)
+    parser.add_argument("--only", nargs="+", metavar="NAME",
+                        help="build only these books (file names without .xlsx) and add them to "
+                             "the manifest; every other file and manifest entry stays as it is")
+    return parser.parse_args(argv)
+
+
+def _changed_files(manifest: dict) -> list[str]:
+    return [rel for rel, entry in manifest["files"].items()
+            if not (ROOT / rel).is_file() or file_sha256(ROOT / rel) != entry["sha256"]]
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
     started = time.monotonic()
     SOFFICE_SECONDS.clear()
     before = soffice_bin_pids()
@@ -1259,17 +1483,38 @@ def main(argv: Optional[list[str]] = None) -> int:
         if soffice is None:
             raise BuildError("LibreOffice was not found: set SOFFICE, put soffice on PATH, or "
                              f"install it at {DEFAULT_SOFFICE}")
+        only = select_books(args.only) if args.only else None
+        recorded = json.loads(MANIFEST.read_text(encoding="utf-8")) if only else None
+        if only and _changed_files(recorded):
+            raise BuildError("these files no longer match the manifest's hashes: "
+                             f"{', '.join(_changed_files(recorded))}")
         version = soffice_version(soffice)
         print(f"LibreOffice: {version}")
         print(f"Launcher: {soffice}")
-        built = build(soffice, version, work, args.timeout)
+        if only:
+            check_partial(recorded, only, version)
+            print(f"Partial build: {', '.join(b.dest.stem for b in only)}; the "
+                  f"{len(recorded['files'])} recorded files and their manifest entries stay as "
+                  "they are")
+        built = build(soffice, version, work, args.timeout, only)
         timing = {"total": round(time.monotonic() - started, 1),
                   "libreoffice": round(sum(SOFFICE_SECONDS), 1),
                   "libreoffice_runs": len(SOFFICE_SECONDS)}
-        write_manifest(version, {rel: c for rel, c in built["checks"].items()}, built["books"],
-                       timing)
-        print(f"Wrote {len(built['books'])} workbooks, {LEDGER.relative_to(ROOT).as_posix()} "
-              f"and {MANIFEST.relative_to(ROOT).as_posix()}")
+        if only:
+            manifest = partial_manifest(recorded, built["checks"], built["books"],
+                                        {b.rel: b.dest for b in built["books"]}, built["edits"])
+            MANIFEST.write_bytes(render_manifest(manifest).encode("utf-8"))
+            changed = _changed_files(recorded)
+            if changed:
+                raise BuildError(f"recorded files changed during the build: {', '.join(changed)}")
+            print(f"The {len(recorded['files'])} recorded files still match their hashes")
+            print(f"Wrote {len(built['books'])} workbooks and the manifest's new entries in "
+                  f"{MANIFEST.relative_to(ROOT).as_posix()}; the ledger was not written")
+        else:
+            write_manifest(version, {rel: c for rel, c in built["checks"].items()},
+                           built["books"], timing, built["edits"])
+            print(f"Wrote {len(built['books'])} workbooks, {LEDGER.relative_to(ROOT).as_posix()} "
+                  f"and {MANIFEST.relative_to(ROOT).as_posix()}")
         print(f"Time: {timing['total']} s in all, of which LibreOffice {timing['libreoffice']} s "
               f"in {timing['libreoffice_runs']} runs")
         status = 0

@@ -1,0 +1,7 @@
+version,entity,account,period,amount,unit
+Budget,ES,4000,2026-01,1490400,EUR
+Budget,ES,EBIT,2026-01,208842,EUR
+Budget,ES,VOL,2026-01,432000,units
+Budget,ES,HC,2026-01,64,FTE
+Forecast,ES,HC,2026-01,63.5,FTE
+Budget,AT,6100,2026-03,40099,EUR
