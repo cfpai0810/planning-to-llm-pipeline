@@ -4,9 +4,11 @@
 """
 Every model call in the project goes through call_model, which:
 
-- builds the request from config.py (MODEL, or COMPARISON_MODEL for the
-  Phase 4 run; EFFORT; MAX_TOKENS), with an optional JSON schema for
-  structured output (output_config.format, json_schema), which Phase 3 uses;
+- builds the request from config.py (MODEL with EFFORT, or COMPARISON_MODEL
+  with COMPARISON_EFFORT for the Phase 4 run; MAX_TOKENS), with an optional
+  JSON schema for structured output (output_config.format, json_schema),
+  which Phase 3 uses; an effort of None is left out of the request
+  entirely, for a model that does not take one;
 - sends text only (the formatted figures and names a caller puts in the
   prompt), never a file or bytes;
 - never sends temperature, top_p or top_k, which current models reject, and
@@ -26,7 +28,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from config import COMPARISON_MODEL, EFFORT, MAX_TOKENS, MODEL
+from config import COMPARISON_EFFORT, COMPARISON_MODEL, EFFORT, MAX_TOKENS, MODEL
 from src import errors
 
 SAMPLING = ("temperature", "top_p", "top_k")
@@ -41,7 +43,7 @@ class SamplingRefused(ValueError):
 class CallResult:
     """What a call came to: its text (and data, for a schema), or a failure code."""
     model: str
-    effort: str
+    effort: Optional[str]                  # None: the request carried no effort
     text: Optional[str] = None
     data: Optional[dict] = None
     code: Optional[str] = None
@@ -61,16 +63,26 @@ class CallResult:
 
 
 def build_request(*, system: str, user: str, schema: Optional[dict] = None,
-                  model: str = MODEL, effort: str = EFFORT) -> dict:
+                  model: str = MODEL, effort: Optional[str] = EFFORT) -> dict:
     """The keyword arguments for client.messages.create, from config and the caller's text."""
-    output_config: dict[str, Any] = {"effort": effort}
+    output_config: dict[str, Any] = {}
+    if effort is not None:
+        output_config["effort"] = effort
     if schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": schema}
-    return {"model": model, "max_tokens": MAX_TOKENS, "system": system,
-            "messages": [{"role": "user", "content": user}], "output_config": output_config}
+    request = {"model": model, "max_tokens": MAX_TOKENS, "system": system,
+               "messages": [{"role": "user", "content": user}]}
+    if output_config:
+        request["output_config"] = output_config
+    return request
 
 
-def _refuse(extra: dict, system: Any, user: Any, model: str, effort: str) -> None:
+def configured_effort(model: str) -> Optional[str]:
+    """The effort config.py sets for a model: COMPARISON_EFFORT or EFFORT. None means none."""
+    return COMPARISON_EFFORT if model == COMPARISON_MODEL else EFFORT
+
+
+def _refuse(extra: dict, system: Any, user: Any, model: str, effort: Optional[str]) -> None:
     sampling = [name for name in SAMPLING if name in extra]
     if sampling:
         raise SamplingRefused(
@@ -82,14 +94,22 @@ def _refuse(extra: dict, system: Any, user: Any, model: str, effort: str) -> Non
         raise TypeError("the model is sent text only: formatted figures and names, never a file")
     if model not in (MODEL, COMPARISON_MODEL):
         raise ValueError("the model is MODEL or COMPARISON_MODEL from config.py")
+    if effort is None:
+        return
     if effort not in EFFORTS:
         raise ValueError(f"effort is one of {', '.join(EFFORTS)}")
+    if configured_effort(model) is None:
+        raise ValueError("COMPARISON_EFFORT is None in config.py: this model is sent no effort")
 
 
 def call_model(client, *, system: str, user: str, schema: Optional[dict] = None,
-               model: str = MODEL, effort: str = EFFORT, **extra) -> CallResult:
-    """Call the model once and say what came of it. See the module's notes."""
+               model: str = MODEL, effort: Optional[str] = None, **extra) -> CallResult:
+    """
+    Call the model once and say what came of it. See the module's notes. With
+    no effort given, the model's own from config.py is used (configured_effort).
+    """
     _refuse(extra, system, user, model, effort)
+    effort = configured_effort(model) if effort is None else effort
     request = build_request(system=system, user=user, schema=schema, model=model, effort=effort)
     try:
         response = client.messages.create(**request)

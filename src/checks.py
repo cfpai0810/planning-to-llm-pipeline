@@ -7,22 +7,30 @@ template's sentences and the model's sentences pass through the same code.
 A flag is for the reviewer: a check never rewrites a sentence.
 
 The numeric check. Every number in the prose is read with its formatting
-(thousands separators, k, m and bn, per cent, points, brackets for a
-negative) and must match a computed figure at the precision it is written
-in: "£2.48m" matches 2,477,550, "£2,477,560" does not. A number is read
-against the figure whose name the clause gives ("the group margin was 30%"
-is flagged when 30% is another unit's margin), and against every figure of
-its kind when no name is given. An amount in another currency than the
-run's is flagged, whether written with a sign or a code (US$, EUR, 2.48m
-EUR). A bare year (1900 to 2099, no unit) is a date, not a figure (item 56).
+(thousands separators, k, m and bn in any case, per cent, points, brackets
+for a negative) and must match a computed figure at the precision it is
+written in: "£2.48m" and "£2.48M" match 2,477,550, "£2,477,560" does not. A
+lone b is billions only after a currency sign or code ("£2.4B"), and a
+number is always read whole, never as its first digits ("£2.48M" is never
+"£2"). A number is read against the figure whose name the clause gives
+("the group margin was 30%" is flagged when 30% is another unit's margin),
+and against every figure of its kind when no name is given. An amount in
+another currency than the run's is flagged, whether written with a sign or
+a code (US$, EUR, 2.48m EUR). A bare year (1900 to 2099, no unit) is a date,
+not a figure (item 56), and so is a day (1 to 31, no unit) beside a month
+name, full or three letters, before or after it: "15 June", "Jun 15"
+(Phase 0 verdict, finding 3). A month name is capitalised, so "15 may" is
+still a figure.
 
 The direction check (item 43). A word that gives a figure a direction must
 agree with what Python computed for it:
-- up or down (above, below, rose, fell, overspend, shortfall...) with the
-  sign of the figure's variance against the comparator named (budget, last
-  year, forecast), or the nearest one named before it in the sentence;
-- favourable or adverse with the variance's polarity (a cost below budget
-  is favourable);
+- up or down (above, below, rose, fell, climbed, slipped, went up...) with
+  the sign of the figure's variance against the comparator named (budget,
+  last year, forecast), or the nearest one named before it in the sentence;
+- favourable or adverse (beat, improved, missed, deteriorated...) with the
+  variance's polarity, so a cost below budget is favourable and "beat" it;
+  "stronger" and "weaker" are left out, being ambiguous for a cost (Phase 0
+  verdict, finding 2);
 - a profit or a loss with the sign of the figure itself;
 - offset language only where the sentence names one favourable and one
   adverse movement, so a cost overspend can never "offset" a shortfall.
@@ -75,11 +83,13 @@ class Flag:
 _CURRENCY_OF = {"£": "GBP", "€": "EUR", "$": "USD", "US$": "USD", "¥": "JPY",
                 "GBP": "GBP", "EUR": "EUR", "USD": "USD", "JPY": "JPY", "CHF": "CHF"}
 _CODES = "GBP|EUR|USD|JPY|CHF"
+# The number is an atomic group, so a token is never its first digits: when
+# what follows a number is not read, the number is not read either.
 _TOKEN = re.compile(
     r"(?<![\w.])"
     rf"(?:(?P<cur>US\$|£|€|\$|¥|(?:{_CODES})\s?))?"
-    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-    r"(?:(?P<scale>bn|[km])"
+    r"(?P<num>(?>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?))"
+    r"(?:(?P<scale>(?i:bn|k|m)|(?(cur)(?i:b)|(?!)))"
     r"|\s(?P<word>billion|million|thousand)"
     r"|\s?(?P<pct>%)"
     r"|\s(?P<pctword>per\s?cent|percent)"
@@ -87,7 +97,12 @@ _TOKEN = re.compile(
     rf"(?:\s?(?P<code>{_CODES}))?"
     r"(?![A-Za-z0-9])"
 )
-_EXPONENT = {"k": 3, "thousand": 3, "m": 6, "million": 6, "bn": 9, "billion": 9}
+_EXPONENT = {"k": 3, "thousand": 3, "m": 6, "million": 6, "b": 9, "bn": 9, "billion": 9}
+# A day beside a month name, before or after it: "15 June", "June 15", "15 Jun".
+_MONTHS = ("January|February|March|April|May|June|July|August|September|October|November|"
+           "December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec")
+_MONTH_AFTER = re.compile(rf"\s+(?:{_MONTHS})(?![A-Za-z])")
+_MONTH_BEFORE = re.compile(rf"(?<![A-Za-z])(?:{_MONTHS})\.?\s+\Z")
 
 _COMPARATORS = {
     "budget": ("budget", "budgeted", "plan", "planned"),
@@ -96,12 +111,20 @@ _COMPARATORS = {
 }
 _UP = ("higher than", "higher", "above", "ahead of", "increased", "increases", "increase",
        "rose", "risen", "rises", "rise", "grew", "grown", "grows", "growth", "exceeded",
-       "exceeds", "over budget", "overspend", "overspent")
+       "exceeds", "over budget", "overspend", "overspent",
+       "climbed", "surged", "jumped", "gained", "went up")
 _DOWN = ("lower than", "lower", "below", "behind", "decreased", "decreases", "decrease",
          "fell", "fallen", "falls", "fall", "dropped", "drop", "declined", "declines",
-         "decline", "shortfall", "short of", "under budget", "underspend", "underspent")
-_FAVOURABLE = ("favourable", "favourably", "favorable", "better than")
-_ADVERSE = ("adverse", "adversely", "unfavourable", "unfavorable", "worse than")
+         "decline", "shortfall", "short of", "under budget", "underspend", "underspent",
+         "slipped", "dipped", "plunged", "sank", "went down")
+# Read by polarity, so a cost that "beat" budget came in below it. "Stronger"
+# and "weaker" are left out: for a cost, either could mean either.
+_FAVOURABLE = ("favourable", "favourably", "favorable", "better than",
+               "beat", "beaten", "beating", "outperformed", "outperforming", "improved",
+               "improvement")
+_ADVERSE = ("adverse", "adversely", "unfavourable", "unfavorable", "worse than",
+            "missed", "miss", "underperformed", "underperforming", "deteriorated",
+            "deterioration", "worsened")
 _PROFIT = ("profitable", "profit")
 _LOSS = ("loss-making", "loss")
 _OFFSET = ("partially offset", "partly offset", "offsetting", "offsets", "offset",
@@ -221,7 +244,7 @@ def _matches(value: Decimal, places: int, exponent: int, figure: Decimal) -> boo
 
 
 def _unit_of(m: re.Match) -> tuple[Optional[str], int]:
-    scale = m.group("scale") or m.group("word")
+    scale = (m.group("scale") or m.group("word") or "").lower()
     if m.group("cur") or m.group("code") or scale:
         return MONEY, _EXPONENT.get(scale, 0)
     if m.group("pct") or m.group("pctword"):
@@ -231,11 +254,22 @@ def _unit_of(m: re.Match) -> tuple[Optional[str], int]:
     return None, 0
 
 
+def _bare(m: re.Match) -> bool:
+    """A number written with no currency, scale or unit."""
+    return not any(m.group(g) for g in ("cur", "code", "scale", "word", "pct", "pctword", "pts"))
+
+
 def _is_year(m: re.Match) -> bool:
     raw = m.group("num")
-    return (len(raw) == 4 and raw.isdigit() and 1900 <= int(raw) <= 2099
-            and not any(m.group(g) for g in ("cur", "code", "scale", "word", "pct", "pctword",
-                                             "pts")))
+    return len(raw) == 4 and raw.isdigit() and 1900 <= int(raw) <= 2099 and _bare(m)
+
+
+def _is_day(m: re.Match, text: str) -> bool:
+    """A bare 1 to 31 with a month name just after it ("15 June") or just before it ("June 15")."""
+    raw = m.group("num")
+    if not (raw.isdigit() and len(raw) <= 2 and 1 <= int(raw) <= 31 and _bare(m)):
+        return False
+    return bool(_MONTH_AFTER.match(text, m.end()) or _MONTH_BEFORE.search(text[:m.start()]))
 
 
 def numeric_flags(text: str, figures: Sequence[Figure], *, currency: str,
@@ -244,7 +278,7 @@ def numeric_flags(text: str, figures: Sequence[Figure], *, currency: str,
     prose = _Prose(text, figures, labels)
     flags: list[Flag] = []
     for m in _TOKEN.finditer(prose.masked):
-        if _is_year(m):
+        if _is_year(m) or _is_day(m, prose.masked):
             continue
         token = text[m.start():m.end()].strip()
         if token in [f.text for f in flags]:

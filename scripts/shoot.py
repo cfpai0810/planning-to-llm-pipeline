@@ -18,6 +18,15 @@ browser and records, for the reviewer:
   are right-aligned in tabular figures, and a table wider than the column
   scrolls inside its own frame, never the page (finding 3); the sidebar's
   current page takes its colour from a token (finding 5);
+- hanging brackets (Phase 0 verdict, finding 4): in the breaks table's
+  Difference column, the right edge of the digits of "(112,450)" and of
+  "34,180", each measured with a DOM Range over the digit characters only,
+  must be equal within DIGIT_EDGE_TOLERANCE_PX; the closing bracket's width
+  is measured too, in px and in em of the cell's font, which is where
+  theme.BRACKET_EM comes from;
+- tabular figures only where figures are (Phase 0 verdict, finding 5): the
+  computed font-variant-numeric of a figure cell and a KPI tile value
+  (tabular-nums), and of the table caption and a break's text (normal);
 - a failed model call on screen: a stand-in key typed into the gate, the
   gallery's call made through the real SDK to a local stand-in API that
   answers "model not found", and the plain line and code it shows;
@@ -74,6 +83,14 @@ FONT_TARGETS = {
     "h4": '[data-testid="stMarkdownContainer"] h4',
 }
 EXPECTED_FONT = {"h1": "Source Serif 4", "h4": "Source Serif 4"}
+# Phase 0 verdict, finding 4: the digits of a negative and a positive figure
+# end level. The browser lays text out in 1/64 px steps, so the tolerance is
+# a few of those steps and far below one pixel.
+DIGIT_EDGE_TOLERANCE_PX = 0.05
+# Phase 0 verdict, finding 5: the computed font-variant-numeric each kind of
+# element must have.
+EXPECTED_NUMERALS = {"figure cell": "tabular-nums", "KPI tile value": "tabular-nums",
+                     "table caption": "normal", "break text": "normal"}
 
 MEASURE = """(targets) => {
   const de = document.documentElement;
@@ -115,6 +132,48 @@ MEASURE = """(targets) => {
                            return a ? getComputedStyle(a).backgroundColor : null; })(),
     hash_fits: (() => { const h = document.querySelector('.p7-hash');
                         return h ? h.scrollWidth <= h.clientWidth + 1 : null; })(),
+    // Phase 0 verdict, finding 4: in the first breaks table's Difference column, the first
+    // negative and the first non-negative figure. Each right edge comes from a
+    // DOM Range over the digit characters only, never the brackets.
+    brackets: (() => {
+      const table = document.querySelector('.p7-table');
+      if (!table) return null;
+      const col = [...table.querySelectorAll('thead th')]
+        .findIndex(th => th.textContent.trim() === 'Difference');
+      const cells = [...table.querySelectorAll('tbody tr')].map(tr => tr.children[col]);
+      const neg = cells.find(c => c.textContent.trim().startsWith('('));
+      const pos = cells.find(c => !c.textContent.trim().startsWith('('));
+      const range = (node, start, end) => { const r = document.createRange();
+                                            r.setStart(node, start); r.setEnd(node, end);
+                                            return r.getBoundingClientRect(); };
+      const digits = (cell) => { const node = cell.firstChild, text = node.textContent;
+                                 const at = [...text].map((ch, i) => /\\d/.test(ch) ? i : -1).filter(i => i >= 0);
+                                 return range(node, at[0], at[at.length - 1] + 1).right; };
+      const negText = neg.firstChild.textContent;
+      const close = range(neg.firstChild, negText.lastIndexOf(')'), negText.lastIndexOf(')') + 1);
+      const s = getComputedStyle(neg);
+      const contentRight = neg.getBoundingClientRect().right - parseFloat(s.paddingRight)
+                           - parseFloat(s.borderRightWidth);
+      return {negative: neg.textContent.trim(), positive: pos.textContent.trim(),
+              negative_digits_right: digits(neg), positive_digits_right: digits(pos),
+              bracket_px: close.width, bracket_hang_px: contentRight - digits(neg),
+              font_size_px: parseFloat(s.fontSize), font: s.fontFamily.split(',')[0] + ' '
+                + s.fontWeight + ' ' + s.fontVariantNumeric,
+              padding_right: {negative: s.paddingRight, positive: getComputedStyle(pos).paddingRight}};
+    })(),
+    // Phase 0 verdict, finding 5: tabular figures on figures only.
+    numerals: (() => {
+      const table = document.querySelector('.p7-table');
+      const tile = document.querySelector('.p7-tile-value');
+      if (!table || !tile) return null;
+      const col = [...table.querySelectorAll('thead th')]
+        .findIndex(th => th.textContent.trim() === 'Break');
+      const fvn = el => el ? getComputedStyle(el).fontVariantNumeric : null;
+      return {'figure cell': fvn(table.querySelector('tbody td.num')),
+              'KPI tile value': fvn(tile),
+              'table caption': fvn(table.querySelector('caption')),
+              'break text': fvn(table.querySelector('tbody tr').children[col])};
+    })(),
     fonts,
     // The weights of each family that actually loaded. document.fonts.check() is
     // not used: the CSS and Streamlit's config both declare the fonts, and check()
@@ -449,13 +508,41 @@ def _report(results: dict, widths: list[int]) -> bool:
               f"{frame_['overflow']}, edge {frame_['border']}; current page "
               f"{g['current_page']} (INFO_TINT {current}); hash fits {g['hash_fits']}")
 
+    print(f"\nHanging brackets in the breaks table (Phase 0 verdict, finding 4): the right edge "
+          f"of the digits, tolerance {DIGIT_EDGE_TOLERANCE_PX} px")
+    for w in widths:
+        b = gallery[w]["brackets"]
+        gap = abs(b["negative_digits_right"] - b["positive_digits_right"])
+        level = gap <= DIGIT_EDGE_TOLERANCE_PX
+        ok &= level
+        print(f"  {w:>5} px: {b['negative']} digits end at {b['negative_digits_right']:.4f}, "
+              f"{b['positive']} at {b['positive_digits_right']:.4f}; difference {gap:.4f} px"
+              f"{'' if level else '  NOT LEVEL'}")
+        print(f"          closing bracket {b['bracket_px']:.4f} px wide, hangs "
+              f"{b['bracket_hang_px']:.4f} px past the digits; "
+              f"{b['bracket_px'] / b['font_size_px']:.4f} em of {b['font']} at "
+              f"{b['font_size_px']:g} px; padding-right negative {b['padding_right']['negative']}, "
+              f"non-negative {b['padding_right']['positive']}")
+
+    print("\nTabular figures only where figures are (Phase 0 verdict, finding 5): computed "
+          "font-variant-numeric")
+    for w in widths:
+        n = gallery[w]["numerals"]
+        ok &= n == EXPECTED_NUMERALS
+        print(f"  {w:>5} px: " + "; ".join(
+            f"{kind} {n[kind]}{'' if n[kind] == want else ' (WRONG, want ' + want + ')'}"
+            for kind, want in EXPECTED_NUMERALS.items()))
+
     print("\nBanner h1 on every page")
+    every_h1 = True
     for r in results["pages"]:
         good = (r["fonts"]["h1"] or "").strip("'\"").startswith("Source Serif 4")
-        ok &= good
+        every_h1 &= good
         if not good:
             print(f"  {r['page']} at {r['width']}: {r['fonts']['h1']}  WRONG")
-    print("  every page: Source Serif 4" if ok else "")
+    ok &= every_h1
+    if every_h1:
+        print("  every page: Source Serif 4")
 
     print("\nReading width at 1280 px, one session")
     for step in results["layout"]:

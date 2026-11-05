@@ -16,18 +16,16 @@ import ast
 import json
 import logging
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import anthropic
 import pytest
 from streamlit.testing.v1 import AppTest
 
-import config
 from src import errors
 from streamlit_app.lib import claude_client, key_gate, nav, stand_in
-from tests.fakes import FakeClient, not_found, status_error
+from tests.fakes import (CREDIT_BODY, CREDIT_MESSAGE, FakeClient, StandInAPI, not_found,
+                         status_error)
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "streamlit_app"
@@ -86,38 +84,19 @@ def fake_clients(monkeypatch):
     return built
 
 
-class _StandInAPI(BaseHTTPRequestHandler):
-    """A local stand-in for the API: every call is answered 404, model not found."""
-    received: list = []
-
-    def do_POST(self):
-        body = self.rfile.read(int(self.headers.get("content-length", 0)))
-        type(self).received.append({"path": self.path,
-                                    "headers": {k.lower(): v for k, v in self.headers.items()},
-                                    "body": json.loads(body)})
-        reply = json.dumps({"type": "error", "error": {
-            "type": "not_found_error", "message": f"model: {config.MODEL}"}}).encode()
-        self.send_response(404)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(reply)))
-        self.end_headers()
-        self.wfile.write(reply)
-
-    def log_message(self, *args):
-        pass
+@pytest.fixture
+def stand_in_server(monkeypatch):
+    """The local stand-in API (tests/fakes.py), 404 model not found unless a test says otherwise."""
+    with StandInAPI() as api:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", api.url)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", SERVER_KEY)
+        yield api
 
 
 @pytest.fixture
-def stand_in_api(monkeypatch):
-    _StandInAPI.received = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _StandInAPI)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", f"http://127.0.0.1:{server.server_port}")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", SERVER_KEY)
-    yield _StandInAPI.received
-    server.shutdown()
-    server.server_close()
+def stand_in_api(stand_in_server):
+    """The requests the stand-in API received."""
+    return stand_in_server.received
 
 
 @pytest.fixture
@@ -214,6 +193,24 @@ class TestBrief41AFailedCallIsVisible:
         at.switch_page(GALLERY).run()
         assert at.button(key="gallery_call").disabled
         assert not at.warning
+
+
+class TestFinding1ABillingProblemOnScreen:
+    """Phase 0 verdict, finding 1: a visitor with no credit is told so, not blamed on the app."""
+
+    @pytest.mark.parametrize("status, body", [(400, CREDIT_BODY), (402, CREDIT_BODY)],
+                             ids=["400 credit balance", "402"])
+    def test_a_billing_problem_shows_its_line_and_code(self, gallery, stand_in_server,
+                                                        status, body):
+        # The real SDK against the local stand-in, answering as the API does.
+        stand_in_server.status, stand_in_server.body = status, body
+        at = _call_on_gallery(_with_key(_home()))
+        assert len(stand_in_server.received) == 1
+        assert [w.value for w in at.warning] == [errors.line("billing_problem")]
+        assert at.warning[0].value.endswith("Code: billing_problem")
+        # The API's own words are read, never shown.
+        assert CREDIT_MESSAGE not in _rendered(at) and "credit balance" not in _rendered(at)
+        assert "BadRequestError" not in _rendered(at) and "APIStatusError" not in _rendered(at)
 
 
 class TestEveryKeySentence:

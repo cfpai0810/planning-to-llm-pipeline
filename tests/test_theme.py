@@ -155,6 +155,23 @@ class TestCss:
         assert any(".p7-table td.num" in s and ".p7-table th.num" in s
                    and "text-align: right;" in b and "tabular-nums" in b for s, b in rules)
 
+    def test_finding4_non_negative_figure_cells_are_padded_by_the_closing_bracket(self):
+        # The cell's own right padding plus the bracket's width, measured in the
+        # browser (scripts/shoot.py prints it), in em so it follows the font size.
+        rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
+        cell_right = re.search(r"padding: \d+px (\d+)px;",
+                               rules[(".p7-table th", ".p7-table td")]).group(1)
+        assert 0 < theme.BRACKET_EM < 1
+        assert (f"padding-right: calc({cell_right}px + {theme.BRACKET_EM}em);"
+                in rules[(".p7-table td.num:not(.neg)",)])
+
+    def test_finding5_tabular_figures_only_where_figures_are(self):
+        # Figure cells, tile values and evaluation figures; never a whole table,
+        # so a caption and a break's text keep ordinary figures.
+        figures = {".p7-table td.num", ".p7-table th.num", ".p7-tile-value", ".p7-eval-figures"}
+        tabular = [s for s, b in _rules(theme.inject_css()) if "tabular-nums" in b]
+        assert tabular and all(set(s) <= figures for s in tabular), tabular
+
     def test_a_wide_table_scrolls_inside_a_visible_edge(self):
         rules = {tuple(s): b for s, b in _rules(theme.inject_css())}
         wrap = rules[(".p7-table-wrap",)]

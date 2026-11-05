@@ -22,9 +22,13 @@ REPO_URL = "https://github.com/cfpai0810/planning-to-llm-pipeline"
 # src/model_call.py is the only code that calls the model, and it reads this
 # block; it never sends temperature, top_p or top_k, which current models
 # reject. EFFORT is a starting value: Phase 4 sweeps it on the golden set.
-# COMPARISON_MODEL is used only by the Phase 4 comparison run.
+# COMPARISON_MODEL is used only by the Phase 4 comparison run, with its own
+# COMPARISON_EFFORT, equal to EFFORT for now. Whether that model accepts the
+# effort setting is to be checked by the owner; if it does not, set
+# COMPARISON_EFFORT to None and its requests carry no effort at all.
 
 MODEL = "claude-sonnet-5-5"
 COMPARISON_MODEL = "claude-haiku-5-5"
 EFFORT = "medium"
+COMPARISON_EFFORT = EFFORT
 MAX_TOKENS = 16000

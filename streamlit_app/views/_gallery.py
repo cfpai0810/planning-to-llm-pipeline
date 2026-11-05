@@ -88,7 +88,7 @@ acknowledged = theme.acknowledge_form("Revenue, actuals below plan", key="ack_ga
 if acknowledged:
     theme.show(theme.notice(
         "info", "Stand-in",
-        f"Stand-in data: nothing is recorded. {acknowledged['name'] or 'No name'} chose "
+        f"Stand-in data: nothing is recorded. {acknowledged['name']} chose "
         f"{acknowledged['action']}. Note: {acknowledged['note'] or 'none'}."))
 
 st.markdown("#### Evaluation results")

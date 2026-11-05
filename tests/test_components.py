@@ -5,7 +5,9 @@ evaluation_result, empty_state, and kpi_row (finding 2: tiles in a row are
 one height). Every dynamic string goes through the kit's one escaping path.
 The breaks table is the kit's own (finding 3): right-aligned tabular
 figures, brackets for negatives, column headers with scope, and its own
-scroll container, never the page's.
+scroll container, never the page's. Phase 0 verdict, finding 4: a negative
+figure cell is marked, so the others are padded by its closing bracket's
+width and the digits of every row end level (scripts/shoot.py measures it).
 """
 
 import ast
@@ -99,12 +101,17 @@ class TestBreaksTable:
         assert [h for _, h in headers] == ["Severity", "Member", "Plan", "Actual", "Difference",
                                            "Break", "Status"]
         assert [bool(c) for c, _ in headers] == [False, False, True, True, True, False, False]
-        assert out.count('<td class="num">') == 3 * len(ROWS)
+        assert len(re.findall(r'<td class="num(?: neg)?">', out)) == 3 * len(ROWS)
 
-    def test_negatives_are_in_brackets(self):
+    def test_negatives_are_in_brackets_and_marked_so_their_bracket_hangs(self):
         out = theme.breaks_table(ROWS, caption="Figures in GBP")
-        assert '<td class="num">(112,450)</td>' in out
-        assert '<td class="num">34,180</td>' in out and '<td class="num">(18,000)</td>' in out
+        assert '<td class="num neg">(112,450)</td>' in out
+        assert '<td class="num">34,180</td>' in out and '<td class="num neg">(18,000)</td>' in out
+        # Every bracketed figure is marked, and only those.
+        cells = re.findall(r'<td class="(num(?: neg)?)">([^<]*)</td>', out)
+        assert cells and all((c == "num neg") == v.startswith("(") for c, v in cells)
+        zero = theme.breaks_table([BreakRow("low", "Flat", 5, 5, "No change")], caption="c")
+        assert '<td class="num">0</td>' in zero and "neg" not in zero
 
     def test_severity_and_status_are_labelled_chips(self):
         out = theme.breaks_table(ROWS, caption="Figures in GBP")
@@ -202,18 +209,56 @@ class TestEscapingInEveryNewComponent:
         assert callers == {"_element"}
 
 
+ACK_NOTICE = "Enter your name and choose an action."
+RECORDED = "Stand-in data: nothing is recorded"
+
+
+def _gallery(monkeypatch) -> AppTest:
+    monkeypatch.setenv("P7_GALLERY", "1")
+    at = AppTest.from_file(str(APP / "Home.py"), default_timeout=60).run()
+    return at.switch_page("views/_gallery.py").run()
+
+
+def _shown(at: AppTest) -> str:
+    return "\n".join(e.proto.body for e in at.get("html"))
+
+
 class TestAcknowledgeForm:
+    """The phase 0 verdict: no default action, and no submission without a name and an action."""
+
+    def test_nothing_is_chosen_on_first_render(self, monkeypatch):
+        at = _gallery(monkeypatch)
+        radio = at.radio(key="ack_gallery_action")
+        assert radio.options == ["Accepted", "Dismissed", "Investigated"]
+        assert radio.index is None and radio.value is None
+        assert ACK_NOTICE not in [w.value for w in at.warning]
+
+    def test_no_action_shows_the_notice_and_returns_nothing(self, monkeypatch):
+        at = _gallery(monkeypatch)
+        at.text_input(key="ack_gallery_name").input("Robin Sample").run()
+        at.button(key="ack_gallery_submit").click().run()
+        assert not at.exception, at.exception
+        assert [w.value for w in at.warning] == [ACK_NOTICE]
+        assert RECORDED not in _shown(at)
+
+    @pytest.mark.parametrize("name", ["", "   "], ids=["empty", "spaces only"])
+    def test_a_blank_name_shows_the_notice_and_returns_nothing(self, monkeypatch, name):
+        at = _gallery(monkeypatch)
+        at.text_input(key="ack_gallery_name").input(name).run()
+        at.radio(key="ack_gallery_action").set_value("Accepted").run()
+        at.button(key="ack_gallery_submit").click().run()
+        assert not at.exception, at.exception
+        assert [w.value for w in at.warning] == [ACK_NOTICE]
+        assert RECORDED not in _shown(at)
+
     def test_name_action_and_note_then_a_stand_in_confirmation(self, monkeypatch):
-        monkeypatch.setenv("P7_GALLERY", "1")
-        at = AppTest.from_file(str(APP / "Home.py"), default_timeout=60).run()
-        at.switch_page("views/_gallery.py").run()
+        at = _gallery(monkeypatch)
         at.text_input(key="ack_gallery_name").input("Robin Sample").run()
         at.radio(key="ack_gallery_action").set_value("Investigated").run()
         at.text_area(key="ack_gallery_note").input(POISON).run()
-        assert at.radio(key="ack_gallery_action").options == ["Accepted", "Dismissed",
-                                                             "Investigated"]
         at.button(key="ack_gallery_submit").click().run()
         assert not at.exception, at.exception
-        shown = "\n".join(e.proto.body for e in at.get("html"))
-        assert "Stand-in data: nothing is recorded" in shown
+        shown = _shown(at)
+        assert RECORDED in shown
         assert "Robin Sample" in shown and "Investigated" in shown and ESCAPED in shown
+        assert ACK_NOTICE not in [w.value for w in at.warning]

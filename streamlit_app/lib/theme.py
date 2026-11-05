@@ -125,6 +125,10 @@ TILE_VALUE_REM = 1.75
 CODE_PX = 14
 TILE_MIN_PX = 160            # a KPI tile is at least this wide before the row wraps
 TABLE_MIN_PX = 720           # a breaks table scrolls inside its frame below this width
+# The closing bracket's width in the table's font (Inter 400, tabular figures),
+# measured in the browser by scripts/shoot.py: 5.875 px at 15 px, so 0.3917 em.
+# In em, it follows the cell's font size. Measure again if the font changes.
+BRACKET_EM = 0.3917
 
 SPACING = (4, 8, 12, 16, 24, 32, 48)   # the only spacing values
 CARD_PAD, CARD_PAD_WIDE = 16, 24
@@ -175,11 +179,11 @@ h1, h2, h3, h4, h5, h6 {{
   opacity: 1;
 }}
 
-/* Tables: 15 px, tabular figures, so numbers line up. Streamlit fades st.table
+/* Tables: 15 px. Tabular figures are set on figure cells only, below, so a
+   caption and a break's text keep ordinary figures. Streamlit fades st.table
    headers to 60 per cent ink (4.0 on paper); they stay in ink. */
 table, table th, table td {{
   font-size: {TABLE_PX}px !important;
-  font-variant-numeric: tabular-nums;
 }}
 [data-testid="stTable"] th, [data-testid="stTable"] th p {{ color: {INK}; }}
 
@@ -303,6 +307,10 @@ table, table th, table td {{
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }}
+/* Hanging brackets: a non-negative figure is padded by the closing bracket's
+   width, so a negative's bracket hangs in that space and every figure's
+   digits end level (scripts/shoot.py measures both). */
+.p7-table td.num:not(.neg) {{ padding-right: calc(12px + {BRACKET_EM}em); }}
 .p7-table tbody tr:last-child td {{ border-bottom: none; }}
 
 /* Provenance: every field in full; the SQL in a code block, the hash on one
@@ -505,6 +513,7 @@ SEVERITIES = {"high": ("adverse", "High"), "medium": ("warning", "Medium"),
 BREAK_STATUSES = {"open": ("warning", "Open"), "accepted": ("info", "Accepted"),
                   "dismissed": ("neutral", "Dismissed"), "investigated": ("info", "Investigated")}
 ACTIONS = ("Accepted", "Dismissed", "Investigated")
+ACKNOWLEDGE_NOTICE = "Enter your name and choose an action."
 _BREAK_COLUMNS = (("Severity", False), ("Member", False), ("Plan", True), ("Actual", True),
                   ("Difference", True), ("Break", False), ("Status", False))
 
@@ -524,11 +533,19 @@ class BreakRow:
         return Decimal(str(self.actual)) - Decimal(str(self.plan))
 
 
+def _figure_cell(value) -> str:
+    """A figure's cell: right-aligned digits; a negative's, in brackets, is marked for its hang."""
+    shown = format_amount(value)
+    return _element("td", "num neg" if shown.startswith("(") else "num", shown)
+
+
 def breaks_table(rows: Sequence[BreakRow], caption: str) -> str:
     """
     The breaks as a table of the kit's own: headers with scope, figures right-
     aligned in tabular figures with negatives in brackets, and a frame that
     scrolls sideways inside itself when the table is wider than the column.
+    A negative figure's cell is marked "neg", so its closing bracket hangs
+    and its digits end level with the others'.
     """
     head = _element("thead", "", _element("tr", "", *(
         _element("th", "num" if numeric else "", name, attrs=(("scope", "col"),))
@@ -542,7 +559,7 @@ def breaks_table(rows: Sequence[BreakRow], caption: str) -> str:
             "tr", "",
             _element("td", "", status_chip(*SEVERITIES[r.severity])),
             _element("td", "", r.member),
-            *(_element("td", "num", format_amount(v)) for v in (r.plan, r.actual, r.difference)),
+            *(_figure_cell(v) for v in (r.plan, r.actual, r.difference)),
             _element("td", "", r.text),
             _element("td", "", status_chip(*BREAK_STATUSES[r.status]))))
     table = _element("table", "p7-table", _element("caption", "", caption), head,
@@ -554,16 +571,23 @@ def breaks_table(rows: Sequence[BreakRow], caption: str) -> str:
 def acknowledge_form(break_label: str, key: str) -> Optional[dict]:
     """
     The acknowledgement of one break: the person's name, their action and a
-    note. Visual only in Phase 0: it returns what was entered, or None until
-    it is submitted, and records nothing (the logic is Phase 1).
+    note. No action is chosen until the person chooses one. It returns what
+    was entered, with the name trimmed, or None: until it is submitted, and
+    when it is submitted with no action or a blank name, which shows a plain
+    notice instead. It records nothing.
     """
     with st.form(key):
         show(_element("p", "p7-card-title", f"Acknowledge: {break_label}"))
         name = st.text_input("Your name", key=f"{key}_name")
-        action = st.radio("Action", ACTIONS, key=f"{key}_action", horizontal=True)
+        action = st.radio("Action", ACTIONS, key=f"{key}_action", horizontal=True, index=None)
         note = st.text_area("Note", key=f"{key}_note")
         submitted = st.form_submit_button("Record acknowledgement", key=f"{key}_submit")
-    return {"name": name, "action": action, "note": note} if submitted else None
+    if not submitted:
+        return None
+    if action is None or not name.strip():
+        st.warning(ACKNOWLEDGE_NOTICE)
+        return None
+    return {"name": name.strip(), "action": action, "note": note}
 
 
 # -- Evaluation and empty states ---------------------------------------------------------

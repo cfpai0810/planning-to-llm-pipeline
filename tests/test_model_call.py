@@ -4,6 +4,9 @@ It builds the request from config.py, sends text only, never sends
 temperature, top_p or top_k (current models reject them) and refuses a
 caller who asks, maps every API failure to its code, and returns a typed
 result that records the model and the effort for the audit.
+
+Phase 0 verdict, finding 7: the comparison model shared EFFORT. It now has
+COMPARISON_EFFORT, and None leaves effort out of its request entirely.
 """
 
 import io
@@ -59,6 +62,53 @@ class TestTheRequest:
         with pytest.raises(ValueError):
             _call(client, effort="extreme")
         assert len(client.calls) == 1
+
+
+class TestFinding7ComparisonEffort:
+    def test_the_comparison_effort_is_configured_and_equals_effort_for_now(self):
+        assert config.COMPARISON_EFFORT == config.EFFORT
+        assert config.COMPARISON_EFFORT in model_call.EFFORTS
+
+    def test_build_request_with_no_effort_leaves_the_key_out_entirely(self):
+        request = model_call.build_request(system="s", user="u", effort=None)
+        assert "output_config" not in request
+        assert "effort" not in json.dumps(request)
+
+    def test_build_request_with_no_effort_keeps_the_schema(self):
+        request = model_call.build_request(system="s", user="u", schema=SCHEMA, effort=None)
+        assert request["output_config"] == {"format": {"type": "json_schema", "schema": SCHEMA}}
+        assert "effort" not in json.dumps(request)
+
+    def test_the_comparison_model_uses_the_comparison_effort(self, monkeypatch):
+        # A value unlike EFFORT, so the test can tell which one was sent.
+        monkeypatch.setattr(model_call, "COMPARISON_EFFORT", "low")
+        client = FakeClient()
+        compared = _call(client, model=config.COMPARISON_MODEL)
+        main = _call(client)
+        assert client.calls[0]["output_config"] == {"effort": "low"}
+        assert client.calls[1]["output_config"] == {"effort": config.EFFORT}
+        assert (compared.effort, main.effort) == ("low", config.EFFORT)
+
+    def test_none_omits_effort_from_the_comparison_run_only(self, monkeypatch):
+        monkeypatch.setattr(model_call, "COMPARISON_EFFORT", None)
+        client = FakeClient(reply=json.dumps({"answer": "ready"}))
+        compared = _call(client, model=config.COMPARISON_MODEL)
+        structured = _call(client, model=config.COMPARISON_MODEL, schema=SCHEMA)
+        main = _call(client)
+        assert "output_config" not in client.calls[0]
+        assert "effort" not in json.dumps(client.calls[0]) + json.dumps(client.calls[1])
+        assert client.calls[1]["output_config"] == {
+            "format": {"type": "json_schema", "schema": SCHEMA}}
+        assert client.calls[2]["output_config"] == {"effort": config.EFFORT}
+        assert compared.ok and structured.data == {"answer": "ready"} and main.ok
+        assert compared.audit_record()["effort"] is None
+
+    def test_an_effort_for_a_comparison_model_that_takes_none_is_refused(self, monkeypatch):
+        monkeypatch.setattr(model_call, "COMPARISON_EFFORT", None)
+        client = FakeClient()
+        with pytest.raises(ValueError, match="COMPARISON_EFFORT"):
+            _call(client, model=config.COMPARISON_MODEL, effort="high")
+        assert client.calls == []
 
 
 class TestSampling:

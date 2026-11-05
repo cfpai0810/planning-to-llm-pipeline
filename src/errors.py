@@ -13,6 +13,11 @@ error that other code wrapped, or one raised while handling another, still
 maps. An exception that is not the API's has no code: it is a fault in this
 code and is raised as it is.
 
+An account with no credit is billing_problem, not a fault in this app
+(Phase 0 verdict, finding 1): a 402, and a 400 whose message names the
+credit balance, in any case. The message is read from the error's body, or
+its text when the body has none, and never shown.
+
 Phase 3 adds two outcomes with fixed wording, for a refusal and for a reply
 cut off at max_tokens. They are outcomes of a call that succeeded, so they
 join CODES and MESSAGES there; nothing here needs to change shape.
@@ -33,9 +38,10 @@ BAD_REQUEST = "bad_request"
 RATE_LIMITED = "rate_limited"
 SERVICE_UNAVAILABLE = "service_unavailable"
 UNREADABLE_REPLY = "unreadable_reply"
+BILLING_PROBLEM = "billing_problem"
 
 CODES = (KEY_REJECTED, KEY_FORBIDDEN, MODEL_NOT_FOUND, BAD_REQUEST, RATE_LIMITED,
-         SERVICE_UNAVAILABLE, UNREADABLE_REPLY)
+         SERVICE_UNAVAILABLE, UNREADABLE_REPLY, BILLING_PROBLEM)
 
 # The series wording (P1 to P6), one line per code.
 MESSAGES = {
@@ -45,13 +51,16 @@ MESSAGES = {
                    "your Anthropic account.",
     MODEL_NOT_FOUND: "The model {model} could not be found. It may have been retired. Please "
                      "report this on the project's GitHub page.",
-    BAD_REQUEST: "Anthropic rejected the request. This is a fault in this app, not in your "
-                 "key. Please report it.",
+    BAD_REQUEST: "Anthropic rejected the request. This is most often a fault in this app, so "
+                 "please report it. If your Anthropic account has run out of credit, that can "
+                 "cause it too.",
     RATE_LIMITED: "Anthropic is limiting requests on this key. Wait a minute and try again, "
                   "or check your plan limits.",
     SERVICE_UNAVAILABLE: "Anthropic could not be reached or is busy. This is usually "
                          "temporary, so try again in a moment.",
     UNREADABLE_REPLY: "The model replied, but not in the form this app asked for.",
+    BILLING_PROBLEM: "Anthropic reports a problem with billing on this account. Check your plan "
+                     "and credits in your Anthropic account.",
 }
 
 _BY_CLASS = (
@@ -64,6 +73,17 @@ _BY_CLASS = (
 )
 # Statuses the SDK retries before giving up: a lock or a timeout, not a fault.
 _TRANSIENT = {408, 409}
+_PAYMENT_REQUIRED = 402
+_CREDIT = "credit balance"
+
+
+def _names_the_credit_balance(exc: anthropic.APIStatusError) -> bool:
+    """Whether the API's own message names the credit balance. Read here, never shown."""
+    body = exc.body
+    error = body.get("error") if isinstance(body, dict) else None
+    said = (error.get("message") if isinstance(error, dict) else None,
+            body if isinstance(body, str) else None, exc.message)
+    return any(isinstance(text, str) and _CREDIT in text.casefold() for text in said)
 
 
 def _code_of(exc: BaseException) -> Optional[str]:
@@ -72,6 +92,8 @@ def _code_of(exc: BaseException) -> Optional[str]:
             return code
     if isinstance(exc, anthropic.APIStatusError):
         status = exc.status_code
+        if status == _PAYMENT_REQUIRED or (status == 400 and _names_the_credit_balance(exc)):
+            return BILLING_PROBLEM
         return SERVICE_UNAVAILABLE if status >= 500 or status in _TRANSIENT else BAD_REQUEST
     return None
 

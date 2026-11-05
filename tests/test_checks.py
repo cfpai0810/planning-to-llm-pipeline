@@ -10,6 +10,12 @@ Item 56 (the numeric check, as P6 left it): amounts in US$ or EUR were not
 read as money in another currency, and a bare year was flagged as a figure.
 Item 43: a flipped direction ("above" written for below, a loss written as a
 profit) raised no flag; P6 checked only offset language.
+
+Phase 0 verdict, finding 2: the direction words missed beat, missed,
+improved, deteriorated, outperformed and their kin. Each new word has a
+sentence it must flag and one it must pass, on the figures below.
+Finding 3: "On 15 June" flagged 15, and "£2.48M" flagged £2. A day beside a
+month name is a date, and scale letters are read in any case.
 """
 
 from decimal import Decimal as D
@@ -193,6 +199,150 @@ class TestDirectionCheck:
         # "profit" inside "Gross profit" is the line's name, not a claim.
         figures = MONTH + [Figure("Gross profit", D("866370"), MONEY)]
         assert direction_flags("Gross profit was £866k.", figures) == []
+
+
+class TestFinding3DatesAndCapitalScales:
+    @pytest.mark.parametrize("text", [
+        "On 15 June, revenue was £2.48m.",
+        "On June 15, revenue was £2.48m.",
+        "On 15th June, revenue was £2.48m.",
+        "On June 15th, revenue was £2.48m.",
+        "On 15 Jun, revenue was £2.48m.",
+        "On Jun 15, revenue was £2.48m.",
+        "Revenue on 15 June was £2.48m.",
+        "On 1 September 2026, revenue was £2.48m.",
+        "On Sept 30, revenue was £2.48m.",
+        "Between 3 May and 30 Jun, revenue was £2.48m.",
+    ], ids=["15 June", "June 15", "15th June", "June 15th", "15 Jun", "Jun 15", "on 15 June",
+            "1 September 2026", "Sept 30", "3 May and 30 Jun"])
+    def test_a_day_beside_a_month_name_is_a_date_not_a_figure(self, text):
+        assert numeric_flags(text, MONTH, currency="GBP") == []
+
+    @pytest.mark.parametrize("text, flagged", [
+        ("In June, 15 stores opened.", "15"),            # a comma between: not beside the month
+        ("Revenue rose 15% June on June.", "15%"),        # a figure with a unit is never a day
+        ("Revenue rose 2.5 June on June.", "2.5"),        # nor is a decimal
+        ("On 32 June, revenue was £2.48m.", "32"),        # no month has a 32nd day
+        ("A headcount of 15 may follow.", "15"),          # "may", not "May": not a month name
+        ("In June 2026, revenue was £3.1m.", "£3.1m"),    # a year, then an amount still read
+    ], ids=["after a comma", "with a unit", "a decimal", "32", "lower-case may", "after a year"])
+    def test_a_figure_near_a_month_name_that_is_not_a_day_still_counts(self, text, flagged):
+        assert _texts(numeric_flags(text, MONTH, currency="GBP")) == [flagged]
+
+    @pytest.mark.parametrize("text", [
+        "Revenue was £2.48M.", "Revenue was £2,478K.", "Revenue was 2.48M.",
+        "Revenue was GBP 2.48M.", "EBIT was a loss of £8.6K.", "EBIT was a loss of 8.6K.",
+        "Revenue was £0.0025BN.", "Revenue was £0.0025Bn.", "Revenue was £0.0025bn.",
+        "Revenue was £0.0025B.", "Revenue was GBP 0.0025B.",
+    ], ids=["sign 2.48M", "sign 2,478K", "no sign 2.48M", "code 2.48M", "sign 8.6K", "no sign 8.6K",
+            "sign 0.0025BN", "sign 0.0025Bn", "sign 0.0025bn", "sign 0.0025B", "code 0.0025B"])
+    def test_scale_letters_in_any_case_after_a_money_amount(self, text):
+        # K, M and Bn in any case; a lone B only after a currency sign or code.
+        assert numeric_flags(text, MONTH, currency="GBP") == []
+
+    def test_a_wrong_amount_in_capitals_is_flagged_whole_never_as_its_first_digits(self):
+        flags = numeric_flags("Revenue was £3.1M.", MONTH, currency="GBP")
+        assert _texts(flags) == ["£3.1M"] and flags[0].figure == "Revenue"
+
+    def test_another_currency_in_capitals_is_flagged_whole(self):
+        flags = numeric_flags("Revenue was US$2.48M.", MONTH, currency="GBP")
+        assert _texts(flags) == ["US$2.48M"] and "another currency" in flags[0].reason
+
+    def test_a_lone_b_is_billions_only_after_a_currency(self):
+        # "£2.48B" is £2.48 billion, and wrong. "2.48B" with no sign or code is
+        # not read as billions (it would be flagged then), and its 2 is never a figure.
+        assert _texts(numeric_flags("Revenue was £2.48B.", MONTH, currency="GBP")) == ["£2.48B"]
+        assert numeric_flags("Revenue was 2.48B.", MONTH, currency="GBP") == []
+
+
+# Finding 2: each new word with a sentence the figures contradict (flagged,
+# against the figure named) and one they support (no flag from either check).
+# Favourable or adverse: the variance's polarity decides, so a cost below
+# budget "beat" it. Up or down: the sign of the variance.
+VOCABULARY = [
+    # word, wrong, the figure it is read against, right, unsettled
+    ("beat", "Revenue beat budget.", "Revenue", "Opex beat budget by £18k.", "Revenue beat."),
+    ("beaten", "Revenue had beaten budget.", "Revenue", "Opex had beaten budget by £18k.",
+     "Revenue had beaten."),
+    ("beating", "COGS is beating budget.", "COGS", "Revenue is beating last year by £128k.",
+     "Revenue is beating."),
+    ("outperformed", "Revenue outperformed budget by £112k.", "Revenue",
+     "Revenue outperformed last year by £128k.", "Revenue outperformed."),
+    ("outperforming", "COGS is outperforming budget.", "COGS", "Opex is outperforming budget.",
+     "Revenue is outperforming."),
+    ("improved", "EBIT improved against budget.", "EBIT", "Revenue improved on last year.",
+     "Revenue improved."),
+    ("improvement", "The gross margin showed an improvement against budget.", "Gross margin",
+     "Opex showed an £18k improvement against budget.", "Revenue showed an improvement."),
+    ("missed", "Opex missed budget.", "Opex", "Revenue missed budget by £112k.",
+     "Revenue missed."),
+    ("miss", "Opex was a miss against budget.", "Opex",
+     "Revenue was a £112k miss against budget.", "Revenue was a miss."),
+    ("underperformed", "Revenue underperformed last year.", "Revenue",
+     "Revenue underperformed budget by £112k.", "Revenue underperformed."),
+    ("underperforming", "Opex is underperforming budget.", "Opex",
+     "EBIT is underperforming budget.", "Revenue is underperforming."),
+    ("deteriorated", "Opex deteriorated against budget.", "Opex",
+     "The gross margin deteriorated against budget.", "Revenue deteriorated."),
+    ("deterioration", "Revenue showed a deterioration on last year.", "Revenue",
+     "EBIT showed a £129k deterioration against budget.", "Revenue showed a deterioration."),
+    ("worsened", "Revenue worsened on last year.", "Revenue", "EBIT worsened against budget.",
+     "Revenue worsened."),
+    ("climbed", "Revenue climbed against budget.", "Revenue",
+     "Revenue climbed £128k on last year.", "Revenue climbed."),
+    ("surged", "Opex surged against budget.", "Opex", "COGS surged against budget.",
+     "Revenue surged."),
+    ("jumped", "EBIT jumped against budget.", "EBIT", "Revenue jumped £128k on last year.",
+     "Revenue jumped."),
+    ("gained", "The gross margin gained against budget.", "Gross margin",
+     "Revenue gained £128k on last year.", "Revenue gained."),
+    ("went up", "Revenue went up against budget.", "Revenue",
+     "COGS went up £34k against budget.", "Revenue went up."),
+    ("slipped", "COGS slipped against budget.", "COGS", "Revenue slipped £112k against budget.",
+     "Revenue slipped."),
+    ("dipped", "Revenue dipped on last year.", "Revenue", "Opex dipped £18k against budget.",
+     "Revenue dipped."),
+    ("plunged", "Revenue plunged on last year.", "Revenue", "EBIT plunged against budget.",
+     "Revenue plunged."),
+    ("sank", "COGS sank against budget.", "COGS",
+     "The gross margin sank 4.1 pts against budget.", "Revenue sank."),
+    ("went down", "COGS went down against budget.", "COGS",
+     "Opex went down £18k against budget.", "Revenue went down."),
+]
+WORDS = [v[0] for v in VOCABULARY]
+
+
+class TestFinding2DirectionVocabulary:
+    @pytest.mark.parametrize("word, wrong, figure", [v[:3] for v in VOCABULARY], ids=WORDS)
+    def test_flagged_when_the_figures_say_the_opposite(self, word, wrong, figure):
+        flags = direction_flags(wrong, MONTH)
+        assert [(f.kind, f.text, f.figure) for f in flags] == [("direction", word, figure)]
+
+    @pytest.mark.parametrize("right", [v[3] for v in VOCABULARY], ids=WORDS)
+    def test_unflagged_when_the_figures_agree(self, right):
+        assert check_text(right, MONTH, currency="GBP") == []
+
+    @pytest.mark.parametrize("unsettled", [v[4] for v in VOCABULARY], ids=WORDS)
+    def test_a_word_the_figures_cannot_settle_raises_no_flag(self, unsettled):
+        # No comparator is named, and revenue is below budget but above last
+        # year, so either reading is possible: no flag.
+        assert direction_flags(unsettled, MONTH) == []
+
+    def test_polarity_decides_so_a_cost_that_beat_budget_is_favourable(self):
+        assert direction_flags("Opex beat budget.", MONTH) == []
+        flags = direction_flags("COGS beat budget.", MONTH)
+        assert [(f.text, f.figure) for f in flags] == [("beat", "COGS")]
+        assert "adverse" in flags[0].reason
+
+    def test_a_figure_with_no_variance_settles_nothing(self):
+        for text in ("Headcount climbed to 212.", "Region 2 revenue improved to £310k."):
+            assert check_text(text, MONTH, currency="GBP") == [], text
+
+    @pytest.mark.parametrize("text", ["COGS was stronger than budget.",
+                                      "Revenue was weaker than last year."])
+    def test_stronger_and_weaker_are_left_out(self, text):
+        # Ambiguous for a cost, so they are not direction words (the brief).
+        assert direction_flags(text, MONTH) == []
 
 
 class TestFlagsAreForTheReviewer:
