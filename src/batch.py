@@ -87,6 +87,13 @@ class BatchRecord:
 
 
 @dataclass(frozen=True)
+class Pair:
+    """A plan batch with the ledger batch it is reconciled against: what is acknowledged and promoted."""
+    plan_batch_id: str
+    ledger_batch_id: str
+
+
+@dataclass(frozen=True)
 class ControlTotal:
     batch_id: str
     version: Optional[str]   # None for the ledger, which has no version

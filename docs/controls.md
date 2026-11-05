@@ -2,8 +2,10 @@
 
 The controls that check a planning workbook before anything built from it can
 be used. This page starts with the member-name allow-list, which the extractor
-applies as it reads (`src/names.py`), and then states the five spreadsheet
-controls that check what it read (`src/controls.py`).
+applies as it reads (`src/names.py`), then states the five spreadsheet
+controls that check what it read (`src/controls.py`), reconcile, which ties
+what landed to what was read and the workbook to the ledger
+(`src/reconcile.py`), and the promotion gate (`src/promotion.py`).
 
 ## The member-name allow-list
 
@@ -295,6 +297,127 @@ total that disagrees with the plan tabs.
 These controls detect; they do not prevent. Nothing here replaces an
 independent review of the model by a second person: an acknowledgement records
 that a named person saw each break, not that anyone re-performed the work.
+
+## Reconcile
+
+`src/reconcile.py` makes two comparisons. Each gives breaks of the same type
+as the controls', with the control `reconcile`.
+
+**Source against raw.** For each batch, by version and period, the row count
+and the amount sum that the reader computed in Python before landing are set
+against the rows that landed, read back from the warehouse, and against the
+control totals landed with them. They must be equal; a difference is a break.
+
+**The workbook's Actual block against the ledger.** For a pair (a plan batch
+and the ledger batch it is reconciled against), by entity, account and
+period:
+
+- in whole euros: each figure is rounded to the euro, half away from zero,
+  before it is compared;
+- in presentation sign: the ledger's amount is turned into presentation sign
+  through its account's ledger sign on Lists (a Credit account's amount times
+  -1, a Debit account's as it is), so revenue is positive;
+- only the accounts with a ledger sign are compared: the statistical lines
+  and the subtotals are not in a ledger;
+- members are judged against the Lists of the pair's plan batch, which land
+  beside it (`raw_list_account`, `raw_list_entity`), not against the flags
+  the ledger was read with.
+
+The rules:
+
+- A late journal, or any other difference in one entity, account and month,
+  is an amount difference: one break.
+- Two differences in one entity and month, in two accounts, that are equal
+  and opposite in ledger sign, are one "possible reclassification" break. A
+  reclassification moves one amount from one account to another, a debit and
+  an equal credit, so it is judged in ledger sign; for two accounts with the
+  same ledger sign that is also equal and opposite as presented. Pairs are
+  found in account order, each account in at most one pair.
+- An entity-month that one side holds figures for and the other holds none
+  is one break, not one per account.
+- A key that the ledger holds more than once is one break, and is not
+  compared.
+- A ledger entity or account code that is not on Lists is one break per
+  code, listing its lines; the lines are not compared and stay out of the
+  star schema.
+- A ledger line with a row error (a thousands separator, brackets, a missing
+  field) is one break per line, because its figure cannot be read. Neither
+  the line nor its key is compared, and the line stays out of the star
+  schema.
+- A workbook cell that holds something but no figure (no cached value, an
+  error value, text), or a key the workbook holds twice, is not compared: the
+  calculation-state and structure controls report those.
+
+The clean workbook's Actual block was made equal to the ledger when the
+sample was built, so the clean workbook against the same ledger gives no
+break. The sample against the ledger gives exactly T1 (an amount
+difference), T2 (one possible reclassification) and T3 (one missing
+entity-month), and nothing else.
+
+**The id** is `RC`, a hyphen, and the first 12 hex digits of the SHA-256 of
+a JSON list of `reconcile` and the anchors, as for the controls:
+`source`, the source kind, the version and the period; `amount`, the entity,
+the account and the period; `reclassification`, the entity, the period and
+the two accounts; `entity_month`, the entity and the period; `ledger_key`,
+the entity, the period and the account; `unknown`, the member and the code;
+`ledger_line` and its number. A break of the comparison carries the plan
+batch's id; a break of the ledger's own lines carries the ledger batch's.
+
+**Messages** are fixed templates filled with values, with both figures and
+the difference; names are shown as data, as in the controls' messages.
+
+**Severity** follows the controls' rules: high when a figure as read is
+wrong, or cannot be read or placed; medium when a figure may be wrong or a
+member is left out.
+
+| Kind | Severity | The rule behind the grade |
+|---|---|---|
+| `source_against_raw` | high | What landed is not what was read: every figure built on it is in doubt |
+| `missing_entity_month` | high | A whole entity-month of figures is absent on one side |
+| `possible_reclassification` | medium | The entity-month ties in total; two figures may sit in the wrong accounts |
+| `amount_difference` | high | A figure as read disagrees with the other source |
+| `duplicate_key` | high | A ledger figure cannot be placed: two lines claim one key |
+| `unknown_entity` | medium | A member is left out |
+| `unknown_account` | medium | A member is left out |
+| `row_error` | high | A ledger figure cannot be read |
+
+**Facts about the file are never findings.** The batch record's times, the
+application that saved the file, its creator and its external link targets
+are never compared with anything: reconcile never compares them, and they
+never reach the star schema.
+
+## Promotion
+
+`src/promotion.py` is the promotion gate. What is promoted is a pair: a plan
+batch with the ledger batch it was reconciled against. The pair's breaks are
+the plan batch's control breaks and the pair's reconcile breaks, the
+ledger's own row breaks included; the start-up build stores them in the
+warehouse.
+
+- **Acknowledge.** A named person marks each break accepted, dismissed or
+  investigated, with no default: the action must be chosen. The person is
+  required, trimmed, and at most 60 characters; the note is optional and at
+  most 500 characters. The time comes from an injected clock. A repeat
+  acknowledgement appends a row; nothing is ever overwritten.
+- **Acknowledgements belong to the pair.** A break's id is the same in every
+  file by design, so an acknowledgement given for one pair never counts for
+  the same break of another.
+- **Promote.** The pair is promoted only once every one of its breaks has an
+  acknowledgement; until then promotion is refused, with the count of breaks
+  still waiting. The promotion records the person and time of the pair's
+  last acknowledgement, and the time of the promotion.
+- **The current pair.** The latest promotion is the current one: the
+  previous promotion stays current until the next. The star schema's facts
+  are built from the current pair only, `fact_plan` from its plan batch and
+  `fact_actual_erp` from its ledger batch. At a fresh start nothing is
+  promoted, so the facts are empty until someone acknowledges every break and
+  promotes.
+
+The breaks, the acknowledgements and the promotions are append-only tables
+in the warehouse (`gate_review`, `gate_break`, `gate_acknowledgement`,
+`gate_promotion`); a test scans the code for any statement that would change
+them. Acknowledgements are lost when the app restarts, because the warehouse
+is rebuilt at start. The audit trail of Phase 3 is the lasting record.
 
 ## The Control tab
 

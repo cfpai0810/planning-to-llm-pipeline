@@ -103,7 +103,8 @@ class TestTheBoundaries:
 
 # Names on the duckdb module that open nothing: exception classes and types.
 DUCKDB_HARMLESS = re.compile(r"^duckdb\.(\w*(Error|Exception)|DuckDBPyConnection|__version__)$")
-PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "controls")
+PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "controls",
+            "reconcile", "promotion", "model", "startup")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -199,7 +200,7 @@ class TestTheWarehouseBoundary:
 
 # The functions that build a warehouse; a call that leaves the workbooks or the
 # ledger at their defaults builds from the committed sources.
-BUILDS = {"build_warehouse": ("workbooks", "ledger")}
+BUILDS = {"build_warehouse": ("workbook", "ledger")}
 
 
 def committed_builds(source: str) -> list[int]:
@@ -220,9 +221,9 @@ def committed_builds(source: str) -> list[int]:
 
 class TestTheSuitesWarehouse:
     def test_the_walker_finds_a_build_from_the_committed_sources(self):
-        source = ("built = warehouse.build_warehouse(tmp_path)\n"
-                  "small = warehouse.build_warehouse(tmp_path, workbooks=(a,), ledger=b)\n"
-                  "half = build_warehouse(tmp_path, workbooks=(a,))\n")
+        source = ("built = startup.build_warehouse(tmp_path)\n"
+                  "small = startup.build_warehouse(tmp_path, workbook=a, ledger=b)\n"
+                  "half = build_warehouse(tmp_path, workbook=a)\n")
         assert committed_builds(source) == [1, 3]
 
     def test_only_the_session_fixture_builds_from_the_committed_sources(self):

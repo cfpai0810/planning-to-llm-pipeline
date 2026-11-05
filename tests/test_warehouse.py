@@ -14,9 +14,15 @@ one transaction with one INSERT per table, every value a bound parameter; the
 CREATE statements declare no key and no index, and the build creates the
 unique index on raw_batch's batch id after the load; the build lands the
 sample and the ledger only. The suite builds the committed sources once per
-session (tests/conftest.py, built_warehouse): tests that only read open that
-warehouse, and tests that write use a copy of its file or a small warehouse
-of their own.
+session (tests/conftest.py, built_warehouse, with the start-up build of
+src/startup.py, which tests/test_startup.py tests): tests that only read open
+that warehouse, and tests that write use a copy of its file or a small
+warehouse of their own.
+
+Part 2 lands a workbook's Lists too, in raw_list_account and raw_list_entity,
+so that reconcile and the star schema read the accounts, their ledger signs
+and the entities from the warehouse itself. The append-only scan covers the
+gate tables of the promotion gate as well as the raw tables.
 
 DuckDB has an HTTP client of its own, which the suite's network guard cannot
 see. So the connection is opened with extension autoinstall and autoload off,
@@ -26,10 +32,8 @@ itself: that test is the guard.
 """
 
 import dataclasses
-import inspect
 import json
 import re
-import shutil
 from decimal import Decimal
 from pathlib import Path
 
@@ -45,8 +49,8 @@ LEDGER = ROOT / "data" / "erp_trial_balance.csv"
 FIXTURES = ROOT / "tests" / "fixtures"
 READERS = FIXTURES / "readers"
 SMALL_BOOK = FIXTURES / "extra_tab.xlsx"         # the small base: one entity, 507 cells
-SMALL_LEDGER = READERS / "ledger_bom.csv"         # one line
-RAW_TABLES = ("raw_batch", "raw_plan_cell", "raw_ledger_line", "raw_control_total")
+RAW_TABLES = ("raw_batch", "raw_plan_cell", "raw_ledger_line", "raw_control_total",
+              "raw_list_account", "raw_list_entity")
 MONEY = "DECIMAL(38,12)"
 COLUMNS = {
     "raw_batch": [
@@ -72,11 +76,22 @@ COLUMNS = {
     "raw_control_total": [
         ("batch_id", "VARCHAR"), ("version", "VARCHAR"), ("period", "VARCHAR"),
         ("row_count", "BIGINT"), ("amount_sum", MONEY)],
+    "raw_list_account": [
+        ("batch_id", "VARCHAR"), ("list_row", "INTEGER"), ("code", "VARCHAR"),
+        ("name", "VARCHAR"), ("parent", "VARCHAR"), ("section", "VARCHAR"),
+        ("polarity", "VARCHAR"), ("unit", "VARCHAR"), ("ledger_sign", "VARCHAR"),
+        ("kind", "VARCHAR"), ("address", "VARCHAR"), ("name_allowed", "BOOLEAN")],
+    "raw_list_entity": [
+        ("batch_id", "VARCHAR"), ("list_row", "INTEGER"), ("code", "VARCHAR"),
+        ("name", "VARCHAR"), ("region", "VARCHAR"), ("address", "VARCHAR"),
+        ("name_allowed", "BOOLEAN")],
 }
-# The statements that would change or remove a landed row, against a raw table.
+# The statements that would change or remove a landed row, against a raw table or
+# a table of the promotion gate (the breaks, acknowledgements and promotions).
 CHANGES_A_RAW_ROW = re.compile(
     r"\b(?:UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|DROP\s+TABLE(?:\s+IF\s+EXISTS)?|"
-    r"ALTER\s+TABLE|INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO)\s+[\"'`]?raw_\w+"
+    r"ALTER\s+TABLE|INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|"
+    r"CREATE\s+OR\s+REPLACE\s+TABLE)\s+[\"'`]?(?:raw|gate)_\w+"
     r"|\bON\s+CONFLICT\b", re.IGNORECASE)
 
 
@@ -267,6 +282,26 @@ class TestLanding:
             [batch]).fetchall()
         assert recomputed == stored
 
+    def test_the_lists_land_with_the_workbook(self, built, sample):
+        batch = sample.batch.batch_id
+        accounts = built.execute("SELECT * EXCLUDE (batch_id) FROM raw_list_account "
+                                 "WHERE batch_id = ? ORDER BY list_row", [batch]).fetchall()
+        assert accounts == [(n, a.code, a.name, a.parent, a.section, a.polarity, a.unit,
+                             a.ledger_sign, a.kind, a.address, True)
+                            for n, a in enumerate(sample.lists.accounts, start=1)]
+        entities = built.execute("SELECT * EXCLUDE (batch_id) FROM raw_list_entity "
+                                 "WHERE batch_id = ? ORDER BY list_row", [batch]).fetchall()
+        assert entities == [(n, e.code, e.name, e.region, e.address, True)
+                            for n, e in enumerate(sample.lists.entities, start=1)]
+
+    def test_a_name_that_fails_the_allow_list_lands_raw_and_flagged(self, con, warehouse):
+        names = extraction(FIXTURES / "names.xlsx")
+        warehouse.land(con, names)
+        refused = con.execute("SELECT code, name FROM raw_list_account WHERE NOT name_allowed "
+                              "ORDER BY list_row").fetchall()
+        assert [code for code, _ in refused] == ["4000", "5100", "6000"]
+        assert {name for _, name in refused} == {r.name for r in names.rejected_names}
+
     def test_landing_the_same_file_twice_adds_no_rows(self, warehouse, warehouse_copy, sample):
         with warehouse.connect(warehouse_copy) as con:
             before = counts(con)
@@ -367,10 +402,12 @@ class TestOneStatementPerTable:
         warehouse.land(recording, small)
         transaction = [s for s, _ in recording.statements if s in ("BEGIN", "COMMIT")]
         assert transaction == ["BEGIN", "COMMIT"]
-        assert recording.inserts() == ["raw_batch", "raw_plan_cell", "raw_control_total"]
+        assert recording.inserts() == ["raw_batch", "raw_plan_cell", "raw_control_total",
+                                       "raw_list_account", "raw_list_entity"]
         assert counts(con) == {"raw_batch": 1, "raw_plan_cell": len(small.cells),
                                "raw_ledger_line": 0,
-                               "raw_control_total": len(small.control_totals)}
+                               "raw_control_total": len(small.control_totals),
+                               "raw_list_account": 13, "raw_list_entity": 1}
 
     def test_every_value_is_a_bound_parameter(self, warehouse, con, small):
         recording = Recording(con)
@@ -421,17 +458,16 @@ class TestOneStatementPerTable:
 
 
 class TestTheBuild:
-    def test_the_build_lands_the_sample_and_the_ledger_only(self, warehouse, built_warehouse,
-                                                            built):
+    """What the start-up build lands (src/startup.py; its steps are tests/test_startup.py's)."""
+
+    def test_the_build_lands_the_sample_and_the_ledger_only(self, built_warehouse, built):
         assert [b.batch_id for b in built_warehouse.landed] == [file_sha256(p)[:16]
                                                                 for p in (SAMPLE, LEDGER)]
         assert counts(built) == {"raw_batch": 2, "raw_plan_cell": 1521, "raw_ledger_line": 162,
-                                 "raw_control_total": 39 + 6}
+                                 "raw_control_total": 39 + 6, "raw_list_account": 13,
+                                 "raw_list_entity": 3}
         assert built.execute("SELECT file_name FROM raw_batch ORDER BY file_name").fetchall() \
             == [("erp_trial_balance.csv",), ("planning_model.xlsx",)]
-        defaults = inspect.signature(warehouse.build_warehouse).parameters
-        assert defaults["workbooks"].default == (SAMPLE,)
-        assert defaults["ledger"].default == LEDGER
 
     def test_raw_equals_what_was_read(self, built):
         untied = built.execute("""
@@ -450,45 +486,11 @@ class TestTheBuild:
         assert untied == 0
 
     def test_the_unique_index_on_the_batch_id_is_there_after_the_build(self, built):
-        indexes = built.execute("SELECT table_name, is_unique, expressions FROM "
-                                "duckdb_indexes()").fetchall()
+        indexes = built.execute("SELECT index_name, is_unique, expressions FROM duckdb_indexes() "
+                                "WHERE table_name = 'raw_batch'").fetchall()
         assert len(indexes) == 1
-        table, unique, expressions = indexes[0]
-        assert (table, unique) == ("raw_batch", True) and "batch_id" in str(expressions)
-
-    def test_the_index_is_created_after_the_load(self, warehouse, tmp_path, monkeypatch):
-        recordings = []
-        real = warehouse.connect
-
-        def recorded(path):
-            recordings.append(Recording(real(path)))
-            return recordings[-1]
-
-        monkeypatch.setattr(warehouse, "connect", recorded)
-        warehouse.build_warehouse(tmp_path / "small", workbooks=(SMALL_BOOK,),
-                                  ledger=SMALL_LEDGER)
-        statements = [s.lstrip().upper() for s, _ in recordings[0].statements]
-        last_insert = max(i for i, s in enumerate(statements) if s.startswith("INSERT INTO"))
-        indexes = [i for i, s in enumerate(statements) if s.startswith("CREATE UNIQUE INDEX")]
-        assert indexes and min(indexes) > last_insert
-
-    def test_the_build_records_its_steps_with_the_clock_it_is_given(self, warehouse, tmp_path):
-        ticks = iter([10.0, 10.5, 11.0, 13.0])
-        built = warehouse.build_warehouse(tmp_path / "small", workbooks=(SMALL_BOOK,),
-                                          ledger=SMALL_LEDGER, clock=lambda: next(ticks))
-        assert built.steps == (("read workbook", 0.5), ("read ledger", 0.5), ("land", 2.0))
-
-    def test_a_built_folder_can_be_removed(self, warehouse, tmp_path):
-        # Every connection is closed, so the folder can go (Windows keeps an
-        # open database file, or its .wal, locked).
-        folder = tmp_path / "small"
-        built = warehouse.build_warehouse(folder, workbooks=(SMALL_BOOK,), ledger=SMALL_LEDGER)
-        assert built.path.parent == folder and built.path.is_file()
-        with warehouse.connect(built.path) as con:
-            assert counts(con)["raw_batch"] == 2
-        assert not list(folder.glob("*.wal"))
-        shutil.rmtree(folder)
-        assert not folder.exists()
+        name, unique, expressions = indexes[0]
+        assert unique and "batch_id" in str(expressions)
 
     def test_no_database_file_is_committed(self, warehouse):
         rules = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -497,10 +499,9 @@ class TestTheBuild:
         assert not [p for p in ROOT.rglob("*.duckdb*")
                     if not {".git", ".venv", "venv"} & set(p.relative_to(ROOT).parts)]
 
-    def test_a_build_needs_a_fresh_location(self, warehouse, tmp_path):
-        (tmp_path / warehouse.DATABASE_NAME).write_bytes(b"")
-        with pytest.raises(warehouse.WarehouseError):
-            warehouse.build_warehouse(tmp_path, workbooks=(SMALL_BOOK,), ledger=SMALL_LEDGER)
+    def test_the_build_is_no_longer_in_this_module(self, warehouse):
+        # One build, the start-up build of src/startup.py: landing is a step of it.
+        assert not hasattr(warehouse, "build_warehouse")
 
 
 class TestAppendOnly:
@@ -518,7 +519,10 @@ class TestAppendOnly:
                           'DELETE FROM "raw_ledger_line"', "TRUNCATE raw_control_total",
                           "DROP TABLE IF EXISTS raw_batch", "ALTER TABLE raw_batch ADD x INT",
                           "INSERT OR REPLACE INTO raw_batch VALUES (1)",
-                          "INSERT INTO raw_batch VALUES (1) ON CONFLICT DO UPDATE SET x = 1"):
+                          "INSERT INTO raw_batch VALUES (1) ON CONFLICT DO UPDATE SET x = 1",
+                          "UPDATE gate_acknowledgement SET person = ?",
+                          "DELETE FROM gate_promotion", "DROP TABLE gate_break",
+                          "CREATE OR REPLACE TABLE raw_list_account AS SELECT 1"):
             assert CHANGES_A_RAW_ROW.search(statement), statement
         for statement in ("INSERT INTO raw_batch VALUES (?)", "SELECT * FROM raw_plan_cell",
                           "UPDATE dim_account SET x = 1", "no row of a raw table is updated"):

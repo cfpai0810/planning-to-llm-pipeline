@@ -1,8 +1,21 @@
 # Planning-to-Warehouse-to-LLM Pipeline
 
-**Phase 0, not yet usable.** This repository holds the kit that later phases
-build on: the pinned stack, the test guards and the visual theme. Nothing here
-answers a question yet.
+**Phase 1, not yet usable.** What exists: the sample workbook and its ledger
+extract, the extractor, the spreadsheet controls, reconcile and promotion.
+Nothing answers a question yet.
+
+To check a planning workbook against a ledger extract:
+
+```bash
+python main.py check data/planning_model.xlsx data/erp_trial_balance.csv
+```
+
+It lands both files in a temporary warehouse, prints each file's batch record
+and every break the spreadsheet controls and reconcile find, and deletes the
+warehouse; it never promotes. The rules are in
+[docs/controls.md](docs/controls.md), the long table another planning export
+can be given in is in [docs/export_contract.md](docs/export_contract.md), and
+the project's terms are in [docs/glossary.md](docs/glossary.md).
 
 ## What it will be
 
@@ -11,7 +24,7 @@ A governed question-and-answer pipeline over planning data. A planning model bui
 ## Test suite
 
 <!-- test-count: written by tests/conftest.py after a full, passing run, from generated/test_counts.json; never typed -->
-The suite has **917 tests**, counted by its last full, passing run (`generated/test_counts.json`).
+The suite has **1015 tests**, counted by its last full, passing run (`generated/test_counts.json`).
 <!-- /test-count -->
 
 The suite blocks every connection that leaves this machine, including during

@@ -185,8 +185,13 @@ class TestDocs:
         readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
         assert paragraph in readme
 
-    def test_the_readme_says_it_is_not_yet_usable(self):
-        assert "Phase 0, not yet usable" in (ROOT / "README.md").read_text(encoding="utf-8")
+    def test_the_readme_says_what_exists_and_that_nothing_answers_yet(self):
+        readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+        assert "Phase 0" not in readme
+        assert ("**Phase 1, not yet usable.** What exists: the sample workbook and its ledger "
+                "extract, the extractor, the spreadsheet controls, reconcile and promotion. "
+                "Nothing answers a question yet.") in readme
+        assert "python main.py check" in readme
 
     def test_the_reboot_rule_is_stated(self):
         for path in (ROOT / "README.md", RELEASING):
@@ -202,7 +207,6 @@ class TestDocs:
 
 
 class TestCommandLine:
-    def test_main_is_a_stub_that_says_so(self, capsys):
-        import main
-        assert main.main([]) == 0
-        assert capsys.readouterr().out == "Phase 0, not yet usable: the pipeline arrives in a later phase.\n"
+    def test_main_is_no_longer_a_stub(self):
+        # The command line itself is tests/test_main.py's.
+        assert "Phase 0, not yet usable" not in (ROOT / "main.py").read_text(encoding="utf-8")

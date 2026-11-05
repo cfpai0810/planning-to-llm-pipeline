@@ -180,8 +180,10 @@ def subprocess_env(**extra: str) -> dict:
 
 
 # -- One warehouse per session ------------------------------------------------------
-# The committed sources are built into a warehouse once per test session, as
-# the app builds them at start. Tests that only read open it; a test that
+# The committed sources are built into a warehouse once per test session, by
+# the start-up build the app runs (src/startup.py): landed, checked by the
+# controls and reconcile, the sample pair's breaks stored, the star schema
+# built with nothing promoted. Tests that only read open it; a test that
 # writes takes warehouse_copy (a copy of its file in the test's own folder) or
 # builds a small warehouse from small or in-memory sources. No other test
 # builds from the committed sources (tests/test_boundaries.py checks it).
@@ -189,8 +191,8 @@ def subprocess_env(**extra: str) -> dict:
 @pytest.fixture(scope="session")
 def built_warehouse(tmp_path_factory):
     """The committed sample and ledger, built once per session; never written to."""
-    from src import warehouse
-    return warehouse.build_warehouse(tmp_path_factory.mktemp("session_warehouse"))
+    from src import startup
+    return startup.build_warehouse(tmp_path_factory.mktemp("session_warehouse"))
 
 
 @pytest.fixture

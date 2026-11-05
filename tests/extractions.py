@@ -1,4 +1,5 @@
-"""One extraction, and one run of the controls, per committed workbook per test session.
+"""One extraction, and one run of the controls, per committed workbook per test session,
+and one reading of the committed ledger.
 
 The control tests of part 1d (tests/test_pattern.py and tests/test_controls.py)
 read the same committed workbooks many times. Extracting a workbook takes a
@@ -30,6 +31,17 @@ def extraction(path: Path):
 def report(path: Path):
     from src.controls import run_controls
     return run_controls(extraction(path))
+
+
+LEDGER = DATA / "erp_trial_balance.csv"
+
+
+@functools.cache
+def ledger():
+    """The committed ledger, read against the sample's Lists, as the start-up build reads it."""
+    from src.ledger import read_ledger
+    lists = extraction(SAMPLE).lists
+    return read_ledger(LEDGER, entities=lists.entity_codes(), accounts=lists.ledger_accounts())
 
 
 def breaks(path: Path) -> tuple:

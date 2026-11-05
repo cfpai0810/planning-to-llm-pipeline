@@ -2,9 +2,11 @@
 # scripts/time_build.py: the warehouse build, timed step by step
 # =============================================================================
 """
-Times the warehouse build the app runs at start, from the committed sample
-and ledger, step by step, and says what each number includes. The
-maintainer runs it, and Phase 2 runs it on the real host:
+Times the start-up build the app runs (src/startup.py), from the committed
+sample and ledger, step by step, and says what each number includes. The
+steps are the reviewer's: read workbook, read ledger, land, controls,
+reconcile, star schema. The maintainer runs it, and Phase 2 runs it on the
+real host:
 
     python scripts/time_build.py               # every measure, five runs each
     python scripts/time_build.py --runs 3
@@ -18,7 +20,7 @@ Three measures:
 - (b) a fresh process: from launching Python to the end of the build, so
   the interpreter's start-up and every import are in it. Bytecode is already
   compiled: one untimed process runs first. The imports are also timed on
-  their own (launch to src.warehouse and all it pulls in imported), and so is
+  their own (launch to src.startup and all it pulls in imported), and so is
   the interpreter's start-up alone;
 - (c) the first run after a fresh install: --first-run, in a new
   environment, gives one fresh process with no untimed run before it.
@@ -30,6 +32,12 @@ itself. The script records, at each step boundary, which of the three are
 loaded, so the output says which step that import lands in, and it also times
 that import alone, in a new process of its own.
 
+At start nothing is promoted, so the start-up build's star schema step has
+no facts to build. The script also times that step with facts: in a
+throwaway copy of a built warehouse it acknowledges every break of the
+sample pair, under a person named "Timing run (scripts/time_build.py)",
+promotes the pair, and times the star schema's SQL files on it.
+
 Nothing here is imported by the pipeline or the web app. The script builds
 into a fresh temporary folder each time and deletes it afterwards; it reads
 only the committed sources and makes no network call.
@@ -38,7 +46,6 @@ only the committed sources and makes no network call.
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import platform
 import shutil
@@ -52,7 +59,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LAZY = ("numpy", "pandas", "pyarrow")
 END = "@@time_build: end"
-NOT_BUILT = ("reconcile", "star schema")
+TIMING_PERSON = "Timing run (scripts/time_build.py)"
 
 
 # == Inside one process ==========================================================
@@ -70,50 +77,15 @@ class Recorder:
 
 
 def _build(folder: Path, recorder: Recorder) -> list:
-    """[(step, seconds, modules first loaded in it)] for one build into folder."""
-    from src import warehouse
-    if "clock" in inspect.signature(warehouse.build_warehouse).parameters:
-        built = warehouse.build_warehouse(folder, clock=recorder)
-        steps = list(built.steps)
-    else:
-        steps = _steps_by_hand(folder, recorder)
+    """[(step, seconds, modules first loaded in it)] for one start-up build into folder."""
+    from src import startup
+    built = startup.build_warehouse(folder, clock=recorder)
+    steps = list(built.steps)
     marks = recorder.marks[-(len(steps) + 1):]
     out = []
     for (name, seconds), before, after in zip(steps, marks, marks[1:]):
         out.append((name, seconds, [m for m in after[1] if m not in before[1]]))
     return out
-
-
-def _steps_by_hand(folder: Path, clock) -> list:
-    """The build's steps timed from outside, for a tree whose build records no steps (9741b0e).
-
-    The steps are the build's own, in its order: every workbook it lands,
-    the ledger, then the landing (open, create the tables, land, close).
-    """
-    from src import warehouse
-    from src.extract import extract_workbook
-    from src.ledger import read_ledger
-    Path(folder).mkdir(parents=True, exist_ok=True)
-    steps, mark = [], clock()
-    extractions = []
-    for book in warehouse.COMMITTED_WORKBOOKS:          # 9741b0e's constant
-        extractions.append(extract_workbook(book))
-        now = clock()
-        steps.append((f"read workbook ({Path(book).name})", now - mark))
-        mark = now
-    lists = extractions[0].lists
-    lines = read_ledger(warehouse.COMMITTED_LEDGER, entities=lists.entity_codes(),
-                        accounts=lists.ledger_accounts())
-    now = clock()
-    steps.append(("read ledger", now - mark))
-    mark = now
-    with warehouse.connect(Path(folder) / warehouse.DATABASE_NAME) as con:
-        warehouse.create_tables(con)
-        for source in (*extractions, lines):
-            warehouse.land(con, source)
-    now = clock()
-    steps.append(("land", now - mark))
-    return steps
 
 
 def _fresh_folder() -> Path:
@@ -127,7 +99,7 @@ def child(mode: str) -> None:
         return
     sys.path.insert(0, str(ROOT))
     began = time.perf_counter()
-    from src import warehouse  # noqa: F401  (the imports are what is timed)
+    from src import startup, warehouse  # noqa: F401  (the imports are what is timed)
     imported = time.perf_counter() - began
     loaded_by_imports = [m for m in LAZY if m in sys.modules]
     if mode == "imports":
@@ -193,9 +165,6 @@ def _step_table(runs: list, indent: str = "  ") -> list[str]:
             if set(LAZY) <= set(loaded) else (f"  (first imported here: {', '.join(loaded)})"
                                              if loaded else "")
         lines.append(f"{indent}{name:34s} {_spread(times)}{note}")
-    for name in NOT_BUILT:
-        if not any(name in n for n in names):
-            lines.append(f"{indent}{name:34s} not built yet")
     return lines
 
 
@@ -218,7 +187,7 @@ def first_run() -> list[str]:
     out = ["(c) the first run after an install, one run, nothing run before it:",
            f"  start to build end (the number)    {_spread([elapsed])}",
            "  inside the build process:",
-           f"    imports (src.warehouse and all)  {_spread([printed['imports']])}"]
+           f"    imports (src.startup and all)    {_spread([printed['imports']])}"]
     out += _step_table([printed["steps"]], indent="    ")
     return out
 
@@ -241,13 +210,13 @@ def fresh_process(runs: int) -> list[str]:
     out.append(f"  start to imports done              {_spread(imports)}")
     out.append(f"  start to build end (the number)    {_spread(builds)}")
     out.append("  inside the build process:")
-    out.append(f"    imports (src.warehouse and all)  {_spread([p['imports'] for p in inside])}")
+    out.append(f"    imports (src.startup and all)    {_spread([p['imports'] for p in inside])}")
     out += _step_table([p["steps"] for p in inside], indent="    ")
     out.append(f"  DuckDB's first bound parameter, alone in a fresh process: "
                f"{_spread([p['first_bound_parameter'] for p in lazy])}; it imported "
                f"{', '.join(lazy[0]['loaded']) or 'nothing'}")
     imported_by_us = sorted({m for p in inside for m in p["loaded_by_imports"]})
-    out.append(f"  of the three, loaded while importing src.warehouse: "
+    out.append(f"  of the three, loaded while importing src.startup: "
                f"{', '.join(imported_by_us) or 'none'} (by the libraries: openpyxl imports "
                f"numpy when it is installed; the pipeline's code imports none of them)")
     return out
@@ -255,7 +224,7 @@ def fresh_process(runs: int) -> list[str]:
 
 def in_process(runs: int) -> list[str]:
     sys.path.insert(0, str(ROOT))
-    from src import warehouse  # noqa: F401
+    from src import startup  # noqa: F401
     folder = _fresh_folder()
     try:
         _build(folder / "untimed", Recorder())
@@ -266,29 +235,44 @@ def in_process(runs: int) -> list[str]:
         out = [f"(a) in process, {runs} runs, after one untimed build:",
                f"  the build                          {_spread(totals)}"]
         out += _step_table(all_runs)
-        out += _controls(runs)
+        out += _star_schema_with_facts(folder / "untimed", folder / "promoted", runs)
     finally:
         shutil.rmtree(folder, ignore_errors=True)
     return out
 
 
-def _controls(runs: int) -> list[str]:
-    """The controls, timed on the sample's extraction when the build does not run them."""
-    from src.controls import run_controls
-    from src.extract import extract_workbook
-    sample = extract_workbook(ROOT / "data" / "planning_model.xlsx")
+def _star_schema_with_facts(built: Path, copy: Path, runs: int) -> list[str]:
+    """The star schema step on a throwaway copy in which the sample pair is promoted."""
+    from datetime import datetime, timezone
+
+    from src import model, promotion, warehouse
+    copy.mkdir(parents=True)
+    shutil.copyfile(built / warehouse.DATABASE_NAME, copy / warehouse.DATABASE_NAME)
     times = []
-    for _ in range(runs):
-        began = time.perf_counter()
-        run_controls(sample)
-        times.append(time.perf_counter() - began)
-    return [f"  controls (not a step of this build) {_spread(times)}, on the sample's extraction"]
+    with warehouse.connect(copy / warehouse.DATABASE_NAME) as con:
+        (pair,) = [promotion.Pair(p, l) for p, l in con.execute(
+            "SELECT plan_batch_id, ledger_batch_id FROM gate_review").fetchall()]
+        stamp = datetime.now(timezone.utc)
+        for break_id in promotion.unacknowledged(con, pair):
+            promotion.acknowledge(con, pair, break_id, TIMING_PERSON, "accepted",
+                                  "Acknowledged only to time the star schema with facts.",
+                                  clock=lambda: stamp)
+        promotion.promote(con, pair, clock=lambda: stamp)
+        for _ in range(runs):
+            began = time.perf_counter()
+            counts = model.build_model(con)
+            times.append(time.perf_counter() - began)
+    return [f"  star schema with facts to build    {_spread(times)}, in a throwaway copy where",
+            f"    every break of the sample pair was acknowledged by \"{TIMING_PERSON}\" and the",
+            f"    pair promoted: fact_plan {counts['fact_plan']} rows, fact_actual_erp "
+            f"{counts['fact_actual_erp']} rows (at start both are empty)"]
 
 
 INCLUDES = """What each number includes:
 - interpreter start alone: launching python until its first line runs; no import of ours.
-- start to imports done: start-up plus importing src.warehouse and all it pulls in
-  (openpyxl, DuckDB, the readers), with bytecode already compiled.
+- start to imports done: start-up plus importing src.startup and all it pulls in
+  (openpyxl, DuckDB, the readers, the controls, reconcile, promotion and the star
+  schema's module), with bytecode already compiled.
 - start to build end: start-up, those imports and the whole build, DuckDB's own import of
   numpy, pandas and pyarrow included; the process's exit and the deleting of the folder are not.
 - inside the build process: the same run, timed from inside; the imports line starts after
@@ -296,8 +280,11 @@ INCLUDES = """What each number includes:
 - (a) in process: the build alone; every module already imported, and DuckDB's own imports
   already done by an untimed build. No start-up and no import is in it.
 - each step: read workbook = extracting the workbook (openpyxl reads it twice);
-  read ledger = reading the CSV; land = open the database, create the tables, land every
-  batch, create the indexes where the build has them, close (closing writes the file)."""
+  read ledger = reading the CSV; land = open the database, create the tables, land both
+  batches, create the raw tables' indexes; controls = the five spreadsheet controls;
+  reconcile = source against raw, the Actual block against the ledger, and storing the
+  pair's breaks; star schema = the SQL files of sql/ (with nothing promoted, the facts
+  are empty), then closing the file (closing writes it)."""
 
 
 def main(argv=None) -> int:
