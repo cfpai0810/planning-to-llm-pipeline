@@ -103,7 +103,7 @@ class TestTheBoundaries:
 
 # Names on the duckdb module that open nothing: exception classes and types.
 DUCKDB_HARMLESS = re.compile(r"^duckdb\.(\w*(Error|Exception)|DuckDBPyConnection|__version__)$")
-PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch")
+PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "controls")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -173,8 +173,8 @@ class TestTheWarehouseBoundary:
 
     def test_the_pages_import_no_pipeline_module_yet(self):
         # The pages stay stubs in this phase: nothing in streamlit_app reaches
-        # the extractor, the readers, the allow-list or the warehouse, nor the
-        # libraries they read files with.
+        # the extractor, the readers, the allow-list, the controls or the
+        # warehouse, nor the libraries they read files with.
         banned = {f"src.{m}" for m in PIPELINE} | {"openpyxl", "duckdb"}
         found = {}
         for path in _sources(("streamlit_app",)):

@@ -85,8 +85,10 @@ with one plain line. A conversion runs as:
 
     LibreOffice 26.8.2.2 9dea406ab7695df6325b11b0e19fdca8db4b7276
 
-`data/sample_manifest.json` records the same string. On the maintainer's
-machine the whole build takes about 40 seconds, about 30 of them in
+`data/sample_manifest.json` records the same string. Measured on the
+maintainer's machine in part 1c: the full build of 27 workbooks took 73.8
+seconds, and the partial build of three fixtures (`--only external_link
+extra_tab typed_subtotal`) took 33.7 seconds, 30.8 seconds of it in
 LibreOffice.
 
 ## The hand-edited fixtures
