@@ -51,6 +51,10 @@ docstring-parser==0.18.0
     # via
     #   -r requirements.txt
     #   anthropic
+et-xmlfile==2.0.0
+    # via
+    #   -r requirements.txt
+    #   openpyxl
 gitdb==4.0.12
     # via
     #   -r requirements.txt
@@ -119,6 +123,8 @@ numpy==2.5.4
     #   pandas
     #   pydeck
     #   streamlit
+openpyxl==3.1.5
+    # via -r requirements.txt
 packaging==26.3
     # via
     #   -r requirements.txt

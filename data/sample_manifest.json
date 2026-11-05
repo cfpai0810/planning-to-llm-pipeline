@@ -1,0 +1,433 @@
+{
+  "written_by": "scripts/build_sample.py",
+  "company": "Calder Foods Group",
+  "currency": "EUR",
+  "fiscal_year": "FY2026",
+  "as_of": "2026-06-30",
+  "libreoffice": "LibreOffice 26.8.2.2 9dea406ab7695df6325b11b0e19fdca8db4b7276",
+  "decisions": [
+    "T1 to T3 are applied to the sample's Actual block before the recalculation, so LibreOffice computes every cached value, the Actual subtotals included; the ledger extract is written from the unmodified model in ledger sign (debit positive).",
+    "The clean workbook carries none of the planted faults, T1 to T3 included: its Actual block matches the ledger exactly."
+  ],
+  "planted": [
+    {
+      "id": "D1",
+      "fault": "A typed number inside a formula row",
+      "sheet": "Plan_AT",
+      "block": "Budget",
+      "entity": "AT",
+      "line": "Marketing",
+      "account": "6100",
+      "period": "2026-03",
+      "cell": "E30",
+      "typed": "45000",
+      "formula_would_give": "40099",
+      "control": "Formula integrity: a typed constant in a row that is otherwise formulas.",
+      "why_only_this_control": "Labels, units and headers are unchanged (structure); every formula keeps its cached value (calculation state); the EBIT and FY2026 formulas use the typed figure, so totals recomputed from the extracted cells agree (totals); nothing is hidden or linked."
+    },
+    {
+      "id": "D2",
+      "fault": "A total whose range stops one month short",
+      "sheet": "Plan_DE",
+      "block": "Budget",
+      "entity": "DE",
+      "line": "Salaries",
+      "account": "6000",
+      "period": "FY2026",
+      "cell": "O29",
+      "formula": "=SUM(C29:M29)",
+      "range_stops_at": "2026-11",
+      "short_by": "591840",
+      "control": "Totals: the FY2026 cell is 591,840 short of the sum of its twelve months.",
+      "why_only_this_control": "The FY2026 column is not part of the month pattern and its formula holds no numeric constant (formula integrity); EBIT's FY2026 cell sums EBIT's own months, so no other total moves; nothing else changes."
+    },
+    {
+      "id": "D3",
+      "fault": "A hidden row holding a manual override",
+      "sheet": "Plan_DE",
+      "entity": "DE",
+      "row": 53,
+      "label": "Manual override: Forecast marketing",
+      "period": "2026-10",
+      "cell": "L53",
+      "typed": "95000",
+      "control": "Hidden content and links: a hidden row.",
+      "why_only_this_control": "The row is outside every block's defined name, so the extractor never reads it (structure, formula integrity, totals); it holds a typed number and no formula refers to it (calculation state)."
+    },
+    {
+      "id": "D4",
+      "fault": "An embedded constant inside a formula",
+      "sheet": "Plan_ES",
+      "block": "Forecast",
+      "entity": "ES",
+      "line": "Product sales",
+      "account": "4000",
+      "period": "2026-09",
+      "cell": "K39",
+      "constant": "*1.02",
+      "pattern_would_give": "1685895",
+      "planted_gives": "1719613",
+      "control": "Formula integrity: one break with two reasons, an embedded constant and a difference from the pattern of its row.",
+      "why_only_this_control": "The cells that depend on it (Marketing, Gross profit, EBIT and the FY2026 totals) keep their own patterns and use its cached value, so totals agree; nothing is hidden, linked or out of structure."
+    },
+    {
+      "id": "D5",
+      "fault": "A hidden sheet holding numbers nothing refers to",
+      "sheet": "Scratch",
+      "state": "hidden",
+      "control": "Hidden content and links: a hidden sheet.",
+      "why_only_this_control": "It is not a plan sheet (structure checks the required tabs, and a Plan_ sheet for each entity on Lists); it holds typed numbers only and nothing refers to it."
+    },
+    {
+      "id": "T1",
+      "fault": "A late journal: the ledger has an amount the workbook's Actual block lacks",
+      "entity": "DE",
+      "period": "2026-06",
+      "account": "6100",
+      "line": "Marketing",
+      "cell": "Plan_DE!H14",
+      "amount": "7350",
+      "workbook": "103645",
+      "ledger": "110995",
+      "control": "Reconcile: one amount difference.",
+      "why_only_this_control": "The Actual block's subtotals and FY2026 totals are formulas, so the workbook still agrees with itself: no spreadsheet control fires."
+    },
+    {
+      "id": "T2",
+      "fault": "A reclassification: one amount in one account in the workbook and another in the ledger",
+      "entity": "ES",
+      "period": "2026-04",
+      "amount": "9800",
+      "workbook_account": "6300",
+      "ledger_account": "6200",
+      "cells": [
+        "Plan_ES!F16",
+        "Plan_ES!F15"
+      ],
+      "control": "Reconcile: one possible reclassification (two equal and opposite differences in one entity and month).",
+      "why_only_this_control": "Both accounts are operating expenses, so the formula subtotals move together and the workbook agrees with itself."
+    },
+    {
+      "id": "T3",
+      "fault": "A missing entity-month: the Actual block has no figures, the ledger does",
+      "entity": "AT",
+      "period": "2026-05",
+      "column": "Plan_AT!G",
+      "control": "Reconcile: one missing entity-month, not one break per account.",
+      "why_only_this_control": "The header for the month stays, so there is no gap in periods; the subtotal formulas give zero and the totals agree."
+    }
+  ],
+  "checks": {
+    "data/planning_model_clean.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "data/planning_model.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/clean_plus_d1.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/clean_plus_d2.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/clean_plus_d3.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/clean_plus_d4.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/clean_plus_d5.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/sample_minus_d1.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/sample_minus_d2.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/sample_minus_d3.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/sample_minus_d4.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/mutations/sample_minus_d5.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/shifted.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/error_values.xlsx": {
+      "formula_cells": 373,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/array_formula.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/merged_cells.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/no_units.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/missing_tab.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/missing_header.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/duplicate_period.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/unknown_account.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/names.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/shared_formula.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    }
+  },
+  "fixtures": [
+    {
+      "file": "tests/fixtures/mutations/clean_plus_d1.xlsx",
+      "purpose": "The clean workbook plus D1 only.",
+      "expected_in_1d": "Exactly the break of D1."
+    },
+    {
+      "file": "tests/fixtures/mutations/clean_plus_d2.xlsx",
+      "purpose": "The clean workbook plus D2 only.",
+      "expected_in_1d": "Exactly the break of D2."
+    },
+    {
+      "file": "tests/fixtures/mutations/clean_plus_d3.xlsx",
+      "purpose": "The clean workbook plus D3 only.",
+      "expected_in_1d": "Exactly the break of D3."
+    },
+    {
+      "file": "tests/fixtures/mutations/clean_plus_d4.xlsx",
+      "purpose": "The clean workbook plus D4 only.",
+      "expected_in_1d": "Exactly the break of D4."
+    },
+    {
+      "file": "tests/fixtures/mutations/clean_plus_d5.xlsx",
+      "purpose": "The clean workbook plus D5 only.",
+      "expected_in_1d": "Exactly the break of D5."
+    },
+    {
+      "file": "tests/fixtures/mutations/sample_minus_d1.xlsx",
+      "purpose": "The sample without D1.",
+      "expected_in_1d": "The sample's breaks less the break of D1."
+    },
+    {
+      "file": "tests/fixtures/mutations/sample_minus_d2.xlsx",
+      "purpose": "The sample without D2.",
+      "expected_in_1d": "The sample's breaks less the break of D2."
+    },
+    {
+      "file": "tests/fixtures/mutations/sample_minus_d3.xlsx",
+      "purpose": "The sample without D3.",
+      "expected_in_1d": "The sample's breaks less the break of D3."
+    },
+    {
+      "file": "tests/fixtures/mutations/sample_minus_d4.xlsx",
+      "purpose": "The sample without D4.",
+      "expected_in_1d": "The sample's breaks less the break of D4."
+    },
+    {
+      "file": "tests/fixtures/mutations/sample_minus_d5.xlsx",
+      "purpose": "The sample without D5.",
+      "expected_in_1d": "The sample's breaks less the break of D5."
+    },
+    {
+      "file": "tests/fixtures/shifted.xlsx",
+      "purpose": "The clean workbook with every sheet's content moved three rows down and two columns right, under a banner row in A1.",
+      "expected_in_1d": "No finding; it extracts to exactly the clean workbook's rows."
+    },
+    {
+      "file": "tests/fixtures/error_values.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), plus one Control formula dividing two empty Actual cells of 2026-07, cached as #DIV/0!.",
+      "expected_in_1d": "Calculation state: one error-value break, at that cell."
+    },
+    {
+      "file": "tests/fixtures/array_formula.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with ES Budget Volume for 2026-05 written as a one-cell array formula of the row's own formula.",
+      "expected_in_1d": "No break; the cell is recorded as an array formula, never as a constant."
+    },
+    {
+      "file": "tests/fixtures/merged_cells.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with two empty cells of the ES Actual block merged (Product sales, 2026-11 and 2026-12).",
+      "expected_in_1d": "Structure: one merged-cells break, and nothing else."
+    },
+    {
+      "file": "tests/fixtures/no_units.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the unit of Rent and facilities in the ES Budget block left empty.",
+      "expected_in_1d": "Structure: one no-unit break, and nothing else."
+    },
+    {
+      "file": "tests/fixtures/missing_tab.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with AT on Lists and Assumptions but no Plan_AT sheet.",
+      "expected_in_1d": "Structure: one missing-tab break (Plan_AT), and nothing else."
+    },
+    {
+      "file": "tests/fixtures/missing_header.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the FY2026 header of the ES Budget block left empty; every month keeps its header.",
+      "expected_in_1d": "Structure: one header-not-found break (FY2026), and nothing else; with no total column found, the totals control has nothing to compare there."
+    },
+    {
+      "file": "tests/fixtures/duplicate_period.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the 2026-08 header of the ES Actual block reading 2026-07; both columns are empty open months.",
+      "expected_in_1d": "Structure: one duplicate-period break, and nothing else (the 2026-08 it displaces is part of the same break; no figure is in either column)."
+    },
+    {
+      "file": "tests/fixtures/unknown_account.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with Volume in the ES Forecast block relabelled Cases sold, which Lists does not hold; the line feeds no subtotal, so no total depends on placing it.",
+      "expected_in_1d": "Structure: one account-not-on-Lists break, and nothing else."
+    },
+    {
+      "file": "tests/fixtures/names.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with six account names on Lists and in every block: one with a semicolon, one of 120 characters, one of nine words, the four plain words 'Ignore the rules please', one with accents, and one clean.",
+      "expected_in_1d": "Structure: three rejected names (the semicolon, the 120 characters, the nine words); the other three pass."
+    },
+    {
+      "file": "tests/fixtures/shared_formula.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), recalculated, then the ES Budget Product sales months and the ES Budget FY2026 column from Product sales to Volume stored as shared formulas by editing the sheet's XML: the one hand-edited fixture.",
+      "expected_in_1d": "No break; openpyxl expands the shared formulas to the base's, cell for cell."
+    },
+    {
+      "file": "tests/fixtures/no_cache.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), as openpyxl wrote it and never recalculated: no formula cell has a cached value.",
+      "expected_in_1d": "Calculation state: one break for every formula cell."
+    }
+  ],
+  "timing_seconds": {
+    "total": 42.1,
+    "libreoffice": 32.2,
+    "libreoffice_runs": 3
+  },
+  "files": {
+    "data/erp_trial_balance.csv": {
+      "sha256": "996688e70e4e1acd444c532f9d27d8f696016a683fa8ef9018225e83f8a6374b",
+      "bytes": 4211
+    },
+    "data/planning_model.xlsx": {
+      "sha256": "082c0b668be5b6934d747e1ccc3eb37a8d66851375f263fa02c6c941fa6ecaae",
+      "bytes": 38442
+    },
+    "data/planning_model_clean.xlsx": {
+      "sha256": "a7083781a029e7cc706f1065af58c1953a8303a91dab83ea9492887d35eed49b",
+      "bytes": 37237
+    },
+    "tests/fixtures/array_formula.xlsx": {
+      "sha256": "a892838c8d0e1731d8d4b61fa1c2a800aceaabe08f8002576bbef9547d4a8b51",
+      "bytes": 19851
+    },
+    "tests/fixtures/duplicate_period.xlsx": {
+      "sha256": "1c29344623c7ad70e7fa7ae755dc6cac08ff1735797eae68ff91c18893b29976",
+      "bytes": 19835
+    },
+    "tests/fixtures/error_values.xlsx": {
+      "sha256": "e092dc58de7cb263284699442b21207c5f6fbd8bcb60cf0c79e60c07174f5ce3",
+      "bytes": 19890
+    },
+    "tests/fixtures/merged_cells.xlsx": {
+      "sha256": "714215625d5a61bd7f4ec264c3e001f09177cd7a80c277128f7ae5339b156ff3",
+      "bytes": 19892
+    },
+    "tests/fixtures/missing_header.xlsx": {
+      "sha256": "8fb662c8d3e2775a1bda4774ecd149355f909fa6d0227a9dc2b5e1f66bb661cd",
+      "bytes": 19837
+    },
+    "tests/fixtures/missing_tab.xlsx": {
+      "sha256": "b25b8c1c8d2792e497451d9bbfdca8d313bd53e1e2cea2c6f552b28cb3e43620",
+      "bytes": 21134
+    },
+    "tests/fixtures/mutations/clean_plus_d1.xlsx": {
+      "sha256": "e5b99a57e45b4c34c979ccf138c649d078ce41ceb23b970f753e3a71c9b45a37",
+      "bytes": 37228
+    },
+    "tests/fixtures/mutations/clean_plus_d2.xlsx": {
+      "sha256": "1a1a2bcd4907fc8b0bb438c0017c8e8dd1c6b37ec960a52d07b634f893675e7d",
+      "bytes": 37237
+    },
+    "tests/fixtures/mutations/clean_plus_d3.xlsx": {
+      "sha256": "321176f62deb93d7d093270148e6fd9eb5eb6be9c1424f8b40a16aeb7586ac00",
+      "bytes": 37281
+    },
+    "tests/fixtures/mutations/clean_plus_d4.xlsx": {
+      "sha256": "964b8cd7a61c5c2894fb5142e3f4b51c1e32f867a8926495158145ba3fbdd163",
+      "bytes": 37241
+    },
+    "tests/fixtures/mutations/clean_plus_d5.xlsx": {
+      "sha256": "d1ef786ba4e31e2b961c4cab61be2d2af4669f0b8019f8748e03893783aa261a",
+      "bytes": 38399
+    },
+    "tests/fixtures/mutations/sample_minus_d1.xlsx": {
+      "sha256": "380c39d04f9bfecf5878709bb8eaaac8754a20f5377ff8e61805f33ca1f3a436",
+      "bytes": 38450
+    },
+    "tests/fixtures/mutations/sample_minus_d2.xlsx": {
+      "sha256": "064560dd0117b82b918fdef41d05394dd715032740b38dec59779d4e644663b5",
+      "bytes": 38442
+    },
+    "tests/fixtures/mutations/sample_minus_d3.xlsx": {
+      "sha256": "cd8c6559b796a9657a242ccfdff042ddc03eb261252f5c4c26949bfaa2174aa4",
+      "bytes": 38398
+    },
+    "tests/fixtures/mutations/sample_minus_d4.xlsx": {
+      "sha256": "68738bed72ca34faf2f68c73d82eaefa0eef2234bb2d3fa7fc7b4b49b7928fe1",
+      "bytes": 38442
+    },
+    "tests/fixtures/mutations/sample_minus_d5.xlsx": {
+      "sha256": "d061ae6807a7c6d7eda1443bae567563daf27d9abde86ef276e28177089a41e0",
+      "bytes": 37280
+    },
+    "tests/fixtures/names.xlsx": {
+      "sha256": "8fb0a488276e4b27a55271514a2a36d3181b3802f9e68d84338c06a4d9eb857b",
+      "bytes": 19941
+    },
+    "tests/fixtures/no_cache.xlsx": {
+      "sha256": "9a1d32a325d09706c15753079a5c56025dd79a382bb667f711ef4017eed03f9a",
+      "bytes": 14783
+    },
+    "tests/fixtures/no_units.xlsx": {
+      "sha256": "3e627e81cd0acc779415686cf0bec9e87e32a48e0c424b62f9d7911cdbf845ff",
+      "bytes": 19835
+    },
+    "tests/fixtures/shared_formula.xlsx": {
+      "sha256": "de778990c9d335a9211fcfd05d7d7ac6e8e69643b45cdfb9f39581f7d1ccf4ed",
+      "bytes": 19574
+    },
+    "tests/fixtures/shifted.xlsx": {
+      "sha256": "045cac4eae16545dc228a0872e2495cca2effd47a4960d818d19469e828a5433",
+      "bytes": 37357
+    },
+    "tests/fixtures/unknown_account.xlsx": {
+      "sha256": "504f67d0e9f8cb75db0852f581506d14f867183123c35e2e94104ed9c3fb49e3",
+      "bytes": 19849
+    }
+  }
+}

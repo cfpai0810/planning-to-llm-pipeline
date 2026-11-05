@@ -1,0 +1,700 @@
+"""The committed sample, part 1b: the workbooks, the ledger extract, the manifest and the fixtures.
+
+Every test reads the committed files with openpyxl and never needs LibreOffice,
+which only the maintainer's build uses. The planted faults and tie-out breaks
+are written by hand below, never read from the manifest, so a bug in the build
+cannot make the files and the expectation agree (brief 4.4). Cells are found by
+anchors: a block by its defined name, a line by its label, a month by its
+header. The sweep of cached values maps cells by their place inside a block's
+defined name, so it also covers the fixtures whose labels or headers are the
+fault; a separate test checks the labels and headers of the main workbooks.
+"""
+
+import csv
+import functools
+import json
+import re
+import zipfile
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from src.hashing import file_sha256
+
+ROOT = Path(__file__).resolve().parent.parent
+DATA = ROOT / "data"
+FIXTURES = ROOT / "tests" / "fixtures"
+MUTATIONS = FIXTURES / "mutations"
+SAMPLE = DATA / "planning_model.xlsx"
+CLEAN = DATA / "planning_model_clean.xlsx"
+LEDGER = DATA / "erp_trial_balance.csv"
+MANIFEST = DATA / "sample_manifest.json"
+BUILD_NOTE = ROOT / "docs" / "rebuilding_the_sample.md"
+
+PERIODS = tuple(f"2026-{month:02d}" for month in range(1, 13))
+CLOSED = PERIODS[:6]
+FY = "FY2026"
+VERSIONS = ("Actual", "Budget", "Forecast")
+LINES = ("Product sales", "Co-packing income", "Materials", "Packaging", "Freight out",
+         "Gross profit", "Salaries", "Marketing", "Rent and facilities", "IT and software",
+         "EBIT", "Volume", "Headcount")
+UNITS = dict.fromkeys(LINES, "EUR") | {"Volume": "units", "Headcount": "FTE"}
+INPUT_LINES = tuple(n for n in LINES if n not in ("Gross profit", "EBIT"))
+CODES = {"4000": "Product sales", "4100": "Co-packing income", "5000": "Materials",
+         "5100": "Packaging", "5200": "Freight out", "6000": "Salaries", "6100": "Marketing",
+         "6200": "Rent and facilities", "6300": "IT and software"}
+CREDIT = {"4000", "4100"}                # revenue: credit in the ledger, so negative there
+FULL = ("ES", "AT", "DE")
+SMALL = ("ES",)
+TABS = ["Control", "Assumptions", "Plan_ES", "Plan_AT", "Plan_DE", "Lists"]
+ALLOWED_FUNCTIONS = {"SUM", "IF", "ROUND", "INDEX", "MATCH", "SUMIFS"}
+
+# -- The planted truth, by hand (brief 4.3) -------------------------------------
+DEFECTS = ("D1", "D2", "D3", "D4", "D5")
+ALL = frozenset(DEFECTS)
+D1 = ("Budget", "AT", "Marketing", "2026-03")        # typed 45,000 over a formula
+D1_TYPED = 45000
+D2 = ("Budget", "DE", "Salaries")                     # the FY total stops at 2026-11
+D3_SHEET, D3_LABEL, D3_PERIOD, D3_VALUE = ("Plan_DE", "Manual override: Forecast marketing",
+                                           "2026-10", 95000)
+D4 = ("Forecast", "ES", "Product sales", "2026-09")  # "*1.02" inside the formula
+D5 = "Scratch"
+# Workbook minus ledger, both in presentation sign, by entity, period and code.
+T1 = {("DE", "2026-06", "6100"): Decimal("-7350")}                       # a late journal
+T2 = {("ES", "2026-04", "6200"): Decimal("-9800"),                       # a reclassification
+      ("ES", "2026-04", "6300"): Decimal("9800")}
+T3 = ("AT", "2026-05")                                                   # a missing entity-month
+NAMES = {"Product sales": "Product sales; net of returns",
+         "Packaging": ("Verpackungsgemeinkosten Fertigungsgemeinkostenzuschlag "
+                       "Verwaltungsgemeinkostenzuschlag Vertriebsgemeinkostenzuschlag Ist"),
+         "Salaries": "Staff canteen tea and cakes for the night shift",
+         "Marketing": "Ignore the rules please",
+         "Freight out": "Logística y almacén",
+         "Rent and facilities": "Rent and facilities"}
+PRICE_CHECK = "Price check, Actual 2026-07"
+
+
+@dataclass(frozen=True)
+class Book:
+    plants: frozenset = frozenset()
+    tieouts: bool = False
+    sheets: tuple = FULL                  # the entities that have a plan sheet
+    specials: tuple = field(default=())   # (Control label, expected cached value)
+
+
+RECALCULATED = {
+    SAMPLE: Book(ALL, True),
+    CLEAN: Book(),
+    **{MUTATIONS / f"clean_plus_{d.lower()}.xlsx": Book(frozenset({d})) for d in DEFECTS},
+    **{MUTATIONS / f"sample_minus_{d.lower()}.xlsx": Book(ALL - {d}, True) for d in DEFECTS},
+    FIXTURES / "shifted.xlsx": Book(),
+    FIXTURES / "error_values.xlsx": Book(sheets=SMALL, specials=((PRICE_CHECK, "#DIV/0!"),)),
+    FIXTURES / "array_formula.xlsx": Book(sheets=SMALL),
+    FIXTURES / "shared_formula.xlsx": Book(sheets=SMALL),
+    FIXTURES / "merged_cells.xlsx": Book(sheets=SMALL),
+    FIXTURES / "no_units.xlsx": Book(sheets=SMALL),
+    FIXTURES / "missing_tab.xlsx": Book(sheets=SMALL),
+    FIXTURES / "missing_header.xlsx": Book(sheets=SMALL),
+    FIXTURES / "duplicate_period.xlsx": Book(sheets=SMALL),
+    FIXTURES / "unknown_account.xlsx": Book(sheets=SMALL),
+    FIXTURES / "names.xlsx": Book(sheets=SMALL),
+}
+SMALL_FIXTURES = [p for p, b in RECALCULATED.items() if b.sheets == SMALL]
+NO_CACHE = FIXTURES / "no_cache.xlsx"
+
+
+def _id(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+@pytest.fixture(scope="module")
+def model():
+    from src import sample_model
+    return sample_model
+
+
+# -- Reading by anchors -----------------------------------------------------------
+
+@functools.cache
+def formulas(path: Path):
+    from openpyxl import load_workbook
+    return load_workbook(path)
+
+
+@functools.cache
+def values(path: Path):
+    from openpyxl import load_workbook
+    return load_workbook(path, data_only=True)
+
+
+def is_formula(value) -> bool:
+    from openpyxl.worksheet.formula import ArrayFormula
+    return isinstance(value, ArrayFormula) or (isinstance(value, str) and value.startswith("="))
+
+
+def formula_text(value) -> str:
+    from openpyxl.worksheet.formula import ArrayFormula
+    return value.text if isinstance(value, ArrayFormula) else value
+
+
+def block_ranges(wb) -> dict:
+    """(version, entity) -> (sheet, min_col, min_row, max_col, max_row), from the defined names."""
+    from openpyxl.utils import range_boundaries
+    found = {}
+    for name, defined in wb.defined_names.items():
+        match = re.fullmatch(r"(Actual|Budget|Forecast)_([A-Z]{2})", name)
+        if match:
+            (sheet, ref), = defined.destinations
+            found[(match[1], match[2])] = (sheet, *range_boundaries(ref.replace("$", "")))
+    return found
+
+
+def anchor(wb, version, entity, line, key):
+    """The cell of a line and a month (or FY2026) in a block: by defined name, label and header."""
+    sheet, c1, r1, c2, r2 = block_ranges(wb)[(version, entity)]
+    ws = wb[sheet]
+    rows = [r for r in range(r1 + 1, r2 + 1) if ws.cell(r, c1).value == line]
+    cols = [c for c in range(c1, c2 + 1) if ws.cell(r1, c).value == key]
+    assert len(rows) == 1 and len(cols) == 1, (version, entity, line, key, rows, cols)
+    return ws.cell(rows[0], cols[0])
+
+
+def control_rows(wb) -> dict:
+    """Control: label in the first column of a row -> that row's cells, wherever the tab starts."""
+    ws = wb["Control"]
+    rows = {}
+    for row in ws.iter_rows():
+        cells = [c for c in row if c.value is not None]
+        if cells and isinstance(cells[0].value, str):
+            rows.setdefault(cells[0].value, cells)
+    return rows
+
+
+def expected_cells(path: Path, book: Book, model) -> dict:
+    """(sheet, coordinate) -> the model's figure, for every block cell and Control figure."""
+    from openpyxl.utils import get_column_letter
+    wb = formulas(path)
+    expected = {}
+    for (version, entity), (sheet, c1, r1, c2, r2) in block_ranges(wb).items():
+        figures = model.block(entity, version, book.plants, book.tieouts)
+        for i, line in enumerate(LINES):
+            for j, key in enumerate(PERIODS + (FY,)):
+                expected[(sheet, f"{get_column_letter(c1 + 2 + j)}{r1 + 1 + i}")] = figures[line][key]
+    rows = control_rows(wb)
+    summary = model.group_summary(book.sheets, book.plants, book.tieouts)
+    header = rows["Line item"]
+    for line in ("Revenue", "Gross profit", "EBIT"):
+        for cell in rows[line][2:]:
+            version = header[cell.column - header[0].column].value.split()[0]
+            expected[("Control", cell.coordinate)] = summary[(line, version)]
+    for label, value in book.specials:
+        cell = next(c for c in rows[label][1:] if is_formula(c.value))
+        expected[("Control", cell.coordinate)] = value
+    return expected
+
+
+def every_formula(path: Path):
+    for ws in formulas(path).worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if is_formula(cell.value):
+                    yield ws.title, cell
+
+
+def planted(path: Path) -> set:
+    """Which of D1 to D5 a workbook carries, each probed at its hand-written anchor."""
+    wb = formulas(path)
+    found = set()
+    if not is_formula(anchor(wb, *D1).value):
+        found.add("D1")
+    fy = anchor(wb, *D2, FY)
+    jan, nov, dec = (anchor(wb, *D2, p).coordinate for p in ("2026-01", "2026-11", "2026-12"))
+    if fy.value == f"=SUM({jan}:{nov})":
+        found.add("D2")
+    else:
+        assert fy.value == f"=SUM({jan}:{dec})", fy.value
+    ws = wb[D3_SHEET]
+    if any(d.hidden for d in ws.row_dimensions.values()):
+        found.add("D3")
+    if "*1.02" in formula_text(anchor(wb, *D4).value):
+        found.add("D4")
+    if D5 in wb.sheetnames:
+        found.add("D5")
+    return found
+
+
+def has_tieouts(path: Path) -> bool:
+    return anchor(formulas(path), "Actual", T3[0], "Product sales", T3[1]).value is None
+
+
+def hidden(path: Path):
+    wb = formulas(path)
+    sheets = [ws.title for ws in wb.worksheets if ws.sheet_state != "visible"]
+    rows = [(ws.title, r) for ws in wb.worksheets for r, d in ws.row_dimensions.items() if d.hidden]
+    cols = [(ws.title, c) for ws in wb.worksheets for c, d in ws.column_dimensions.items()
+            if d.hidden]
+    return sheets, rows, cols
+
+
+def ledger_rows() -> list:
+    with LEDGER.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def actual_differences(path: Path) -> dict:
+    """(entity, period, code) -> (workbook, ledger) in presentation sign, where they differ."""
+    wb = values(path)
+    differences = {}
+    for row in ledger_rows():
+        amount = Decimal(row["amount"])
+        ledger = -amount if row["account"] in CREDIT else amount
+        cell = anchor(wb, "Actual", row["entity"], CODES[row["account"]], row["period"]).value
+        workbook = None if cell is None else Decimal(str(cell))
+        if workbook != ledger:
+            differences[(row["entity"], row["period"], row["account"])] = (workbook, ledger)
+    return differences
+
+
+def functions_in(text: str) -> set:
+    from openpyxl.formula import Tokenizer
+    return {t.value[:-1].upper() for t in Tokenizer(text).items
+            if t.type == "FUNC" and t.subtype == "OPEN"}
+
+
+def committed_workbooks() -> list:
+    return sorted(DATA.glob("*.xlsx")) + sorted(FIXTURES.rglob("*.xlsx"))
+
+
+# -- The tests --------------------------------------------------------------------
+
+class TestTheManifest:
+    def test_the_manifest_hashes_equal_the_committed_files(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        recorded = {name: entry["sha256"] for name, entry in manifest["files"].items()}
+        committed = {_id(p) for p in committed_workbooks()} | {_id(LEDGER)}
+        assert set(recorded) == committed
+        assert {name: file_sha256(ROOT / name) for name in recorded} == recorded
+
+    def test_the_manifest_records_the_libreoffice_version(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        assert re.fullmatch(r"LibreOffice \d+(\.\d+){3} [0-9a-f]{40}", manifest["libreoffice"])
+
+    def test_the_manifest_states_the_hand_written_truth(self):
+        # The manifest is checked against the hand-written truth, never used as it.
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        truth = {item["id"]: item for item in manifest["planted"]}
+        assert sorted(truth) == ["D1", "D2", "D3", "D4", "D5", "T1", "T2", "T3"]
+        assert (truth["D1"]["sheet"], truth["D1"]["block"], truth["D1"]["line"],
+                truth["D1"]["period"], truth["D1"]["typed"]) == ("Plan_AT", "Budget", "Marketing",
+                                                                 "2026-03", str(D1_TYPED))
+        assert (truth["D2"]["sheet"], truth["D2"]["block"], truth["D2"]["line"],
+                truth["D2"]["period"]) == ("Plan_DE", "Budget", "Salaries", FY)
+        assert (truth["D3"]["sheet"], truth["D3"]["label"]) == (D3_SHEET, D3_LABEL)
+        assert (truth["D4"]["sheet"], truth["D4"]["block"], truth["D4"]["line"],
+                truth["D4"]["period"]) == ("Plan_ES", "Forecast", "Product sales", "2026-09")
+        assert truth["D5"]["sheet"] == D5
+        assert (truth["T1"]["entity"], truth["T1"]["period"], truth["T1"]["account"],
+                truth["T1"]["amount"]) == ("DE", "2026-06", "6100", "7350")
+        assert (truth["T2"]["entity"], truth["T2"]["period"], truth["T2"]["amount"],
+                truth["T2"]["workbook_account"], truth["T2"]["ledger_account"]) == (
+            "ES", "2026-04", "9800", "6300", "6200")
+        assert (truth["T3"]["entity"], truth["T3"]["period"]) == T3
+
+    def test_the_build_checked_every_formula_cell_with_no_difference(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for name in (_id(SAMPLE), _id(CLEAN)):
+            check = manifest["checks"][name]
+            assert check["formula_cells"] > 1000 and check["largest_difference"] == "0"
+
+
+class TestTheCachedValues:
+    @pytest.mark.parametrize("path", list(RECALCULATED), ids=_id)
+    def test_every_formula_cell_has_the_models_cached_value(self, path, model):
+        expected = expected_cells(path, RECALCULATED[path], model)
+        cached = values(path)
+        checked, wrong = 0, []
+        for sheet, cell in every_formula(path):
+            assert (sheet, cell.coordinate) in expected, ("a formula the model does not know",
+                                                         sheet, cell.coordinate)
+            value = cached[sheet][cell.coordinate].value
+            want = expected[(sheet, cell.coordinate)]
+            got = value if isinstance(value, str) or value is None else Decimal(str(value))
+            if got != want:
+                wrong.append((sheet, cell.coordinate, value, want))
+            checked += 1
+        assert checked > 300 and wrong == []
+
+    def test_the_fixture_with_no_cache_has_no_cached_value(self):
+        cells = list(every_formula(NO_CACHE))
+        assert len(cells) > 300
+        assert [c.coordinate for s, c in cells if values(NO_CACHE)[s][c.coordinate].value
+                is not None] == []
+
+
+class TestTheFunctions:
+    def test_only_the_listed_functions_appear_in_any_committed_workbook(self):
+        seen, others = set(), {}
+        for path in committed_workbooks():
+            for sheet, cell in every_formula(path):
+                found = functions_in(formula_text(cell.value))
+                seen |= found
+                if found - ALLOWED_FUNCTIONS:
+                    others[(_id(path), sheet, cell.coordinate)] = found - ALLOWED_FUNCTIONS
+        assert others == {}
+        assert {"SUM", "ROUND", "SUMIFS"} <= seen
+
+    def test_the_scan_finds_a_function_that_is_not_listed(self):
+        assert functions_in("=ROUND(VLOOKUP(A1,B1:C9,2,FALSE)*2,0)") == {"ROUND", "VLOOKUP"}
+        assert functions_in('=SUMIFS(A1:A9,B1:B9,"SUM(")') == {"SUMIFS"}
+
+
+class TestHiddenContent:
+    def test_the_sample_has_one_hidden_sheet_and_one_hidden_row(self):
+        sheets, rows, cols = hidden(SAMPLE)
+        assert sheets == [D5] and cols == []
+        assert len(rows) == 1 and rows[0][0] == D3_SHEET
+        ws = formulas(SAMPLE)[D3_SHEET]
+        labels = [c.value for c in ws[rows[0][1]] if c.value is not None]
+        assert labels[0] == D3_LABEL
+
+    def test_the_clean_workbook_hides_nothing(self):
+        assert hidden(CLEAN) == ([], [], [])
+
+    def test_the_hidden_sheet_holds_only_typed_numbers_nothing_refers_to(self):
+        wb = formulas(SAMPLE)
+        cells = [c for row in wb[D5].iter_rows() for c in row if c.value is not None]
+        assert not any(is_formula(c.value) for c in cells)
+        assert any(isinstance(c.value, (int, float)) for c in cells)
+        assert not any(D5 in formula_text(c.value) for s, c in every_formula(SAMPLE))
+
+    def test_the_hidden_row_holds_an_override_nothing_refers_to(self):
+        wb = formulas(SAMPLE)
+        sheet, row = hidden(SAMPLE)[1][0]
+        ranges = [r for r in block_ranges(wb).values() if r[0] == sheet]
+        assert all(not r[2] <= row <= r[4] for r in ranges)          # outside every block
+        header_row = ranges[0][2]
+        cells = {wb[sheet].cell(header_row, c.column).value: c.value
+                 for c in wb[sheet][row] if c.value is not None}
+        assert cells[D3_PERIOD] == D3_VALUE
+        assert not any(f"{sheet}!" in formula_text(c.value) or re.search(rf"\b[A-Z]+{row}\b",
+                                                                        formula_text(c.value))
+                       for s, c in every_formula(SAMPLE) if s == sheet)
+
+
+class TestThePlantedDefects:
+    def test_the_sample_carries_d1_to_d5_and_the_clean_workbook_none(self):
+        assert planted(SAMPLE) == set(ALL)
+        assert planted(CLEAN) == set()
+
+    def test_d1_is_a_typed_number_where_the_row_has_formulas(self):
+        cell = anchor(formulas(SAMPLE), *D1)
+        assert cell.value == D1_TYPED
+        neighbours = [anchor(formulas(SAMPLE), *D1[:3], p).value for p in PERIODS if p != D1[3]]
+        assert all(is_formula(v) for v in neighbours)
+        assert is_formula(anchor(formulas(CLEAN), *D1).value)
+
+    def test_d2_is_a_total_one_month_short(self):
+        for path, end in ((SAMPLE, "2026-11"), (CLEAN, "2026-12")):
+            wb = formulas(path)
+            first, last = anchor(wb, *D2, "2026-01"), anchor(wb, *D2, end)
+            assert anchor(wb, *D2, FY).value == f"=SUM({first.coordinate}:{last.coordinate})"
+
+    def test_d4_is_an_embedded_constant_in_one_forecast_month(self):
+        wb = formulas(SAMPLE)
+        assert "*1.02" in anchor(wb, *D4).value
+        others = [anchor(wb, *D4[:3], p).value for p in PERIODS if p != D4[3]]
+        assert not any("1.02" in v for v in others)
+        assert "1.02" not in anchor(formulas(CLEAN), *D4).value
+
+    @pytest.mark.parametrize("defect", DEFECTS)
+    def test_each_clean_variant_adds_exactly_its_defect(self, defect):
+        path = MUTATIONS / f"clean_plus_{defect.lower()}.xlsx"
+        assert planted(path) == {defect} and not has_tieouts(path)
+
+    @pytest.mark.parametrize("defect", DEFECTS)
+    def test_each_sample_variant_lacks_exactly_its_defect(self, defect):
+        path = MUTATIONS / f"sample_minus_{defect.lower()}.xlsx"
+        assert planted(path) == set(ALL - {defect}) and has_tieouts(path)
+
+    def test_the_sample_carries_the_tieout_breaks_and_the_clean_workbook_not(self):
+        assert has_tieouts(SAMPLE) and not has_tieouts(CLEAN)
+
+
+class TestTheLayout:
+    @pytest.mark.parametrize("path", [SAMPLE, CLEAN], ids=_id)
+    def test_the_tabs(self, path):
+        wb = formulas(path)
+        assert wb.sheetnames == TABS + ([D5] if path == SAMPLE else [])
+
+    @pytest.mark.parametrize("path", [SAMPLE, CLEAN], ids=_id)
+    def test_the_defined_names(self, path):
+        names = set(formulas(path).defined_names)
+        blocks = {f"{v}_{e}" for v in VERSIONS for e in FULL}
+        assert names == blocks | {"Accounts", "Entities", "Drivers"}
+
+    @pytest.mark.parametrize("path", [SAMPLE, CLEAN], ids=_id)
+    def test_every_block_has_its_title_header_and_labels(self, path):
+        wb = formulas(path)
+        for (version, entity), (sheet, c1, r1, c2, r2) in block_ranges(wb).items():
+            ws = wb[sheet]
+            assert sheet == f"Plan_{entity}"
+            assert ws.cell(r1 - 1, c1).value == version
+            assert [ws.cell(r1, c).value for c in range(c1, c2 + 1)] == [
+                "Line item", "Unit", *PERIODS, FY]
+            assert [ws.cell(r, c1).value for r in range(r1 + 1, r2 + 1)] == list(LINES)
+
+    @pytest.mark.parametrize("path", [SAMPLE, CLEAN], ids=_id)
+    def test_no_merged_cells_and_every_line_item_has_a_unit(self, path):
+        wb = formulas(path)
+        assert [ws.title for ws in wb.worksheets if ws.merged_cells.ranges] == []
+        for (version, entity), (sheet, c1, r1, c2, r2) in block_ranges(wb).items():
+            ws = wb[sheet]
+            units = {ws.cell(r, c1).value: ws.cell(r, c1 + 1).value for r in range(r1 + 1, r2 + 1)}
+            assert units == UNITS, (version, entity)
+
+    @pytest.mark.parametrize("path", [SAMPLE, CLEAN], ids=_id)
+    def test_actual_is_typed_and_budget_and_forecast_are_formulas(self, path):
+        wb = formulas(path)
+        exceptions = {D1} if path == SAMPLE else set()
+        for entity in FULL:
+            for line in LINES:
+                for period in PERIODS:
+                    value = anchor(wb, "Actual", entity, line, period).value
+                    if period not in CLOSED:
+                        assert value is None
+                    elif line in ("Gross profit", "EBIT"):
+                        assert is_formula(value)
+                    elif path == SAMPLE and (entity, period) == T3:
+                        assert value is None
+                    else:
+                        assert isinstance(value, (int, float)), (entity, line, period, value)
+                    for version in ("Budget", "Forecast"):
+                        if (version, entity, line, period) not in exceptions:
+                            assert is_formula(anchor(wb, version, entity, line, period).value)
+                for version in VERSIONS:
+                    assert is_formula(anchor(wb, version, entity, line, FY).value)
+
+    def test_the_lists_are_the_models(self, model):
+        wb = formulas(CLEAN)
+        (sheet, ref), = wb.defined_names["Accounts"].destinations
+        rows = [[c.value if c.value is not None else "" for c in row] for row in wb[sheet][ref]]
+        assert rows[0] == ["Code", "Name", "Parent", "Section", "Polarity", "Unit", "Ledger sign",
+                           "Kind"]
+        assert rows[1:] == [[line.code, line.name, line.parent, line.section, line.polarity,
+                             line.unit, line.ledger_sign, line.kind] for line in model.LINES]
+        (sheet, ref), = wb.defined_names["Entities"].destinations
+        rows = [[c.value for c in row] for row in wb[sheet][ref]]
+        assert rows == [["Code", "Name", "Region"]] + [[e.code, e.name, e.region]
+                                                       for e in model.ENTITIES]
+
+    def test_the_assumptions_are_the_models_drivers(self, model):
+        wb = formulas(CLEAN)
+        (sheet, ref), = wb.defined_names["Drivers"].destinations
+        rows = [[c.value for c in row] for row in wb[sheet][ref]]
+        assert rows[0] == ["Version", "Entity", "Driver", "Unit", *PERIODS]
+        seen = set()
+        for version, entity, driver, unit, *months in rows[1:]:
+            expected = model.driver_values(version, entity)[driver]
+            assert [Decimal(str(v)) for v in months] == list(expected), (version, entity, driver)
+            seen.add((version, entity, driver))
+        assert len(seen) == 2 * 3 * len(model.DRIVERS)
+
+
+class TestTheLedger:
+    def test_the_file(self):
+        data = LEDGER.read_bytes()
+        assert data.startswith(b"entity,period,account,amount\n")
+        assert b"\r" not in data and data.endswith(b"\n")
+        rows = ledger_rows()
+        assert len(rows) == 3 * 6 * 9
+        assert len({(r["entity"], r["period"], r["account"]) for r in rows}) == len(rows)
+        assert {r["entity"] for r in rows} == set(FULL)
+        assert {r["period"] for r in rows} == set(CLOSED)
+        assert {r["account"] for r in rows} == set(CODES)
+        assert all(re.fullmatch(r"-?\d+\.\d\d", r["amount"]) for r in rows)
+        assert all(Decimal(r["amount"]) < 0 for r in rows if r["account"] in CREDIT)
+        assert all(Decimal(r["amount"]) > 0 for r in rows if r["account"] not in CREDIT)
+
+    def test_the_clean_actual_agrees_with_the_ledger_everywhere(self):
+        assert actual_differences(CLEAN) == {}
+
+    def test_the_sample_actual_differs_only_at_t1_to_t3(self):
+        differences = actual_differences(SAMPLE)
+        missing = {(T3[0], T3[1], code) for code in CODES}
+        assert set(differences) == set(T1) | set(T2) | missing
+        for key, gap in (T1 | T2).items():
+            workbook, ledger = differences[key]
+            assert workbook - ledger == gap, key
+        for key in missing:
+            workbook, ledger = differences[key]
+            assert workbook is None and ledger != 0, key
+
+
+class TestTheFixtures:
+    def test_every_fixture_of_the_brief_is_committed(self):
+        # All of brief 4.5 but external_link: LibreOffice 26.8.2.2 rewrote the
+        # link's target against its output folder, and the brief allows no
+        # hand-patched fixture but shared_formula (the 1b report says what it did).
+        names = {p.name for p in FIXTURES.glob("*.xlsx")}
+        assert names == {"no_cache.xlsx", "error_values.xlsx", "array_formula.xlsx",
+                         "shared_formula.xlsx", "merged_cells.xlsx", "no_units.xlsx",
+                         "missing_tab.xlsx", "missing_header.xlsx", "duplicate_period.xlsx",
+                         "unknown_account.xlsx", "shifted.xlsx", "names.xlsx"}
+        assert len(list(MUTATIONS.glob("*.xlsx"))) == 10
+
+    @pytest.mark.parametrize("path", SMALL_FIXTURES, ids=_id)
+    def test_a_small_fixture_keeps_every_formula_of_its_base(self, path):
+        # no_cache is the small base exactly as openpyxl wrote it, so every
+        # recalculated small fixture must hold the same formulas in the same
+        # cells (the array one as an array of the same text), plus at most the
+        # one formula its fault adds on Control.
+        base = {(s, c.coordinate): c.value for s, c in every_formula(NO_CACHE)}
+        mine = {(s, c.coordinate): formula_text(c.value) for s, c in every_formula(path)}
+        extra = sorted(set(mine) - set(base))
+        if path.name == "error_values.xlsx":
+            assert len(extra) == 1 and extra[0][0] == "Control"
+            row = formulas(path)["Control"][extra[0][1]].row
+            assert PRICE_CHECK in [c.value for c in formulas(path)["Control"][row]]
+        else:
+            assert extra == []
+        assert set(base) <= set(mine)
+        if path.name == "missing_tab.xlsx":
+            # Two entities on Assumptions, so its lookups reach further down.
+            return
+        assert {key: mine[key] for key in base} == base
+
+    def test_error_values(self):
+        path = FIXTURES / "error_values.xlsx"
+        errors = [(s, c.coordinate) for s, c in every_formula(path)
+                  if isinstance(values(path)[s][c.coordinate].value, str)]
+        assert len(errors) == 1
+        sheet, coordinate = errors[0]
+        assert values(path)[sheet][coordinate].value == "#DIV/0!"
+        row = formulas(path)[sheet][coordinate].row
+        assert sheet == "Control" and PRICE_CHECK in [c.value for c in formulas(path)[sheet][row]]
+
+    def test_array_formula(self):
+        from openpyxl.formula.translate import Translator
+        from openpyxl.worksheet.formula import ArrayFormula
+        path = FIXTURES / "array_formula.xlsx"
+        arrays = [(s, c) for s, c in every_formula(path) if isinstance(c.value, ArrayFormula)]
+        assert len(arrays) == 1
+        sheet, cell = arrays[0]
+        wb = formulas(path)
+        target = anchor(wb, "Budget", "ES", "Volume", "2026-05")
+        assert (sheet, cell.coordinate) == (target.parent.title, target.coordinate)
+        assert cell.value.ref == cell.coordinate
+        neighbour = anchor(wb, "Budget", "ES", "Volume", "2026-04")
+        assert cell.value.text == Translator(neighbour.value, neighbour.coordinate) \
+            .translate_formula(cell.coordinate)
+
+    def test_shared_formula(self):
+        path = FIXTURES / "shared_formula.xlsx"
+        with zipfile.ZipFile(path) as archive:
+            sheets = [n for n in archive.namelist() if n.startswith("xl/worksheets/sheet")]
+            xml = "".join(archive.read(n).decode("utf-8") for n in sheets)
+        masters = re.findall(r'<f t="shared" ref="([A-Z]+\d+:[A-Z]+\d+)" si="(\d+)"', xml)
+        followers = re.findall(r'<f t="shared" si="(\d+)"\s*/>', xml)
+        assert len(masters) == 2
+        assert sorted(followers) == sorted(["0"] * 11 + ["1"] * 11)
+        # Expanded by openpyxl, every formula equals the base (the test above).
+
+    def test_merged_cells(self):
+        path = FIXTURES / "merged_cells.xlsx"
+        wb = formulas(path)
+        merged = [(ws.title, str(r)) for ws in wb.worksheets for r in ws.merged_cells.ranges]
+        first = anchor(wb, "Actual", "ES", "Product sales", "2026-11")
+        last = anchor(wb, "Actual", "ES", "Product sales", "2026-12")
+        assert merged == [("Plan_ES", f"{first.coordinate}:{last.coordinate}")]
+
+    def test_no_units(self):
+        wb = formulas(FIXTURES / "no_units.xlsx")
+        empty = []
+        for (version, entity), (sheet, c1, r1, c2, r2) in block_ranges(wb).items():
+            for r in range(r1 + 1, r2 + 1):
+                if wb[sheet].cell(r, c1 + 1).value in (None, ""):
+                    empty.append((version, entity, wb[sheet].cell(r, c1).value))
+        assert empty == [("Budget", "ES", "Rent and facilities")]
+
+    def test_no_workbook_links_to_another(self):
+        books = committed_workbooks()
+        assert len(books) == 24
+        assert [_id(p) for p in books if formulas(p)._external_links] == []
+
+    def test_missing_tab(self):
+        wb = formulas(FIXTURES / "missing_tab.xlsx")
+        assert wb.sheetnames == ["Control", "Assumptions", "Plan_ES", "Lists"]
+        (sheet, ref), = wb.defined_names["Entities"].destinations
+        assert [row[0].value for row in wb[sheet][ref]] == ["Code", "ES", "AT"]
+
+    def test_missing_header(self):
+        # The total column's header, so every month is still found by its header.
+        wb = formulas(FIXTURES / "missing_header.xlsx")
+        sheet, c1, r1, c2, r2 = block_ranges(wb)[("Budget", "ES")]
+        header = [wb[sheet].cell(r1, c).value for c in range(c1, c2 + 1)]
+        assert header == ["Line item", "Unit", *PERIODS, None]
+
+    def test_duplicate_period(self):
+        # In the Actual block's open months: both columns are empty.
+        wb = formulas(FIXTURES / "duplicate_period.xlsx")
+        sheet, c1, r1, c2, r2 = block_ranges(wb)[("Actual", "ES")]
+        header = [wb[sheet].cell(r1, c).value for c in range(c1, c2 + 1)]
+        assert header == ["Line item", "Unit", *PERIODS[:7], "2026-07", *PERIODS[8:], FY]
+        assert [wb[sheet].cell(r, c1 + 2 + 6).value for r in range(r1 + 1, r2 + 1)] == [None] * 13
+        assert [wb[sheet].cell(r, c1 + 2 + 7).value for r in range(r1 + 1, r2 + 1)] == [None] * 13
+
+    def test_unknown_account(self):
+        wb = formulas(FIXTURES / "unknown_account.xlsx")
+        (sheet, ref), = wb.defined_names["Accounts"].destinations
+        listed = {row[1].value for row in wb[sheet][ref]}
+        unknown = []
+        for (version, entity), (s, c1, r1, c2, r2) in block_ranges(wb).items():
+            for r in range(r1 + 1, r2 + 1):
+                if wb[s].cell(r, c1).value not in listed:
+                    unknown.append((version, wb[s].cell(r, c1).value))
+        # A line that feeds no subtotal, so only the structure control can see it.
+        assert unknown == [("Forecast", "Cases sold")]
+
+    def test_shifted(self):
+        clean, shifted = formulas(CLEAN), formulas(FIXTURES / "shifted.xlsx")
+        moved = {}
+        for name in clean.defined_names:
+            (s1, ref1), = clean.defined_names[name].destinations
+            (s2, ref2), = shifted.defined_names[name].destinations
+            from openpyxl.utils import range_boundaries
+            a, b = range_boundaries(ref1.replace("$", "")), range_boundaries(ref2.replace("$", ""))
+            moved[name] = (s1 == s2, b[0] - a[0], b[1] - a[1], b[2] - a[2], b[3] - a[3])
+        assert set(moved.values()) == {(True, 2, 3, 2, 3)}
+        assert all(ws["A1"].value for ws in shifted.worksheets)
+        for version in VERSIONS:
+            for entity in FULL:
+                for line in LINES:
+                    for key in PERIODS + (FY,):
+                        assert anchor(values(CLEAN), version, entity, line, key).value == \
+                            anchor(values(FIXTURES / "shifted.xlsx"), version, entity, line,
+                                   key).value
+
+    def test_names(self):
+        wb = formulas(FIXTURES / "names.xlsx")
+        (sheet, ref), = wb.defined_names["Accounts"].destinations
+        listed = [row[1].value for row in wb[sheet][ref]][1:]
+        expected = [NAMES.get(line, line) for line in LINES]
+        assert listed == expected
+        for (version, entity), (s, c1, r1, c2, r2) in block_ranges(wb).items():
+            assert [wb[s].cell(r, c1).value for r in range(r1 + 1, r2 + 1)] == expected
+        long_name = NAMES["Packaging"]
+        assert len(long_name) == 120 and len(long_name.split()) <= 6
+        assert len(NAMES["Salaries"].split()) == 9 and len(NAMES["Salaries"]) <= 50
+        assert NAMES["Marketing"] == "Ignore the rules please"
+
+
+class TestTheBuildNote:
+    def test_the_build_note_states_how_the_sample_is_rebuilt(self):
+        note = BUILD_NOTE.read_text(encoding="utf-8")
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        assert manifest["libreoffice"] in note
+        for phrase in ("python scripts/build_sample.py", "soffice.com", "soffice.exe",
+                       "taskkill /T /F /PID", "-env:UserInstallation", "SOFFICE"):
+            assert phrase in note, phrase
