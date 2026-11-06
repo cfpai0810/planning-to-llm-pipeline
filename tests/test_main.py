@@ -13,6 +13,9 @@ so the test can see it is left empty), on small sources: a test never builds
 from the committed workbook a second time. What it prints for the committed
 sample and ledger is read from the session's own start-up build, through the
 same function the command uses.
+
+Part 1e (the reviewer's verdict, item 7a): a file that is not a workbook is
+told in plain words, and nothing the command prints names a Python class.
 """
 
 import json
@@ -171,3 +174,109 @@ class TestTheCommandLine:
         batch = extraction(FIXTURES / "external_link.xlsx").batch
         lines = main.batch_summary(batch)
         assert '  external links: ["calder_plan_fy2025.xlsx"]' in lines
+
+
+# -- Part 1e (item 7a): a bad file in plain words ----------------------------------------------
+# Nothing a person reads names a Python class: a list of the names that could
+# leak, and a pattern for any CamelCase word ending in Error, Exception or File.
+
+KNOWN_CLASSES = ("BadZipFile", "BadZipfile", "LargeZipFile", "OSError", "IOError",
+                 "PermissionError", "FileNotFoundError", "IsADirectoryError", "ValueError",
+                 "KeyError", "TypeError", "IndexError", "AttributeError", "UnicodeDecodeError",
+                 "ParseError", "SourceError", "WarehouseError", "InvalidFileException",
+                 "Traceback", "zipfile", "openpyxl", "duckdb", "Exception")
+CLASS_NAME = re.compile(r"\b[A-Z][A-Za-z0-9]*(?:Error|Exception|File)\b")
+NOT_A_WORKBOOK = "not a workbook that can be read: it is not an .xlsx file, or the file is " \
+                 "damaged or cut short"
+PLAIN = {
+    "text.xlsx": f"check: text.xlsx: {NOT_A_WORKBOOK}",
+    "empty.xlsx": "check: empty.xlsx: not a workbook that can be read: the file is empty",
+    "truncated.xlsx": f"check: truncated.xlsx: {NOT_A_WORKBOOK}",
+    "doctype.xlsx": "check: doctype.xlsx: the part xl/workbook.xml declares a document type, "
+                    "which a workbook never needs",
+}
+
+
+def no_class_name(text: str) -> bool:
+    return not any(name in text for name in KNOWN_CLASSES) and not CLASS_NAME.search(text)
+
+
+def bad_file(folder, name: str):
+    """One of the four bad files: a text file, an empty file, a cut workbook, a DOCTYPE."""
+    import zipfile
+    path = folder / name
+    if name == "text.xlsx":
+        path.write_text("Prices for the second half are under review.\n", encoding="utf-8")
+    elif name == "empty.xlsx":
+        path.write_bytes(b"")
+    elif name == "truncated.xlsx":
+        data = SMALL_BOOK.read_bytes()
+        path.write_bytes(data[:len(data) // 2])
+    else:
+        with zipfile.ZipFile(SMALL_BOOK) as old, zipfile.ZipFile(path, "w") as new:
+            for info in old.infolist():
+                data = old.read(info.filename)
+                if info.filename == "xl/workbook.xml":
+                    data = data.replace(b"?>", b'?><!DOCTYPE workbook [<!ENTITY x "y">]>', 1)
+                new.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
+    return path
+
+
+class TestABadFileInPlainWords:
+    def test_the_pattern_finds_a_class_name(self):
+        for text in ("check: x.xlsx: not a workbook (BadZipFile)", "OSError", "a SourceError",
+                     "an InvalidFileException"):
+            assert not no_class_name(text), text
+        assert no_class_name("check: a.xlsx: the file is empty. File names are kept.")
+
+    @pytest.mark.parametrize("name", list(PLAIN))
+    def test_check_says_it_in_plain_words(self, tmp_path, name):
+        path = bad_file(tmp_path, name)
+        done = run("check", path, "data/erp_trial_balance.csv", temp=tmp_path)
+        said = (done.stdout + done.stderr).strip().splitlines()
+        assert done.returncode == 1
+        assert said == [PLAIN[name]]
+        assert no_class_name(done.stdout + done.stderr)
+
+    def test_a_damaged_part_is_told_in_plain_words(self, tmp_path):
+        import zipfile
+
+        from src.batch import SourceError
+        from src.extract import extract_workbook
+        path = tmp_path / "damaged.xlsx"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+            archive.writestr("xl/workbook.xml", b"<workbook>" + b"x" * 200 + b"</workbook>")
+        data = bytearray(path.read_bytes())
+        at = data.index(b"xxxx")
+        data[at] = ord("y")
+        path.write_bytes(bytes(data))
+        with pytest.raises(SourceError) as refused:
+            extract_workbook(path)
+        assert str(refused.value) == ("damaged.xlsx: the part xl/workbook.xml is damaged and "
+                                      "cannot be read")
+
+    def test_contents_that_are_not_a_workbook_are_told_in_plain_words(self, tmp_path):
+        import zipfile
+
+        from src.batch import SourceError
+        from src.extract import extract_workbook
+        path = tmp_path / "parts.xlsx"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("[Content_Types].xml", b"<Types/>")
+        with pytest.raises(SourceError) as refused:
+            extract_workbook(path)
+        assert str(refused.value) == ("parts.xlsx: not a workbook that can be read: its contents "
+                                      "could not be read as a workbook")
+
+    def test_a_file_that_cannot_be_opened_is_told_in_plain_words(self, monkeypatch, capsys):
+        import main
+        from src import startup
+
+        def refuse(*args, **kwargs):
+            raise PermissionError(13, "Access is denied")
+        monkeypatch.setattr(startup, "build_warehouse", refuse)
+        assert main.check(SMALL_BOOK, SMALL_LEDGER) == 1
+        out = capsys.readouterr().out
+        assert out.strip().splitlines() == [
+            "check: the check could not finish: a file could not be read or written."]
+        assert no_class_name(out)

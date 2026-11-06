@@ -112,8 +112,15 @@ RECALCULATED = {
     FIXTURES / "external_link.xlsx": Book(sheets=SMALL, specials=((LINK_LABEL, LINK_VALUE),)),
     FIXTURES / "extra_tab.xlsx": Book(sheets=SMALL),
     FIXTURES / "typed_subtotal.xlsx": Book(sheets=SMALL),
+    # Part 1e: two of the five new fixtures keep every cell of their base where
+    # the sweep looks (block_short moves only the end of a defined name), the
+    # other three are checked cell by cell against their base below.
+    FIXTURES / "block_short.xlsx": Book(sheets=SMALL),
+    FIXTURES / "currency_changed.xlsx": Book(),
 }
-SMALL_FIXTURES = [p for p, b in RECALCULATED.items() if b.sheets == SMALL]
+SMALL_FIXTURES = [p for p, b in RECALCULATED.items() if b.sheets == SMALL] + [
+    FIXTURES / "name_shifted.xlsx", FIXTURES / "name_wrong_version.xlsx",
+    FIXTURES / "name_shifted_up.xlsx", FIXTURES / "version_label_changed.xlsx"]
 NO_CACHE = FIXTURES / "no_cache.xlsx"
 
 
@@ -546,13 +553,18 @@ class TestTheLedger:
 
 class TestTheFixtures:
     def test_every_fixture_of_the_brief_is_committed(self):
-        # All of brief 4.5, and the two the stop 1 verdict added for 1d.
+        # All of brief 4.5, the two the stop 1 verdict added for 1d, and the five
+        # of the Phase 1 verdict's follow-up, 1e.
         names = {p.name for p in FIXTURES.glob("*.xlsx")}
         assert names == {"no_cache.xlsx", "error_values.xlsx", "array_formula.xlsx",
                          "shared_formula.xlsx", "merged_cells.xlsx", "no_units.xlsx",
                          "external_link.xlsx", "missing_tab.xlsx", "missing_header.xlsx",
                          "duplicate_period.xlsx", "unknown_account.xlsx", "shifted.xlsx",
-                         "names.xlsx", "extra_tab.xlsx", "typed_subtotal.xlsx"}
+                         "names.xlsx", "extra_tab.xlsx", "typed_subtotal.xlsx",
+                         "block_short.xlsx", "name_shifted.xlsx", "name_wrong_version.xlsx",
+                         "currency_changed.xlsx", "wrong_driver_row.xlsx", "entity_changed.xlsx",
+                         "name_other_tab.xlsx", "version_label_changed.xlsx",
+                         "name_shifted_up.xlsx"}
         assert len(list(MUTATIONS.glob("*.xlsx"))) == 10
 
     @pytest.mark.parametrize("path", SMALL_FIXTURES, ids=_id)
@@ -639,7 +651,7 @@ class TestTheFixtures:
         # Was test_no_workbook_links_to_another: the stop 1 verdict (option A)
         # added exactly this one linked fixture.
         books = committed_workbooks()
-        assert len(books) == 27
+        assert len(books) == 36
         assert [_id(p) for p in books if formulas(p)._external_links] == [
             "tests/fixtures/external_link.xlsx"]
 
@@ -775,6 +787,183 @@ class TestTheFixtures:
         assert NAMES["Marketing"] == "Ignore the rules please"
 
 
+# -- Part 1e: the five new fixtures -------------------------------------------------------------
+# Each is checked against the workbook it was made from, cell by cell, both
+# readings: the small base (extra_tab, which is the small base plus a Notes tab)
+# or the clean workbook. Every expectation is written by hand.
+
+SMALL_TABS = ["Control", "Assumptions", "Plan_ES", "Lists"]
+NAME_FIXTURES = {
+    "block_short.xlsx": ("Budget_ES", "Plan_ES!$A$22:$O$33"),
+    "name_shifted.xlsx": ("Budget_ES", "Plan_ES!$A$23:$O$36"),
+    "name_wrong_version.xlsx": ("Forecast_ES", "Plan_ES!$A$22:$O$35"),
+    "name_shifted_up.xlsx": ("Budget_ES", "Plan_ES!$A$21:$O$34"),
+}
+FIXTURES_1E = ("block_short", "name_shifted", "name_wrong_version", "currency_changed",
+               "wrong_driver_row", "entity_changed", "name_other_tab", "version_label_changed",
+               "name_shifted_up")
+FULL_BASED = {"currency_changed", "wrong_driver_row", "entity_changed", "name_other_tab"}
+
+
+def sheet_cells(wb, title) -> dict:
+    return {c.coordinate: formula_text(c.value) for row in wb[title].iter_rows() for c in row
+            if c.value is not None}
+
+
+def differences(path: Path, base: Path, sheets) -> set:
+    """(reading, sheet, cell) wherever path and base differ, in formulas or in cached values."""
+    found = set()
+    for reading, load in (("formulas", formulas), ("values", values)):
+        for title in sheets:
+            a, b = sheet_cells(load(path), title), sheet_cells(load(base), title)
+            found |= {(reading, title, k) for k in set(a) | set(b) if a.get(k) != b.get(k)}
+    return found
+
+
+def defined(path: Path) -> dict:
+    return {n: d.attr_text for n, d in formulas(path).defined_names.items()}
+
+
+class TestThe1eFixtures:
+    @pytest.mark.parametrize("name", sorted(NAME_FIXTURES))
+    def test_a_name_fixture_is_the_small_base_with_one_name_moved(self, name):
+        path, base = FIXTURES / name, FIXTURES / "extra_tab.xlsx"
+        assert formulas(path).sheetnames == SMALL_TABS
+        assert differences(path, base, SMALL_TABS) == set()
+        moved, refers_to = NAME_FIXTURES[name]
+        names, small = defined(path), defined(base)
+        assert set(names) == set(small)
+        assert {n for n in names if names[n] != small[n]} == {moved}
+        assert names[moved] == refers_to
+
+    def test_block_short_ends_two_rows_early(self):
+        wb = formulas(FIXTURES / "block_short.xlsx")
+        last = wb["Plan_ES"]["A33"].value
+        below = [wb["Plan_ES"][f"A{r}"].value for r in (34, 35)]
+        assert (last, below) == ("EBIT", ["Volume", "Headcount"])
+
+    def test_name_shifted_starts_on_a_line_not_on_the_header(self):
+        wb = formulas(FIXTURES / "name_shifted.xlsx")
+        assert [wb["Plan_ES"][f"A{r}"].value for r in (21, 22, 23)] == [
+            "Budget", "Line item", "Product sales"]
+
+    def test_name_wrong_version_sits_on_the_budget_rows(self):
+        wb = formulas(FIXTURES / "name_wrong_version.xlsx")
+        assert wb["Plan_ES"]["A21"].value == "Budget"
+        assert defined(FIXTURES / "name_wrong_version.xlsx")["Budget_ES"] == "Plan_ES!$A$22:$O$35"
+
+    def test_currency_changed_differs_from_the_clean_workbook_in_one_cell(self):
+        path = FIXTURES / "currency_changed.xlsx"
+        assert formulas(path).sheetnames == TABS
+        assert differences(path, CLEAN, TABS) == {("formulas", "Plan_AT", "B3"),
+                                                  ("values", "Plan_AT", "B3")}
+        ws = formulas(path)["Plan_AT"]
+        assert (ws["A3"].value, ws["B3"].value) == ("Currency", "USD")
+        assert defined(path) == defined(CLEAN)
+
+    def test_each_records_its_base_in_the_manifest(self):
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        entries = {f["file"]: f for f in manifest["fixtures"]}
+        for name in FIXTURES_1E:
+            base = entries[f"tests/fixtures/{name}.xlsx"]["base"]
+            if name in FULL_BASED:
+                assert base.startswith("the full clean workbook"), name
+            else:
+                assert base.startswith("the small base"), name
+        # Every entry approved before 1e keeps its keys: the base is new with 1e.
+        assert [f["file"] for f in manifest["fixtures"] if "base" in f] == [
+            f"tests/fixtures/{name}.xlsx" for name in FIXTURES_1E]
+
+    def test_name_other_tab_differs_from_the_clean_workbook_in_one_name(self):
+        path = FIXTURES / "name_other_tab.xlsx"
+        assert formulas(path).sheetnames == TABS
+        assert differences(path, CLEAN, TABS) == set()
+        names, clean = defined(path), defined(CLEAN)
+        assert set(names) == set(clean)
+        assert {n for n in names if names[n] != clean[n]} == {"Budget_AT"}
+        assert names["Budget_AT"] == names["Budget_ES"] == "Plan_ES!$A$22:$O$35"
+
+    def test_entity_changed_computes_ats_figures_on_plan_es(self):
+        path = FIXTURES / "entity_changed.xlsx"
+        f, v = formulas(path), values(path)
+        assert (f["Plan_ES"]["A2"].value, f["Plan_ES"]["B2"].value) == ("Entity", "AT")
+        found = differences(path, CLEAN, TABS)
+        assert {(s, k) for r, s, k in found if r == "formulas"} == {("Plan_ES", "B2")}
+        assert defined(path) == defined(CLEAN)
+        # The Budget and Forecast blocks of Plan_ES hold Plan_AT's figures, cell
+        # for cell; the Actual block, typed, is the clean workbook's.
+        for version in ("Budget", "Forecast"):
+            for line in LINES:
+                for key in PERIODS + (FY,):
+                    assert anchor(v, version, "ES", line, key).value == \
+                        anchor(v, version, "AT", line, key).value
+        for line in LINES:
+            for key in PERIODS + (FY,):
+                assert anchor(v, "Actual", "ES", line, key).value == \
+                    anchor(values(CLEAN), "Actual", "ES", line, key).value
+        assert {s for r, s, k in found if r == "values"} == {"Plan_ES", "Control"}
+
+    def test_version_label_changed_zeroes_the_budget_it_labels(self):
+        path, base = FIXTURES / "version_label_changed.xlsx", FIXTURES / "extra_tab.xlsx"
+        f, v = formulas(path), values(path)
+        assert f["Plan_ES"]["A21"].value == "Plan B"
+        found = differences(path, base, SMALL_TABS)
+        assert {(s, k) for r, s, k in found if r == "formulas"} == {("Plan_ES", "A21")}
+        assert defined(path) == defined(base)
+        # The Budget formulas fetch their drivers by that label: every Budget
+        # cell, and the Control tab's Budget column, now holds 0.
+        budget = {c.coordinate for row in f["Plan_ES"]["C23:O35"] for c in row}
+        assert all(v["Plan_ES"][k].value == 0 for k in budget)
+        rows = control_rows(f)
+        column = next(c.column for c in rows["Line item"] if c.value == "Budget FY2026")
+        summary = {c.coordinate for line in ("Revenue", "Gross profit", "EBIT")
+                   for c in rows[line] if c.column == column}
+        assert all(v["Control"][k].value == 0 for k in summary)
+        assert {(s, k) for r, s, k in found if r == "values"} == (
+            {("Plan_ES", k) for k in budget | {"A21"}} | {("Control", k) for k in summary})
+
+    def test_wrong_driver_row_fetches_the_wrong_driver_in_every_month(self):
+        path = FIXTURES / "wrong_driver_row.xlsx"
+        f, v, clean_f, clean_v = formulas(path), values(path), formulas(CLEAN), values(CLEAN)
+        rent = "Rent and facilities"
+        months = [anchor(f, "Budget", "DE", rent, p) for p in PERIODS]
+        for cell, period in zip(months, PERIODS):
+            right = anchor(clean_f, "Budget", "DE", rent, period).value
+            assert '"Rent"' in right and cell.value == right.replace('"Rent"', '"IT services"')
+            assert cell.value == anchor(f, "Budget", "DE", "IT and software", period).value
+        found = differences(path, CLEAN, TABS)
+        assert {(s, k) for r, s, k in found if r == "formulas"} == {
+            ("Plan_DE", c.coordinate) for c in months}
+        # The cached values: the line equals IT and software, EBIT moves by the
+        # difference, the two FY2026 totals add up, and the Control tab's Budget
+        # EBIT moves by the year's difference. Nothing else changes.
+        moved = Decimal(0)
+        changed = set()
+        for period in PERIODS:
+            new = Decimal(str(anchor(v, "Budget", "DE", rent, period).value))
+            assert new == Decimal(str(anchor(v, "Budget", "DE", "IT and software", period).value))
+            old = Decimal(str(anchor(clean_v, "Budget", "DE", rent, period).value))
+            ebit = Decimal(str(anchor(v, "Budget", "DE", "EBIT", period).value))
+            assert ebit == Decimal(str(anchor(clean_v, "Budget", "DE", "EBIT", period).value)) \
+                + old - new
+            moved += old - new
+            changed |= {anchor(f, "Budget", "DE", line, period).coordinate
+                        for line in (rent, "EBIT")}
+        for line in (rent, "EBIT"):
+            total = Decimal(str(anchor(v, "Budget", "DE", line, FY).value))
+            assert total == sum(Decimal(str(anchor(v, "Budget", "DE", line, p).value))
+                                for p in PERIODS)
+            changed.add(anchor(f, "Budget", "DE", line, FY).coordinate)
+        assert moved == 12 * (86000 - 33800)
+        rows = control_rows(f)
+        column = next(c.column for c in rows["Line item"] if c.value == "Budget FY2026")
+        (ebit,) = [c for c in rows["EBIT"] if c.column == column]
+        assert Decimal(str(v["Control"][ebit.coordinate].value)) == \
+            Decimal(str(clean_v["Control"][ebit.coordinate].value)) + moved
+        assert {(s, k) for r, s, k in found if r == "values"} == {
+            ("Plan_DE", k) for k in changed} | {("Control", ebit.coordinate)}
+
+
 class TestTheBuildNote:
     def test_the_build_note_states_how_the_sample_is_rebuilt(self):
         note = BUILD_NOTE.read_text(encoding="utf-8")
@@ -782,6 +971,14 @@ class TestTheBuildNote:
         assert manifest["libreoffice"] in note
         for phrase in ("python scripts/build_sample.py", "soffice.com", "soffice.exe",
                        "taskkill /T /F /PID", "-env:UserInstallation", "SOFFICE", "--only",
-                       LINK_TARGET, "external_link", "extra_tab", "typed_subtotal"):
+                       LINK_TARGET, "external_link", "extra_tab", "typed_subtotal",
+                       *FIXTURES_1E):
             assert phrase in note, phrase
         assert "Not built" not in note and "until the reviewer" not in note
+
+    def test_the_build_note_names_no_spreadsheet_product(self):
+        # The Phase 1 verdict, finding F10: the shared formulas are as
+        # spreadsheet applications write them.
+        note = " ".join(BUILD_NOTE.read_text(encoding="utf-8").split())
+        assert "as spreadsheet applications write them" in note
+        assert not re.search(r"\bExcel\b", note)

@@ -4,7 +4,8 @@
 """
 The promotion gate (brief 6.3). What is promoted is a pair: a plan batch with
 the ledger batch it was reconciled against. The facts of the star schema are
-built from the promoted pair only (src/model.py).
+built from the promoted pair only (src/model.py), and promoting a pair
+rebuilds them.
 
 - The pair's breaks are the plan batch's control breaks and the pair's
   reconcile breaks, the ledger's own row breaks included. The start-up build
@@ -17,10 +18,18 @@ built from the promoted pair only (src/model.py).
 - Acknowledgements belong to the pair. A break's id is the same in every file
   by design, so an acknowledgement given for one pair never counts for the
   same break of another.
-- promote() is refused while any break of the pair has no acknowledgement. It
-  appends a row with the person and time of the pair's last acknowledgement
-  and the time of the promotion. promoted_batch() returns the latest
-  promotion, or None: the previous promotion stays current until the next.
+- promote() takes the person who promotes, with the rules of an
+  acknowledger's name (required, trimmed, at most 60 characters, the same
+  refusals), whatever the break count; the name is checked first. It is then
+  refused while any break of the pair has no acknowledgement. It appends a
+  row with the person who promoted and the time, and the person and time of
+  the pair's last acknowledgement, which are empty for a pair with no break.
+  promoted_batch() returns the latest promotion, or None: the previous
+  promotion stays current until the next.
+- promote() records the promotion and rebuilds the star schema from the
+  promoted pair in one transaction (part 1e): if the rebuild fails, the
+  transaction is rolled back, so there is no new promotion row, the previous
+  promotion stays current and the previous facts stay as they were.
 
 The breaks, the acknowledgements and the promotions are append-only tables
 in the warehouse (gate_review, gate_break, gate_acknowledgement,
@@ -38,6 +47,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from src import model
 from src.batch import Pair
 from src.controls import Break
 from src.warehouse import insert_rows
@@ -67,8 +77,8 @@ COLUMNS = {
         ("action", "VARCHAR", "NOT NULL"), ("note", "VARCHAR", ""),
         ("acknowledged_at", "VARCHAR", "NOT NULL")),
     "gate_promotion": (("number", "INTEGER", "NOT NULL"),) + PAIR + (
-        ("person", "VARCHAR", ""), ("acknowledged_at", "VARCHAR", ""),
-        ("promoted_at", "VARCHAR", "NOT NULL")),
+        ("promoted_by", "VARCHAR", "NOT NULL"), ("promoted_at", "VARCHAR", "NOT NULL"),
+        ("last_acknowledged_by", "VARCHAR", ""), ("last_acknowledged_at", "VARCHAR", "")),
 }
 GATE_TABLES = tuple(COLUMNS)
 TABLES = tuple(
@@ -130,9 +140,10 @@ class Acknowledgement:
 class Promotion:
     number: int
     pair: Pair
-    person: Optional[str]           # of the last acknowledgement; None when the pair had no break
-    acknowledged_at: Optional[str]  # its time
+    promoted_by: str                     # the person who promoted the pair
     promoted_at: str
+    last_acknowledged_by: Optional[str]  # of the last acknowledgement; None with no break
+    last_acknowledged_at: Optional[str]  # its time
 
 
 def utc_now() -> datetime:
@@ -215,14 +226,20 @@ def _next_number(con, table: str) -> int:
     return con.execute(f"SELECT coalesce(max(number), 0) + 1 FROM {table}").fetchone()[0]
 
 
-def acknowledge(con, pair: Pair, break_id: str, person, action, note: Optional[str] = None, *,
-                clock: Callable[[], datetime] = utc_now) -> Acknowledgement:
-    """Appends one acknowledgement of one break of the pair; refused with a fixed sentence."""
+def _person(person) -> str:
+    """A person's name, trimmed: required and at most 60 characters, or a fixed refusal."""
     if not isinstance(person, str) or not person.strip():
         raise _refuse("person_missing")
     person = person.strip()
     if len(person) > MAX_PERSON:
         raise _refuse("person_too_long")
+    return person
+
+
+def acknowledge(con, pair: Pair, break_id: str, person, action, note: Optional[str] = None, *,
+                clock: Callable[[], datetime] = utc_now) -> Acknowledgement:
+    """Appends one acknowledgement of one break of the pair; refused with a fixed sentence."""
+    person = _person(person)
     if action not in ACTIONS:
         raise _refuse("action_unknown")
     if note is not None:
@@ -259,8 +276,15 @@ def acknowledgements(con, pair: Pair) -> tuple:
 
 # == Promote =================================================================================
 
-def promote(con, pair: Pair, *, clock: Callable[[], datetime] = utc_now) -> Promotion:
-    """Promotes the pair once every break has an acknowledgement; refused otherwise."""
+def promote(con, pair: Pair, person, *, clock: Callable[[], datetime] = utc_now) -> Promotion:
+    """A named person promotes the pair once every break has an acknowledgement.
+
+    The name is checked first, then the breaks. The promotion row and the
+    rebuild of the star schema from the promoted pair are one transaction: a
+    failure in either rolls both back and is raised, and the previous
+    promotion and its facts stay as they were.
+    """
+    person = _person(person)
     if not _reviewed(con, pair):
         raise _refuse("not_reviewed")
     waiting = unacknowledged(con, pair)
@@ -276,23 +300,24 @@ def promote(con, pair: Pair, *, clock: Callable[[], datetime] = utc_now) -> Prom
     try:
         number = _next_number(con, "gate_promotion")
         insert_rows(con, "gate_promotion", COLUMNS["gate_promotion"],
-                    [(number, pair.plan_batch_id, pair.ledger_batch_id,
-                      last.person if last else None, last.acknowledged_at if last else None,
-                      at)])
+                    [(number, pair.plan_batch_id, pair.ledger_batch_id, person, at,
+                      last.person if last else None, last.acknowledged_at if last else None)])
+        model.run_statements(con)
         con.commit()
     except Exception:
         con.rollback()
         raise
-    return Promotion(number, pair, last.person if last else None,
-                     last.acknowledged_at if last else None, at)
+    return Promotion(number, pair, person, at, last.person if last else None,
+                     last.acknowledged_at if last else None)
 
 
 def promotions(con) -> tuple:
     """Every promotion, in order."""
-    rows = con.execute("SELECT number, plan_batch_id, ledger_batch_id, person, acknowledged_at, "
-                       "promoted_at FROM gate_promotion ORDER BY number").fetchall()
-    return tuple(Promotion(n, Pair(plan, ledger), person, acknowledged, promoted)
-                 for n, plan, ledger, person, acknowledged, promoted in rows)
+    rows = con.execute("SELECT number, plan_batch_id, ledger_batch_id, promoted_by, promoted_at, "
+                       "last_acknowledged_by, last_acknowledged_at FROM gate_promotion "
+                       "ORDER BY number").fetchall()
+    return tuple(Promotion(n, Pair(plan, ledger), by, at, last_by, last_at)
+                 for n, plan, ledger, by, at, last_by, last_at in rows)
 
 
 def promoted_batch(con) -> Optional[Promotion]:

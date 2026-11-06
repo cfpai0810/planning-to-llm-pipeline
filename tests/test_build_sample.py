@@ -404,3 +404,94 @@ class TestThePartialBuild:
 
     def test_the_full_build_records_the_hand_edit(self, build):
         assert build.EXTERNAL_LINK.edit is build.restore_link_target
+
+
+# -- Part 1e: five fixtures, built with --only -------------------------------------------------
+# block_short, name_shifted and name_wrong_version change one defined name of
+# the small base; currency_changed and wrong_driver_row are made from the clean
+# workbook, because the small base has no Plan_AT and reconcile needs every
+# entity of the ledger. None of these tests runs LibreOffice.
+
+FIXTURES_1E = ("block_short", "name_shifted", "name_wrong_version", "currency_changed",
+               "wrong_driver_row", "entity_changed", "name_other_tab", "version_label_changed",
+               "name_shifted_up")
+
+
+class TestThe1eFixtures:
+    def test_the_full_build_makes_them_too(self, build):
+        names = [book.dest.stem for book in build.FIXTURE_BOOKS]
+        assert names[-9:] == list(FIXTURES_1E)
+        shapes = [build.BOOKS[name].shape for name in FIXTURES_1E]
+        assert shapes == [build.SMALL] * 3 + [build.Shape()] * 4 + [build.SMALL] * 2
+        assert all(build.BOOKS[name].purpose and build.BOOKS[name].expected
+                   for name in FIXTURES_1E)
+        bases = [build.BOOKS[name].base for name in FIXTURES_1E]
+        assert bases == [build.SMALL_BASE] * 3 + [build.CLEAN_BASE] * 4 + [build.SMALL_BASE] * 2
+        entry = build.fixture_entry(build.BOOKS["currency_changed"])
+        assert list(entry) == ["file", "purpose", "expected_in_1d", "base"]
+        assert list(build.fixture_entry(build.BOOKS["extra_tab"])) == [
+            "file", "purpose", "expected_in_1d"]
+
+    @pytest.mark.parametrize("name, moved, refers_to", [
+        ("block_short", "Budget_ES", "Plan_ES!$A$22:$O$33"),
+        ("name_shifted", "Budget_ES", "Plan_ES!$A$23:$O$36"),
+        ("name_wrong_version", "Forecast_ES", "Plan_ES!$A$22:$O$35"),
+        ("name_shifted_up", "Budget_ES", "Plan_ES!$A$21:$O$34"),
+    ])
+    def test_one_defined_name_of_the_small_base_moves(self, build, name, moved, refers_to):
+        wb, specials = build.BOOKS[name].make()
+        base = build.write_workbook(build.SMALL)
+        names = {n: d.attr_text for n, d in wb.defined_names.items()}
+        small = {n: d.attr_text for n, d in base.defined_names.items()}
+        assert specials == {} and set(names) == set(small)
+        assert {n for n in names if names[n] != small[n]} == {moved}
+        assert names[moved] == refers_to
+
+    def test_currency_changed_sets_one_cell(self, build):
+        wb, specials = build.fixture_currency_changed()
+        assert specials == {} and wb.sheetnames == ["Control", "Assumptions", "Plan_ES",
+                                                    "Plan_AT", "Plan_DE", "Lists"]
+        assert (wb["Plan_AT"]["A3"].value, wb["Plan_AT"]["B3"].value) == ("Currency", "USD")
+        assert wb["Plan_ES"]["B3"].value == wb["Plan_DE"]["B3"].value == "EUR"
+
+    def test_wrong_driver_row_fetches_it_services_in_every_month(self, build):
+        from src import sample_model as model
+        wb, specials = build.fixture_wrong_driver_row()
+        ws = wb["Plan_DE"]
+        rent = [ws[build.coordinate(build.Shape(), "Budget", "Rent and facilities", p)].value
+                for p in model.PERIODS]
+        assert all('"IT services"' in f and '"Rent"' not in f for f in rent)
+        # 12 months and FY2026 of the line and of EBIT, and the Control tab's Budget EBIT.
+        assert len(specials) == 27
+        assert specials[("Plan_DE", "O31")] == 12 * 33800
+        assert specials[("Plan_DE", "O33")] == model.block("DE", "Budget")["EBIT"]["FY2026"] \
+            + 12 * (86000 - 33800)
+
+    def test_name_other_tab_points_budget_at_into_plan_es(self, build):
+        wb, specials = build.fixture_name_other_tab()
+        clean = build.write_workbook()
+        names = {n: d.attr_text for n, d in wb.defined_names.items()}
+        before = {n: d.attr_text for n, d in clean.defined_names.items()}
+        assert specials == {} and {n for n in names if names[n] != before[n]} == {"Budget_AT"}
+        assert names["Budget_AT"] == "Plan_ES!$A$22:$O$35"
+
+    def test_entity_changed_and_version_label_changed_give_their_new_figures(self, build):
+        from src import sample_model as model
+        wb, specials = build.fixture_entity_changed()
+        assert wb["Plan_ES"]["B2"].value == "AT"
+        # 2 versions x 13 lines x 13 columns on Plan_ES, and 6 Control cells.
+        assert len(specials) == 2 * 13 * 13 + 6
+        assert specials[("Plan_ES", "O33")] == model.block("AT", "Budget")["EBIT"]["FY2026"]
+        wb, specials = build.fixture_version_label_changed()
+        assert wb["Plan_ES"]["A21"].value == "Plan B"
+        assert len(specials) == 13 * 13 + 3 and set(specials.values()) == {0}
+
+    def test_a_partial_build_never_rebuilds_them(self, build):
+        import json
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for name in FIXTURES_1E:
+            with pytest.raises(build.BuildError, match=name):
+                build.check_partial(manifest, build.select_books([name]), APPROVED_VERSION)
+            entry = next(f for f in manifest["fixtures"]
+                         if f["file"] == f"tests/fixtures/{name}.xlsx")
+            assert entry["purpose"] and entry["expected_in_1d"]

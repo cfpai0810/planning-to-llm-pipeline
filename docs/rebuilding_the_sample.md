@@ -42,7 +42,25 @@ hand edits, while every other entry and every top-level field stays exactly as
 it was. It refuses a book the manifest already records, a LibreOffice other
 than the one the manifest records, and a manifest whose recorded files no
 longer match their hashes. `external_link`, `extra_tab` and `typed_subtotal`
-were added this way.
+were added this way in part 1c, and in part 1e the nine fixtures of the
+anchors, the currency and the known blind spot, in one run:
+
+    python scripts/build_sample.py --only block_short name_shifted name_wrong_version currency_changed wrong_driver_row entity_changed name_other_tab version_label_changed name_shifted_up
+
+Each of the nine records in the manifest the base it is made from (`base`).
+`block_short`, `name_shifted`, `name_wrong_version` and `name_shifted_up` are
+the small base with one defined name moved, so every cell is the small
+base's. `currency_changed`, `wrong_driver_row`, `entity_changed` and
+`name_other_tab` are made from the full clean workbook, because the small base
+has no Plan_AT. `version_label_changed` is the small base with the label above
+the ES Budget header changed. Three of them change figures, so the build
+checks their cached values against the model's with the changed cells given
+as specials: `wrong_driver_row` (the changed line, the EBIT it feeds, their
+FY2026 totals and the Control tab's Budget EBIT), `entity_changed` (Plan_ES's
+Budget and Forecast blocks compute AT's figures, because their formulas fetch
+drivers by the Entity cell) and `version_label_changed` (every Budget cell
+computes 0, because the formulas fetch drivers by the version label).
+LibreOffice kept every defined name as it was written.
 
 ## Finding LibreOffice
 
@@ -89,7 +107,8 @@ with one plain line. A conversion runs as:
 maintainer's machine in part 1c: the full build of 27 workbooks took 73.8
 seconds, and the partial build of three fixtures (`--only external_link
 extra_tab typed_subtotal`) took 33.7 seconds, 30.8 seconds of it in
-LibreOffice.
+LibreOffice. In part 1e the partial build of nine fixtures took 44.0 seconds,
+37.0 seconds of it in LibreOffice.
 
 ## The hand-edited fixtures
 
@@ -100,9 +119,9 @@ under `hand_edited`.
 
 - `shared_formula`: the Plan_ES sheet's XML stores two groups of formulas
   (the ES Budget Product sales months, and the ES Budget FY2026 column from
-  Product sales to Volume) as shared formulas, as Excel writes them.
-  LibreOffice never writes shared formulas, so the fixture that tests their
-  expansion has to be edited.
+  Product sales to Volume) as shared formulas, as spreadsheet applications
+  write them. LibreOffice never writes shared formulas, so the fixture that
+  tests their expansion has to be edited.
 - `external_link`: one Control formula, `=[1]Plan_ES!$O$33`, reads a cell of
   another workbook, `calder_plan_fy2025.xlsx`. The workbook is written with
   openpyxl's external-link objects, and LibreOffice keeps the formula and its

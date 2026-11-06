@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GLOSSARY = ROOT / "docs" / "glossary.md"
 
 # The agreed terms, as docs/glossary.md writes them.
-TERMS = ("batch", "batch record", "break", "control", "reconcile", "acknowledge",
+TERMS = ("batch", "batch record", "break", "control", "check", "reconcile", "acknowledge",
          "acknowledgement", "pair", "promote", "promotion", "plan", "Actual", "Budget",
          "Forecast", "version", "entity", "account", "line item", "period", "ledger",
          "ledger sign", "presentation sign", "star schema")
@@ -87,10 +87,31 @@ def _rows() -> dict:
                                             flags=re.MULTILINE)}
 
 
+# The reviewer's wording of 5 November (verdict, section 3.2) for the four
+# entries 1e changed or added.
+REVIEWERS_WORDING = {
+    "promote": "To record, under a named person, that a pair is the current one; the facts are "
+               "rebuilt from it. Refused while any of its breaks has no acknowledgement.",
+    "promotion": "the pair, the person who promoted it and the time, and the person and time of "
+                 "its last acknowledgement if it had any",
+    "check": "`main.py check` does: lands a workbook and a ledger in a temporary warehouse, runs "
+             "the five controls and reconcile, prints each batch record and every break, and "
+             "promotes nothing.",
+    "control": "One of the five examinations of a workbook",
+}
+
+
+def _meanings() -> dict:
+    """The glossary's table rows: {term: the text of its Meaning column}."""
+    text = GLOSSARY.read_text(encoding="utf-8")
+    return {m[1]: m[2].strip() for m in re.finditer(r"^\| \*\*(.+?)\*\* \|(.*?)\|.*\|$", text,
+                                                    flags=re.MULTILINE)}
+
+
 class TestGlossary:
     def test_the_glossary_names_every_agreed_term(self):
         rows = _rows()
-        assert tuple(rows) == TERMS
+        assert tuple(rows) == TERMS and len(TERMS) == 24
         for seed in ("batch", "break", "acknowledge", "promote", "plan", "Actual", "Budget",
                      "Forecast", "entity", "account", "period", "ledger"):
             assert seed in rows, seed
@@ -125,3 +146,11 @@ class TestGlossary:
                      "the planning workbook", "the star schema", "the published figures",
                      "the ledger sign", "file metadata", "a release of the app"):
             assert not _retired(text), text
+
+    def test_the_four_entries_the_reviewer_worded(self):
+        meanings = _meanings()
+        for term, wording in REVIEWERS_WORDING.items():
+            assert wording in meanings[term], term
+        assert meanings["check"].startswith("What `main.py check` does:")
+        assert "check" not in meanings["control"]
+        assert _rows()["check"].strip() == ""

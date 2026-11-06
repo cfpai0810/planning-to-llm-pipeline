@@ -788,6 +788,155 @@ def fixture_unknown_account():
     return wb, {}
 
 
+# -- Part 1e: the anchors, the currency and a known blind spot -------------------------
+# Three fixtures change one defined name of the small base and nothing else,
+# so every cell and every cached value is the small base's. Two are made from
+# the clean workbook, because the small base has no Plan_AT and reconcile
+# needs every entity of the ledger.
+
+def _rename_block(wb, shape: Shape, name: str, first_row: int, last_row: int) -> None:
+    """Points a block's defined name at other rows of its own tab, columns unchanged."""
+    entity = name.rsplit("_", 1)[1]
+    _name(wb, name, f"Plan_{entity}", f"{col(shape, 0)}{first_row}",
+          f"{col(shape, 14)}{last_row}")
+
+
+def fixture_block_short():
+    # The ES Budget name ends two rows early: the block loses Volume and
+    # Headcount, the last two accounts on Lists. Nothing totals them.
+    wb = write_workbook(SMALL)
+    _rename_block(wb, SMALL, "Budget_ES", header_row(SMALL, "Budget"),
+                  line_row(SMALL, "Budget", "EBIT"))
+    return wb, {}
+
+
+def fixture_name_shifted():
+    # The ES Budget name one row down: its first row is the Product sales
+    # line, so the block it names has no header row to read.
+    wb = write_workbook(SMALL)
+    _rename_block(wb, SMALL, "Budget_ES", header_row(SMALL, "Budget") + 1,
+                  line_row(SMALL, "Budget", "Headcount") + 1)
+    return wb, {}
+
+
+def fixture_name_wrong_version():
+    # The ES Forecast name placed on the Budget rows, where the Budget name
+    # also points: the Budget figures would be read as Forecast.
+    wb = write_workbook(SMALL)
+    _rename_block(wb, SMALL, "Forecast_ES", header_row(SMALL, "Budget"),
+                  line_row(SMALL, "Budget", "Headcount"))
+    return wb, {}
+
+
+def fixture_currency_changed():
+    # Plan_AT's Currency cell (B3, beside its label) reads USD; no formula
+    # reads it, so every figure is the clean workbook's.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_AT"][f"{col(shape, 1)}{shape.row0 + 2}"] = "USD"
+    return wb, {}
+
+
+WRONG_DRIVER = ("DE", "Budget", "Rent and facilities", "Rent", "IT services")
+
+
+def fixture_wrong_driver_row():
+    # The DE Budget Rent and facilities line fetches the IT services driver
+    # in all twelve months: the same formula in every month, so no pattern
+    # tells, and every total is computed from it, so every total agrees. The
+    # line, the EBIT it feeds, their FY2026 totals and the Control tab's
+    # Budget EBIT take new figures, given here as specials.
+    shape = Shape()
+    entity, version, line, _, wrong = WRONG_DRIVER
+    wb = write_workbook(shape)
+    ws = wb[f"Plan_{entity}"]
+    figures = model.block(entity, version)
+    specials, moved = {}, Decimal(0)
+    for period in model.PERIODS:
+        cell = ws[coordinate(shape, version, line, period)]
+        cell.value = f"=ROUND({lookup(shape, version, period, wrong)},0)"
+        fetched = model.round_whole(model.driver_values(version, entity)[wrong]
+                                    [model.PERIODS.index(period)])
+        change = figures[line][period] - fetched
+        moved += change
+        specials[(ws.title, cell.coordinate)] = fetched
+        specials[(ws.title, coordinate(shape, version, "EBIT", period))] = \
+            figures["EBIT"][period] + change
+    specials[(ws.title, coordinate(shape, version, line, model.FY))] = \
+        figures[line][model.FY] - moved
+    specials[(ws.title, coordinate(shape, version, "EBIT", model.FY))] = \
+        figures["EBIT"][model.FY] + moved
+    summary = model.group_summary(shape.sheets)
+    ebit_budget = f"{col(shape, 2 + model.VERSIONS.index(version))}" \
+                  f"{shape.row0 + CONTROL_SUMMARY + 2 + 2}"
+    specials[("Control", ebit_budget)] = summary[("EBIT", version)] + moved
+    return wb, specials
+
+
+def _summary_cells(shape: Shape, figures: dict, versions) -> dict:
+    """The Control tab's group summary cells of some versions, given the summary's figures."""
+    top = shape.row0 + CONTROL_SUMMARY
+    return {("Control", f"{col(shape, 2 + model.VERSIONS.index(v))}{top + 2 + i}"):
+            figures[(line, v)]
+            for i, line in enumerate(("Revenue", "Gross profit", "EBIT")) for v in versions}
+
+
+def fixture_entity_changed():
+    # Plan_ES's Entity cell (B2, beside its label) reads AT. The Budget and
+    # Forecast formulas fetch their drivers by that cell, so the tab's Budget
+    # and Forecast blocks compute AT's figures; the typed Actual block and its
+    # subtotals stay ES's. The changed cells are given as specials.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_ES"][f"{col(shape, 1)}{shape.row0 + 1}"] = "AT"
+    specials = {}
+    for version in ("Budget", "Forecast"):
+        figures = model.block("AT", version)
+        for line in model.LINES:
+            for key in model.PERIODS + (model.FY,):
+                specials[("Plan_ES", coordinate(shape, version, line.name, key))] = \
+                    figures[line.name][key]
+    specials.update(_summary_cells(shape, model.group_summary(("AT", "AT", "DE")),
+                                   ("Budget", "Forecast")))
+    return wb, specials
+
+
+def fixture_name_other_tab():
+    # The defined name Budget_AT points at the Budget rows of Plan_ES, another
+    # entity's tab; Budget_ES still points there too. Every cell is the clean
+    # workbook's.
+    shape = Shape()
+    wb = write_workbook(shape)
+    _name(wb, "Budget_AT", "Plan_ES", f"{col(shape, 0)}{header_row(shape, 'Budget')}",
+          f"{col(shape, 14)}{line_row(shape, 'Budget', 'Headcount')}")
+    return wb, {}
+
+
+VERSION_LABEL = "Plan B"
+
+
+def fixture_version_label_changed():
+    # The label above the ES Budget block's header row reads Plan B. The
+    # Budget formulas fetch their drivers by that label, so every Budget cell
+    # computes 0, and so does the Control tab's Budget column (ES alone).
+    wb = write_workbook(SMALL)
+    wb["Plan_ES"][f"{col(SMALL, 0)}{title_row(SMALL, 'Budget')}"] = VERSION_LABEL
+    specials = {("Plan_ES", coordinate(SMALL, "Budget", line.name, key)): Decimal(0)
+                for line in model.LINES for key in model.PERIODS + (model.FY,)}
+    zero = {(line, "Budget"): Decimal(0) for line in ("Revenue", "Gross profit", "EBIT")}
+    specials.update(_summary_cells(SMALL, zero, ("Budget",)))
+    return wb, specials
+
+
+def fixture_name_shifted_up():
+    # The ES Budget name one row up: its first row is the block's title row,
+    # and its header row is the second row of its range.
+    wb = write_workbook(SMALL)
+    _rename_block(wb, SMALL, "Budget_ES", title_row(SMALL, "Budget"),
+                  line_row(SMALL, "Budget", "Headcount") - 1)
+    return wb, {}
+
+
 SHIFTED = Shape(row0=4, col0=3, banner="Calder Foods Group: draft for review, not for issue")
 
 # A target written for this machine: a drive, a root, a URI, or a folder name
@@ -859,6 +1008,7 @@ class Book:
     expected: str = ""
     specials: dict = field(default_factory=dict)
     edit: Optional[Callable] = None     # a hand edit after the recalculation, recorded
+    base: str = ""                      # what it is made from, recorded in the manifest (1e)
 
     @property
     def name(self) -> str:
@@ -976,6 +1126,84 @@ TYPED_SUBTOTAL = Book(
     expected="Formula integrity: one break, a typed constant in a formula row (EBIT, a "
              "subtotal), and nothing else.")
 FIXTURE_BOOKS += [EXTERNAL_LINK, EXTRA_TAB, TYPED_SUBTOTAL]
+CLEAN_NOTE = "The clean workbook (ES, AT and DE)"
+SMALL_BASE = ("the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean "
+              "workbook written with ES alone on Lists, Assumptions and Plan; it has no committed "
+              "file of its own")
+CLEAN_BASE = ("the full clean workbook: write_workbook() in scripts/build_sample.py, as "
+              "data/planning_model_clean.xlsx is built (ES, AT and DE)")
+BLOCK_SHORT = Book(
+    FIXTURES / "block_short.xlsx", fixture_block_short, SMALL, base=SMALL_BASE,
+    purpose=f"{SMALL_NOTE}, with the defined name Budget_ES ending two rows early, at the EBIT "
+            "row, so the block it names lacks Volume and Headcount, the last two accounts on "
+            "Lists. Every cell is the small base's.",
+    expected="Structure: one medium break, accounts not in the block (Budget_ES lacks VOL "
+             "Volume and HC Headcount), and nothing else.")
+NAME_SHIFTED = Book(
+    FIXTURES / "name_shifted.xlsx", fixture_name_shifted, SMALL, base=SMALL_BASE,
+    purpose=f"{SMALL_NOTE}, with the defined name Budget_ES moved one row down, so its first "
+            "row is the Product sales line and not the header row. Every cell is the small "
+            "base's.",
+    expected="Structure: one high break, the name's block cannot be read (its first row has no "
+             "Line item header and no month header); no no-unit or header-not-found break, and "
+             "nothing else.")
+NAME_WRONG_VERSION = Book(
+    FIXTURES / "name_wrong_version.xlsx", fixture_name_wrong_version, SMALL, base=SMALL_BASE,
+    purpose=f"{SMALL_NOTE}, with the defined name Forecast_ES placed on the Budget rows, where "
+            "Budget_ES also points. Every cell is the small base's.",
+    expected="Structure: one high break naming Forecast_ES and the sheet's label Budget above "
+             "the block's header row, and nothing else.")
+CURRENCY_CHANGED = Book(
+    FIXTURES / "currency_changed.xlsx", fixture_currency_changed, base=CLEAN_BASE,
+    purpose=f"{CLEAN_NOTE}, with Plan_AT's Currency cell, B3, reading USD while every money "
+            "account on Lists is in EUR. No formula reads the cell, so every figure is the "
+            "clean workbook's. Made from the clean workbook because the small base has no "
+            "Plan_AT.",
+    expected="Structure: one high break, the tab's currency (USD in B3) is not the unit of the "
+             "money accounts on Lists (EUR); against the committed ledger, nothing else.")
+WRONG_DRIVER_ROW = Book(
+    FIXTURES / "wrong_driver_row.xlsx", fixture_wrong_driver_row, base=CLEAN_BASE,
+    purpose=f"{CLEAN_NOTE}, with the DE Budget Rent and facilities line fetching the IT "
+            "services driver instead of Rent in all twelve months: the same formula in every "
+            "month, and every total computed from it. A known blind spot of the controls.",
+    expected="No break, from the controls or against the committed ledger: a row that is wrong "
+             "in the same way in every month has no pattern to break (docs/controls.md, What "
+             "the controls do not see).")
+ENTITY_CHANGED = Book(
+    FIXTURES / "entity_changed.xlsx", fixture_entity_changed, base=CLEAN_BASE,
+    purpose=f"{CLEAN_NOTE}, with Plan_ES's Entity cell, B2, reading AT. The Budget and Forecast "
+            "formulas fetch their drivers by that cell, so Plan_ES's Budget and Forecast blocks "
+            "compute AT's figures (and the Control tab's Budget and Forecast totals move); the "
+            "typed Actual block stays ES's.",
+    expected="Structure: one high break for the tab, the Entity cell (AT in B2) against the "
+             "defined names of its blocks (ES); against the committed ledger, nothing else.")
+NAME_OTHER_TAB = Book(
+    FIXTURES / "name_other_tab.xlsx", fixture_name_other_tab, base=CLEAN_BASE,
+    purpose=f"{CLEAN_NOTE}, with the defined name Budget_AT pointing at the Budget rows of "
+            "Plan_ES, another entity's tab. Every cell is the clean workbook's. Made from the "
+            "clean workbook because the small base has no Plan_AT.",
+    expected="Structure: one high break naming Budget_AT and where it points; Plan_AT's Budget "
+             "block is read by its labels, as before; against the committed ledger, nothing "
+             "else.")
+VERSION_LABEL_CHANGED = Book(
+    FIXTURES / "version_label_changed.xlsx", fixture_version_label_changed, SMALL,
+    base=SMALL_BASE,
+    purpose=f"{SMALL_NOTE}, with the label above the ES Budget block's header row reading "
+            f"{VERSION_LABEL}. The Budget formulas fetch their drivers by that label, so every "
+            "Budget cell computes 0, and so does the Control tab's Budget column.",
+    expected="Structure: one high break, the defined name Budget_ES against the sheet's label "
+             f"{VERSION_LABEL}, and nothing else.")
+NAME_SHIFTED_UP = Book(
+    FIXTURES / "name_shifted_up.xlsx", fixture_name_shifted_up, SMALL, base=SMALL_BASE,
+    purpose=f"{SMALL_NOTE}, with the defined name Budget_ES moved one row up, so its first row "
+            "is the block's title row (Budget) and its header row is the second. Every cell is "
+            "the small base's.",
+    expected="Structure: one high break, the name's block cannot be read (its first row has no "
+             "Line item header and no month header); no no-unit or header-not-found break, and "
+             "nothing else.")
+FIXTURE_BOOKS += [BLOCK_SHORT, NAME_SHIFTED, NAME_WRONG_VERSION, CURRENCY_CHANGED,
+                  WRONG_DRIVER_ROW, ENTITY_CHANGED, NAME_OTHER_TAB, VERSION_LABEL_CHANGED,
+                  NAME_SHIFTED_UP]
 BASE = Book(FIXTURES / "shared_formula.xlsx", _simple(lambda: write_workbook(SMALL)), SMALL,
             purpose=f"{SMALL_NOTE}, recalculated, then the ES Budget Product sales months and "
                     "the ES Budget FY2026 column from Product sales to Volume stored as shared "
@@ -1262,6 +1490,14 @@ def planted_truth() -> list[dict]:
     return items
 
 
+def fixture_entry(book: Book) -> dict:
+    """A fixture's manifest entry; a fixture of part 1e also records its base."""
+    entry = {"file": book.rel, "purpose": book.purpose, "expected_in_1d": book.expected}
+    if book.base:
+        entry["base"] = book.base
+    return entry
+
+
 def render_manifest(manifest: dict) -> str:
     return json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
 
@@ -1291,8 +1527,7 @@ def write_manifest(version: str, checks: dict, books: list[Book], timing: dict,
         ],
         "planted": planted_truth(),
         "checks": {rel: _check_entry(c) for rel, c in checks.items()},
-        "fixtures": [{"file": b.rel, "purpose": b.purpose, "expected_in_1d": b.expected}
-                     for b in books if b.dest.parent != DATA],
+        "fixtures": [fixture_entry(b) for b in books if b.dest.parent != DATA],
         "timing_seconds": timing,
         "files": files,
         "hand_edited": edits,
@@ -1332,8 +1567,7 @@ def partial_manifest(manifest: dict, checks: dict, books: list[Book], files: dic
     new["checks"] = {**manifest["checks"],
                      **{b.rel: _check_entry(checks[b.rel]) for b in books if b.rel in checks}}
     new["fixtures"] = list(manifest["fixtures"]) + [
-        {"file": b.rel, "purpose": b.purpose, "expected_in_1d": b.expected}
-        for b in books if b.dest.parent != DATA]
+        fixture_entry(b) for b in books if b.dest.parent != DATA]
     new["hand_edited"] = list(manifest.get("hand_edited", [])) + list(edits)
     return new
 

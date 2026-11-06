@@ -20,6 +20,12 @@ Members whose names fail the allow-list, and unknown entities and accounts,
 are left out. Nothing here reads a fact about a file (raw_batch), and no
 statement changes or removes a raw row: each table is made anew from the raw
 tables, all in one transaction, so a failed build leaves the last one whole.
+
+Two ways in (part 1e): build_model() opens and commits a transaction of its
+own, for the start-up build; run_statements() runs the same statements inside
+a transaction the caller has opened, so promote() can record a promotion and
+rebuild the facts from it in one transaction (src/promotion.py). DuckDB rolls
+back a CREATE OR REPLACE TABLE with the rest of its transaction.
 """
 
 from __future__ import annotations
@@ -48,16 +54,26 @@ def statements(path: Path) -> list[str]:
     return [s.strip() for s in text.split(";") if s.strip()]
 
 
+def run_statements(con) -> None:
+    """Runs every SQL file's statements in order, inside a transaction the caller opened."""
+    for path in sql_files():
+        for statement in statements(path):
+            con.execute(statement)
+
+
+def counts(con) -> dict:
+    """{table: rows} of the star schema."""
+    return {table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in STAR_TABLES}
+
+
 def build_model(con) -> dict:
-    """Runs every SQL file in order, in one transaction; {table: rows} of the star schema."""
+    """Runs every SQL file in order, in a transaction of its own; {table: rows}."""
     con.begin()
     try:
-        for path in sql_files():
-            for statement in statements(path):
-                con.execute(statement)
+        run_statements(con)
         con.commit()
     except Exception:
         con.rollback()
         raise
-    return {table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-            for table in STAR_TABLES}
+    return counts(con)

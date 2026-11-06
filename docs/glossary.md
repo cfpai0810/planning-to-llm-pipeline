@@ -12,13 +12,14 @@ a retired variant comes back. Each term below lists the variants it retires.
 | **batch** | One file as the pipeline read and landed it. Its id is the first 16 hex digits of the file's SHA-256, so the same bytes are always the same batch. | dataset, data set, data load |
 | **batch record** | What a batch says about its file: its name, SHA-256 and size, its sheets and their visibility, its creator, its times, the application that saved it, how it was calculated, and the targets of its links to other workbooks. Facts about the file, never findings. | |
 | **break** | What a control or reconcile reports: typed, with a stable id, a severity, a location, a message made from a fixed template, and its evidence. | discrepancy, mismatch, reconciling item, exception item |
-| **control** | One of the five spreadsheet checks: structure, calculation state, formula integrity, totals, and hidden content and links. | |
+| **control** | One of the five examinations of a workbook: structure, calculation state, formula integrity, totals, and hidden content and links. | |
+| **check** | What `main.py check` does: lands a workbook and a ledger in a temporary warehouse, runs the five controls and reconcile, prints each batch record and every break, and promotes nothing. | |
 | **reconcile** | To set what was read against what landed (source against raw), and the workbook's Actual block against the ledger. | |
 | **acknowledge** | For a named person to mark one break of a pair accepted, dismissed or investigated. | sign off, sign-off, approve a break |
 | **acknowledgement** | The row an acknowledgement appends: the pair, the break, the person, the action, an optional note and the time. A repeat appends; nothing is overwritten. | |
 | **pair** | A plan batch with the ledger batch it was reconciled against: what is acknowledged and promoted. | |
-| **promote** | To make a pair the one the star schema's facts are built from, once every one of its breaks has an acknowledgement. | go live, make live, publish a batch, release a batch |
-| **promotion** | The row a promotion appends: the pair, the person and time of its last acknowledgement, and the time it was promoted. The latest promotion is current until the next. | |
+| **promote** | To record, under a named person, that a pair is the current one; the facts are rebuilt from it. Refused while any of its breaks has no acknowledgement. | go live, make live, publish a batch, release a batch |
+| **promotion** | The row a promotion appends: the pair, the person who promoted it and the time, and the person and time of its last acknowledgement if it had any. The latest promotion is current until the next. | |
 | **plan** | The planning workbook's figures: its Actual, Budget and Forecast blocks, which `fact_plan` holds. The file itself is the planning workbook. | plan file, planning file |
 | **Actual** | The version of what happened: the workbook's Actual block, January to June as typed in, and the ledger's figures, which `fact_actual_erp` holds apart from the plan. | |
 | **Budget** | The version set before the year: twelve months, calculated by formulas from its drivers. | AOP, annual operating plan |

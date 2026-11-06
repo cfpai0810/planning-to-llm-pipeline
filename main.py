@@ -12,9 +12,10 @@ and landed, the controls and reconcile run, and the pair's breaks are stored.
 It prints each batch record's summary (names from the file shown as data,
 JSON-encoded, external link targets included), then the breaks as a plain
 table, and says how many there are. It never acknowledges a break and never
-promotes. A file that is missing or cannot be read gives one plain line, no
-traceback, and the exit code 1; a wrong command gives the usage and 2. With
-no arguments it prints the usage and what exists so far, and exits 0.
+promotes. A file that is missing or cannot be read gives one plain line in
+plain words (never the name of a Python class), no traceback, and the exit
+code 1; a wrong command gives the usage and 2. With no arguments it prints
+the usage and what exists so far, and exits 0.
 """
 
 from __future__ import annotations
@@ -97,8 +98,8 @@ def check(workbook: Path, ledger: Path) -> int:
     except (SourceError, warehouse.WarehouseError) as error:
         print(f"check: {error}")
         return 1
-    except OSError as error:
-        print(f"check: the check could not finish ({type(error).__name__}).")
+    except OSError:
+        print("check: the check could not finish: a file could not be read or written.")
         return 1
     print("\n".join(report_lines(built)))
     return 0

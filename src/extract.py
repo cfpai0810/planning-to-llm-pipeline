@@ -14,7 +14,14 @@ Reads a planning workbook into typed rows and the facts the controls need
   its month) and the total column by its FY header; the label and unit
   columns by their "Line item" and "Unit" headers;
 - accounts by their labels, matched to the names on Lists, whose own tables
-  are found by the defined names Accounts and Entities, or by their headers.
+  are found by the defined names Accounts and Entities, or by their headers;
+- each plan tab's Entity and Currency cells by their labels: the cell to the
+  right of the first cell that reads "Entity" or "Currency" (part 1e);
+- each block's version label through its header row, found by its "Line item"
+  label: the cell above that label (part 1e). For a block read through a
+  defined name, the header row is the first row of the name's range that holds
+  a "Line item" cell, wherever the name starts; the block is still read from
+  the first row of its range, as the name says.
 
 The workbook is read twice, once for formulas and once for the cached values
 the file holds, and the two are joined cell by cell. The pipeline never
@@ -35,8 +42,10 @@ hidden rows and columns and what they hold, merged ranges, each block's
 columns, lines and units and its header problems (a missing header, a
 duplicate period), labels not on Lists, the Lists tables, the defined names,
 every formula in the workbook with its cached state, member names the
-allow-list rejects, and the external link targets. It reports facts and never
-judges them: breaks, severities and messages are part 1d's.
+allow-list rejects, the external link targets, and each plan tab's Entity and
+Currency cells. It reports facts and never judges them: breaks, severities
+and messages are part 1d's. A file it cannot read at all is refused with one
+plain sentence that names no Python class.
 
 Some of the workbook's own XML (document properties, relationships) is read
 here with the standard library. Before any XML in the file is parsed, here or
@@ -74,7 +83,8 @@ from src.batch import (AS_RECEIVED, CALCULATED_BY_BUILD, DEFAULT_MANIFEST, NO_FO
 from src.hashing import file_sha256
 
 __all__ = ["AS_RECEIVED", "CALCULATED_BY_BUILD", "NO_FORMULAS", "ExtractError", "Extraction",
-           "PlanCell", "BatchRecord", "ControlTotal", "extract_workbook", "to_decimal"]
+           "Heading", "PlanCell", "BatchRecord", "ControlTotal", "extract_workbook",
+           "to_decimal"]
 
 ExtractError = SourceError
 
@@ -87,6 +97,7 @@ ACCOUNT_HEADERS = {"Code": "code", "Name": "name", "Parent": "parent", "Section"
                    "Polarity": "polarity", "Unit": "unit", "Ledger sign": "ledger_sign",
                    "Kind": "kind"}
 ENTITY_HEADERS = {"Code": "code", "Name": "name", "Region": "region"}
+HEADING_LABELS = ("Entity", "Currency")
 BY_NAME, BY_LABELS = "defined name", "header labels"
 
 MAX_PART_BYTES = 64 * 1024 * 1024
@@ -196,11 +207,14 @@ class Block:
     entity: str
     found_by: str                   # defined name or header labels
     ref: str                        # its range, the header row included
-    title: Optional[str]            # the label above the header
+    title: Optional[str]            # the cell above the range's first row
     columns: tuple
     lines: tuple
     header_problems: tuple
     merged: tuple
+    header_row: Optional[int] = None             # found by its "Line item" label (part 1e)
+    version_label_address: Optional[str] = None  # the cell above that label
+    version_label: Optional[str] = None          # what it holds
 
 
 @dataclass(frozen=True)
@@ -271,6 +285,16 @@ class RejectedName:
 
 
 @dataclass(frozen=True)
+class Heading:
+    """A plan tab's Entity or Currency cell, found by its label: the cell to its right."""
+    sheet: str
+    label: str                      # Entity or Currency
+    label_address: Optional[str]    # the first cell that reads the label; None when none does
+    address: Optional[str]          # the cell to its right
+    value: Optional[str]            # what that cell holds, as text; None when it is empty
+
+
+@dataclass(frozen=True)
 class Extraction:
     batch: BatchRecord
     cells: tuple
@@ -283,6 +307,7 @@ class Extraction:
     labels_not_on_lists: tuple
     rejected_names: tuple
     control_totals: tuple
+    headings: tuple = ()            # two Heading per plan tab, Entity then Currency
 
 
 # == Values ============================================================================
@@ -340,14 +365,25 @@ def _formula_text(value) -> str:
 
 # == The archive: refused parts, document properties and external links ==============
 
+# What a person reads when a file cannot be read at all: plain words, never the
+# name of a Python class.
+NOT_A_WORKBOOK = "not a workbook that can be read"
+NOT_AN_ARCHIVE = f"{NOT_A_WORKBOOK}: it is not an .xlsx file, or the file is damaged or cut short"
+EMPTY_FILE = f"{NOT_A_WORKBOOK}: the file is empty"
+NOT_OPENED = f"{NOT_A_WORKBOOK}: the file could not be opened"
+NOT_READ_AS_WORKBOOK = f"{NOT_A_WORKBOOK}: its contents could not be read as a workbook"
+
+
 def _archive_facts(path: Path) -> dict:
     """Checks every part, then reads the document properties and the external link targets."""
     name = path.name
     try:
         archive = zipfile.ZipFile(path)
-    except (zipfile.BadZipFile, OSError) as error:
-        raise SourceError("unreadable", name, "not a workbook that can be read "
-                          f"({type(error).__name__})") from None
+    except zipfile.BadZipFile:
+        empty = path.is_file() and path.stat().st_size == 0
+        raise SourceError("unreadable", name, EMPTY_FILE if empty else NOT_AN_ARCHIVE) from None
+    except OSError:
+        raise SourceError("unreadable", name, NOT_OPENED) from None
     with archive:
         infos = archive.infolist()
         if sum(i.file_size for i in infos) > MAX_TOTAL_BYTES:
@@ -359,9 +395,9 @@ def _archive_facts(path: Path) -> dict:
             if info.filename.endswith((".xml", ".rels")) or info.filename.startswith("["):
                 try:
                     data = archive.read(info)
-                except (zipfile.BadZipFile, OSError, ValueError) as error:
-                    raise SourceError("unreadable", name, f"the part {info.filename} cannot be "
-                                      f"read ({type(error).__name__})") from None
+                except (zipfile.BadZipFile, OSError, ValueError):
+                    raise SourceError("unreadable", name, f"the part {info.filename} is "
+                                      "damaged and cannot be read") from None
                 if DOCUMENT_TYPE.search(data):
                     raise SourceError("unsafe_xml", name, f"the part {info.filename} declares "
                                       "a document type, which a workbook never needs")
@@ -593,6 +629,19 @@ def _role(header: Optional[str]) -> str:
     return "other"
 
 
+def reads_block(name: DefinedNameFact, title: str) -> bool:
+    """True when a block is read through this defined name on the plan tab of that title.
+
+    The name must refer to one range, on that tab, and belong to the workbook
+    or to that tab. The structure control reports a name of a block's form
+    that fails this, so it is never ignored in silence (part 1e).
+    """
+    if len(name.destinations) != 1 or name.scope not in (None, title):
+        return False
+    bounds = _bounds(name.destinations[0])
+    return bool(bounds) and bounds[0] == title
+
+
 def _block_ranges(sheet: _Sheet, entity: str, names: list) -> list[tuple]:
     """(version, found by, (first, top, last, bottom)) of every block on a plan sheet."""
     title = sheet.ws.title
@@ -600,10 +649,8 @@ def _block_ranges(sheet: _Sheet, entity: str, names: list) -> list[tuple]:
     blocks = []
     for name in names:
         match = pattern.match(name.name)
-        if match and len(name.destinations) == 1 and name.scope in (None, title):
-            bounds = _bounds(name.destinations[0])
-            if bounds and bounds[0] == title:
-                blocks.append((match["version"], BY_NAME, bounds[1]))
+        if match and reads_block(name, title):
+            blocks.append((match["version"], BY_NAME, _bounds(name.destinations[0])[1]))
     named = {version for version, _, _ in blocks}
     for (row, column), cell in sorted(sheet.cells.items()):
         if _text(cell.value) != LABEL_HEADER or row == 1:
@@ -664,10 +711,31 @@ def _block(sheet: _Sheet, entity: str, version: str, found_by: str, bounds: tupl
     problems.sort(key=lambda p: next(i for i, col in enumerate(columns)
                                      if col.letter == p.columns[0]))
     ref = f"{get_column_letter(first)}{top}:{get_column_letter(last)}{bottom}"
+    header_row, label_address, label = _version_label(sheet, bounds)
     block = Block(name, sheet.ws.title, version, entity, found_by, ref,
                   sheet.text(top - 1, first) if top > 1 else None, columns, tuple(lines),
-                  tuple(problems), tuple(m for m in merged if _overlaps(m, bounds)))
+                  tuple(problems), tuple(m for m in merged if _overlaps(m, bounds)),
+                  header_row, label_address, label)
     return block, rows
+
+
+def _version_label(sheet: _Sheet, bounds: tuple) -> tuple:
+    """(header row, address, text) of a block's version label, found through its header row.
+
+    The header row is the first row of the range that holds a "Line item"
+    cell; the version label is the cell above that cell. None, None, None when
+    no row of the range holds one.
+    """
+    first, top, last, bottom = bounds
+    for row in range(top, bottom + 1):
+        column = next((c for c in range(first, last + 1)
+                       if sheet.text(row, c) == LABEL_HEADER), None)
+        if column is not None:
+            if row == 1:
+                return row, None, None
+            return (row, f"{get_column_letter(column)}{row - 1}",
+                    sheet.text(row - 1, column))
+    return None, None, None
 
 
 def _hidden(sheet: _Sheet, blocks: list) -> tuple[tuple, tuple]:
@@ -689,6 +757,26 @@ def _hidden(sheet: _Sheet, blocks: list) -> tuple[tuple, tuple]:
         tuple(n for n, (first, _, last, _) in on_sheet if first <= c <= last))
         for c in sorted(columns))
     return hidden_rows, hidden_columns
+
+
+def _headings(sheet: _Sheet) -> tuple:
+    """The plan tab's Entity and Currency cells: right of the first cell that reads each label.
+
+    Found by the label, never by a fixed address: the sample has them in B2
+    and B3, the shifted fixture in D5 and D6. The first cell in reading order
+    (row by row, then column by column) that reads the label is the label.
+    """
+    found = []
+    for label in HEADING_LABELS:
+        at = next(((r, c) for (r, c) in sorted(sheet.cells) if sheet.text(r, c) == label), None)
+        if at is None:
+            found.append(Heading(sheet.ws.title, label, None, None, None))
+            continue
+        row, column = at
+        found.append(Heading(sheet.ws.title, label, f"{get_column_letter(column)}{row}",
+                             f"{get_column_letter(column + 1)}{row}",
+                             sheet.text(row, column + 1)))
+    return tuple(found)
 
 
 # == The members the allow-list checks ===================================================
@@ -730,9 +818,8 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
             warnings.simplefilter("ignore")
             formulas_wb = load_workbook(path, data_only=False, keep_links=False)
             values_wb = load_workbook(path, data_only=True, keep_links=False)
-    except Exception as error:      # openpyxl raises many kinds on a damaged file
-        raise SourceError("unreadable", path.name, "not a workbook that can be read "
-                          f"({type(error).__name__})") from None
+    except Exception:               # openpyxl raises many kinds on a damaged file
+        raise SourceError("unreadable", path.name, NOT_READ_AS_WORKBOOK) from None
 
     sheet_states = tuple(SheetState(name, formulas_wb[name].sheet_state)
                          for name in formulas_wb.sheetnames)
@@ -742,7 +829,7 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
     lists = _read_lists(sheets, names)
     entities_on_lists = set(lists.entity_codes())
 
-    plan_sheets, blocks, raw_rows = [], [], []
+    plan_sheets, blocks, raw_rows, headings = [], [], [], []
     merged_of = {title: tuple(str(m) for m in sorted(s.ws.merged_cells.ranges,
                                                      key=lambda m: (m.min_row, m.min_col)))
                  for title, s in sheets.items()}
@@ -752,6 +839,7 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
             continue
         entity = match["entity"]
         plan_sheets.append((title, entity))
+        headings += _headings(sheet)
         for version, found_by, bounds in _block_ranges(sheet, entity, names):
             block, rows = _block(sheet, entity, version, found_by, bounds, lists, merged_of[title])
             blocks.append(block)
@@ -809,4 +897,4 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
         blocks=tuple(blocks), plan_sheets=tuple(plan_sheets), lists=lists,
         defined_names=tuple(names), labels_not_on_lists=labels,
         rejected_names=_rejected(lists, blocks, labels),
-        control_totals=control_totals(batch_id, cells))
+        control_totals=control_totals(batch_id, cells), headings=tuple(headings))

@@ -542,3 +542,59 @@ class TestTheFacts:
         names = {f.name for cls in (extract.Extraction, extract.PlanCell, extract.BatchRecord)
                  for f in dataclasses.fields(cls)}
         assert not names & {"break", "breaks", "severity", "message", "finding", "findings"}
+
+
+# -- Part 1e: the plan tabs' headings ----------------------------------------------------------
+
+class TestTheHeadings:
+    """Each plan tab's Entity and Currency cells, found by their labels: the cell to the right."""
+
+    @staticmethod
+    def headings(extraction) -> list:
+        return [(h.sheet, h.label, h.label_address, h.address, h.value)
+                for h in extraction.headings]
+
+    def test_the_sample(self, extract):
+        assert self.headings(extracted(extract, SAMPLE)) == [
+            (f"Plan_{e}", label, f"A{row}", f"B{row}", value)
+            for e in ("ES", "AT", "DE")
+            for label, row, value in (("Entity", 2, e), ("Currency", 3, "EUR"))]
+
+    def test_found_by_their_labels_where_the_layout_moves_them(self, extract):
+        assert self.headings(extracted(extract, FIXTURES / "shifted.xlsx")) == [
+            (f"Plan_{e}", label, f"C{row}", f"D{row}", value)
+            for e in ("ES", "AT", "DE")
+            for label, row, value in (("Entity", 5, e), ("Currency", 6, "EUR"))]
+
+    def test_the_changed_currency(self, extract):
+        found = self.headings(extracted(extract, FIXTURES / "currency_changed.xlsx"))
+        assert ("Plan_AT", "Currency", "A3", "B3", "USD") in found
+        assert ("Plan_ES", "Currency", "A3", "B3", "EUR") in found
+
+    def test_a_label_that_is_not_there(self, extract, tmp_path):
+        # The Currency label of the small base removed inside the zip.
+        def drop(name, data):
+            if name.startswith("xl/sharedStrings") or name.startswith("xl/worksheets/"):
+                return data.replace(b">Currency<", b">Valuta<")
+            return data
+        extraction = extract.extract_workbook(zip_copy(FIXTURES / "extra_tab.xlsx",
+                                                       tmp_path / "no_currency.xlsx", edit=drop))
+        assert self.headings(extraction) == [("Plan_ES", "Entity", "A2", "B2", "ES"),
+                                             ("Plan_ES", "Currency", None, None, None)]
+
+    def test_each_named_blocks_version_label_is_found_through_its_header_row(self, extract):
+        # The header row is found in the name's range by its "Line item" label,
+        # and the version label is the cell above that label: never the cell
+        # above wherever the name starts (the reviewer's notes on 1e).
+        def labels(path):
+            return {b.name: (b.header_row, b.version_label_address, b.version_label)
+                    for b in extracted(extract, path).blocks}
+        assert labels(SAMPLE)["Budget_DE"] == (22, "A21", "Budget")
+        assert labels(FIXTURES / "shifted.xlsx")["Forecast_AT"] == (41, "C40", "Forecast")
+        assert labels(FIXTURES / "name_wrong_version.xlsx")["Forecast_ES"] == (22, "A21", "Budget")
+        assert labels(FIXTURES / "name_shifted_up.xlsx")["Budget_ES"] == (22, "A21", "Budget")
+        assert labels(FIXTURES / "name_shifted.xlsx")["Budget_ES"] == (None, None, None)
+
+    def test_no_heading_is_read_from_a_tab_that_is_not_a_plan_tab(self, extract):
+        assert {h.sheet for h in extracted(extract, FIXTURES / "extra_tab.xlsx").headings} == {
+            "Plan_ES"}

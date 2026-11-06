@@ -35,8 +35,9 @@ that import alone, in a new process of its own.
 At start nothing is promoted, so the start-up build's star schema step has
 no facts to build. The script also times that step with facts: in a
 throwaway copy of a built warehouse it acknowledges every break of the
-sample pair, under a person named "Timing run (scripts/time_build.py)",
-promotes the pair, and times the star schema's SQL files on it.
+sample pair, under a person named "Timing run (scripts/time_build.py)", and
+promotes the pair under the same name (promoting builds the facts), then
+times the star schema's SQL files on it again.
 
 Nothing here is imported by the pipeline or the web app. The script builds
 into a fresh temporary folder each time and deletes it afterwards; it reads
@@ -257,15 +258,15 @@ def _star_schema_with_facts(built: Path, copy: Path, runs: int) -> list[str]:
             promotion.acknowledge(con, pair, break_id, TIMING_PERSON, "accepted",
                                   "Acknowledged only to time the star schema with facts.",
                                   clock=lambda: stamp)
-        promotion.promote(con, pair, clock=lambda: stamp)
+        promotion.promote(con, pair, TIMING_PERSON, clock=lambda: stamp)
         for _ in range(runs):
             began = time.perf_counter()
             counts = model.build_model(con)
             times.append(time.perf_counter() - began)
     return [f"  star schema with facts to build    {_spread(times)}, in a throwaway copy where",
             f"    every break of the sample pair was acknowledged by \"{TIMING_PERSON}\" and the",
-            f"    pair promoted: fact_plan {counts['fact_plan']} rows, fact_actual_erp "
-            f"{counts['fact_actual_erp']} rows (at start both are empty)"]
+            f"    pair promoted by the same name: fact_plan {counts['fact_plan']} rows, "
+            f"fact_actual_erp {counts['fact_actual_erp']} rows (at start both are empty)"]
 
 
 INCLUDES = """What each number includes:

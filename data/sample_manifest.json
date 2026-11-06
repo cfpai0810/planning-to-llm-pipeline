@@ -221,6 +221,42 @@
     "tests/fixtures/typed_subtotal.xlsx": {
       "formula_cells": 371,
       "largest_difference": "0"
+    },
+    "tests/fixtures/block_short.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/name_shifted.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/name_wrong_version.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/currency_changed.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/wrong_driver_row.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/entity_changed.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/name_other_tab.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/version_label_changed.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/name_shifted_up.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
     }
   },
   "fixtures": [
@@ -348,6 +384,60 @@
       "file": "tests/fixtures/typed_subtotal.xlsx",
       "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the ES Actual EBIT for 2026-06 typed as the number its formula gave, so every total still agrees.",
       "expected_in_1d": "Formula integrity: one break, a typed constant in a formula row (EBIT, a subtotal), and nothing else."
+    },
+    {
+      "file": "tests/fixtures/block_short.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the defined name Budget_ES ending two rows early, at the EBIT row, so the block it names lacks Volume and Headcount, the last two accounts on Lists. Every cell is the small base's.",
+      "expected_in_1d": "Structure: one medium break, accounts not in the block (Budget_ES lacks VOL Volume and HC Headcount), and nothing else.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
+    },
+    {
+      "file": "tests/fixtures/name_shifted.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the defined name Budget_ES moved one row down, so its first row is the Product sales line and not the header row. Every cell is the small base's.",
+      "expected_in_1d": "Structure: one high break, the name's block cannot be read (its first row has no Line item header and no month header); no no-unit or header-not-found break, and nothing else.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
+    },
+    {
+      "file": "tests/fixtures/name_wrong_version.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the defined name Forecast_ES placed on the Budget rows, where Budget_ES also points. Every cell is the small base's.",
+      "expected_in_1d": "Structure: one high break naming Forecast_ES and the sheet's label Budget above the block's header row, and nothing else.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
+    },
+    {
+      "file": "tests/fixtures/currency_changed.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with Plan_AT's Currency cell, B3, reading USD while every money account on Lists is in EUR. No formula reads the cell, so every figure is the clean workbook's. Made from the clean workbook because the small base has no Plan_AT.",
+      "expected_in_1d": "Structure: one high break, the tab's currency (USD in B3) is not the unit of the money accounts on Lists (EUR); against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/wrong_driver_row.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the DE Budget Rent and facilities line fetching the IT services driver instead of Rent in all twelve months: the same formula in every month, and every total computed from it. A known blind spot of the controls.",
+      "expected_in_1d": "No break, from the controls or against the committed ledger: a row that is wrong in the same way in every month has no pattern to break (docs/controls.md, What the controls do not see).",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/entity_changed.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with Plan_ES's Entity cell, B2, reading AT. The Budget and Forecast formulas fetch their drivers by that cell, so Plan_ES's Budget and Forecast blocks compute AT's figures (and the Control tab's Budget and Forecast totals move); the typed Actual block stays ES's.",
+      "expected_in_1d": "Structure: one high break for the tab, the Entity cell (AT in B2) against the defined names of its blocks (ES); against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/name_other_tab.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the defined name Budget_AT pointing at the Budget rows of Plan_ES, another entity's tab. Every cell is the clean workbook's. Made from the clean workbook because the small base has no Plan_AT.",
+      "expected_in_1d": "Structure: one high break naming Budget_AT and where it points; Plan_AT's Budget block is read by its labels, as before; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/version_label_changed.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the label above the ES Budget block's header row reading Plan B. The Budget formulas fetch their drivers by that label, so every Budget cell computes 0, and so does the Control tab's Budget column.",
+      "expected_in_1d": "Structure: one high break, the defined name Budget_ES against the sheet's label Plan B, and nothing else.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
+    },
+    {
+      "file": "tests/fixtures/name_shifted_up.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the defined name Budget_ES moved one row up, so its first row is the block's title row (Budget) and its header row is the second. Every cell is the small base's.",
+      "expected_in_1d": "Structure: one high break, the name's block cannot be read (its first row has no Line item header and no month header); no no-unit or header-not-found break, and nothing else.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
     }
   ],
   "timing_seconds": {
@@ -372,9 +462,21 @@
       "sha256": "a892838c8d0e1731d8d4b61fa1c2a800aceaabe08f8002576bbef9547d4a8b51",
       "bytes": 19851
     },
+    "tests/fixtures/block_short.xlsx": {
+      "sha256": "c32eef733eea4aa82827569ead5222af04d29d19fd4ad300b192fb835a3609a3",
+      "bytes": 19835
+    },
+    "tests/fixtures/currency_changed.xlsx": {
+      "sha256": "436d151ca1cbbf61987cd0050f60c246c0048bb0d791ab415286f29ff97401be",
+      "bytes": 37239
+    },
     "tests/fixtures/duplicate_period.xlsx": {
       "sha256": "1c29344623c7ad70e7fa7ae755dc6cac08ff1735797eae68ff91c18893b29976",
       "bytes": 19835
+    },
+    "tests/fixtures/entity_changed.xlsx": {
+      "sha256": "7cf9539baf8c0f165d33803610fc1af452c1beb4a0e020dddc6cb0f9ee50f03a",
+      "bytes": 37203
     },
     "tests/fixtures/error_values.xlsx": {
       "sha256": "e092dc58de7cb263284699442b21207c5f6fbd8bcb60cf0c79e60c07174f5ce3",
@@ -440,6 +542,22 @@
       "sha256": "d061ae6807a7c6d7eda1443bae567563daf27d9abde86ef276e28177089a41e0",
       "bytes": 37280
     },
+    "tests/fixtures/name_other_tab.xlsx": {
+      "sha256": "6a23804924e112a4c921f0cda6a934129df652d3c8e801b0f33cc57ab01f385b",
+      "bytes": 37241
+    },
+    "tests/fixtures/name_shifted.xlsx": {
+      "sha256": "ad64d50e9d72006444c95aeaa34899e2a46ee43451ff42a0b5e2a49d6d1fc3cb",
+      "bytes": 19835
+    },
+    "tests/fixtures/name_shifted_up.xlsx": {
+      "sha256": "075494be01c2555f29887b688de905286fd60d6116835a3cf173afaf763e8712",
+      "bytes": 19835
+    },
+    "tests/fixtures/name_wrong_version.xlsx": {
+      "sha256": "bdf3432392f99215a36219397c4759b8ea53b903dfbec415edb2a6df4c544343",
+      "bytes": 19826
+    },
     "tests/fixtures/names.xlsx": {
       "sha256": "8fb0a488276e4b27a55271514a2a36d3181b3802f9e68d84338c06a4d9eb857b",
       "bytes": 19941
@@ -467,6 +585,14 @@
     "tests/fixtures/unknown_account.xlsx": {
       "sha256": "504f67d0e9f8cb75db0852f581506d14f867183123c35e2e94104ed9c3fb49e3",
       "bytes": 19849
+    },
+    "tests/fixtures/version_label_changed.xlsx": {
+      "sha256": "c1967ae7dd08f6d867fcce7766146b6b47205419f97c0820ff5b78e681426171",
+      "bytes": 19330
+    },
+    "tests/fixtures/wrong_driver_row.xlsx": {
+      "sha256": "144de8cb3695f9dc647cfbf572781c5b4e3c4040dc29292770da49b67f39895e",
+      "bytes": 37212
     }
   },
   "hand_edited": [

@@ -84,8 +84,19 @@ fixed address only where nothing else names the thing:
   the range;
 - a name on Lists or in a long-format source: `name`, the member and the name;
   a code in a long-format source: `code`, the member and the code;
+- a block against its anchors, or a block that cannot be read: `anchor` and
+  the block's name, so a name that disagrees and a block that cannot be read
+  are one break; a name of a block's form that is not used, where the tab's
+  block is not found either: the missing block's anchors, so the two are one
+  break; the accounts a block lacks: `accounts` and the block;
+- a tab's Entity cell: `entity cell` and the tab; its Currency cell:
+  `currency` and the tab; a tab whose Entity or Currency label is not found:
+  `heading` and the tab; money accounts with more than one unit: `units` and
+  `Lists`;
 - a hidden row or column: `row` or `column`, the tab and its number or letter;
-  a link to another workbook: `link` and its number in the workbook.
+  a run of neighbouring hidden rows or columns: the same, with the range
+  (`53:55`, `C:E`) in place of the number or letter; a link to another
+  workbook: `link` and its number in the workbook.
 
 The same break in two files has the same id; the batch id says which file it
 came from. Should two breaks of one control ever share their anchors, the
@@ -109,11 +120,13 @@ the evidence holds them as plain decimals.
 
 - **high**: a figure as read is wrong, or cannot be read, or cannot be placed:
   a missing tab or header, a duplicate or missing period, a formula with no
-  cached value, an error value, a total that does not tie;
+  cached value, an error value, a total that does not tie, a block that cannot
+  be read or whose defined name disagrees with the sheet, a tab whose Entity
+  or Currency cell cannot be found, a currency that is not the accounts' unit;
 - **medium**: a figure may be wrong, or a member is left out, or something is
   out of sight: a typed or embedded constant, a member not on Lists or failing
-  the allow-list, a line with no unit, merged cells, hidden content, a link to
-  another workbook;
+  the allow-list, a line with no unit, merged cells, accounts not in the
+  block, hidden content, a link to another workbook;
 - **low**: a person should look, but nothing is shown to be wrong: a pattern
   difference alone, and a visible tab not on the expected list.
 
@@ -135,13 +148,86 @@ break, not two.
 | `missing_tab` | high | A tab on the expected list is missing |
 | `entity_not_on_lists` | medium | A visible `Plan_` tab for an entity that is not on Lists |
 | `tab_not_on_list` | low | Any other visible tab outside the expected list: a tab not on the expected list |
+| `heading_not_found` | high | A plan tab with no cell labelled "Entity" or "Currency": one break for the tab, naming the labels not found |
+| `anchor_disagreement` | high | A block's defined name that disagrees with the sheet: its version against the label above the block's header row, or the tab's Entity cell against the entity the tab and its names give; or a name of a block's form that is not used |
+| `block_unreadable` | high | A block that cannot be read: the first row of its range has no "Line item" header or no month header |
 | `header_not_found` | high | A column of a block with no header, or a block (Actual, Budget, Forecast) whose header is not found on the plan tab of an entity on Lists |
 | `duplicate_period` | high | One period heading two or more columns of a block; the months this leaves with no column are named in its evidence |
 | `period_gap` | high | A month of the block's year with no column, when no duplicate or missing header in the block accounts for it |
-| `account_not_on_lists` | medium | A line item whose label is not an account on Lists |
+| `accounts_not_in_block` | medium | Accounts not in the block: a block that lacks accounts on Lists, beyond those its lines not on Lists stand for |
+| `account_not_on_lists` | medium | A line item whose label is not an account on Lists; when it pairs with a missing account, the break names that account |
 | `rejected_name` | medium | A member name that fails the allow-list, with its reason codes; the break says the member is excluded from the star schema and from every prompt |
 | `no_unit` | medium | A line item with no unit |
 | `merged_cells` | medium | Merged cells inside a plan block |
+| `currency_disagreement` | high | A plan tab's Currency cell that is not the unit of the money accounts on Lists |
+| `money_units_differ` | high | Money accounts on Lists that do not share one unit, so no tab's currency can be checked |
+
+**Each block against its anchors.** For each block read through a defined
+name (`<version>_<entity>`), the control compares what the name says with
+what the sheet states: the version label above the block's header row, and
+the tab's Entity cell. All three are found by their labels, as the extractor
+finds everything else, never at fixed cells. The Entity cell is the cell to
+the right of the first cell that reads "Entity" (B2 in the sample, D5 in the
+`shifted` fixture). The version label is found through the block's header
+row: the first row of the name's range that holds a "Line item" cell, and
+the cell above that cell, wherever the name happens to start (A21 for the ES
+Budget block, C40 for the shifted AT Forecast block). Any disagreement is one
+high break naming the name, what it says and what the sheet states
+(`name_wrong_version`, `version_label_changed`). The Entity cell is one
+cell of its tab, so an Entity cell that disagrees is one break for the tab,
+listing every defined name on it (`entity_changed`: Plan_ES's B2 reads AT).
+A name of a block's form that the extractor does not read a block through (it
+refers to another tab, to more than one range or to none, or belongs to
+another tab) is one high break naming the name and where it points
+(`name_other_tab`: Budget_AT on Plan_ES's Budget rows); where the tab's own
+block is not found either, that is one fault, and one break with both
+reasons.
+
+The extractor never falls back to reading a block by its labels to repair a
+bad name. A block read through a name that disagrees with the sheet lands as
+the name reads it, and its high break holds promotion until a named person
+acknowledges it (`name_wrong_version`: the Forecast name on the Budget rows
+lands the Budget figures as Forecast, and gives one break). A name that cannot
+be read through at all is not repaired either: it is reported, and the tab's
+block is read by its own labels where they are found, as it always was. One
+consequence is left as it is and stated here: when a block's version label
+is changed (`version_label_changed`: Plan B above the ES Budget header), the
+extractor also finds those rows by their labels as a block of that name, as
+it did before 1e, so they land twice, under Budget and under Plan B. That
+adds no break; the one high break holds promotion.
+
+**A block that cannot be read.** A block whose first row has no "Line item"
+header or no month header cannot be read: one high break, with the reason.
+The control examines nothing else in that block (no header problem, no line
+with no unit, no accounts not in the block, no label or name in it), so no
+other break stands in for it and there is no flood of one break per line.
+When the same block also disagrees with its anchor, that is one fault: one
+break with both reasons, as D4 carries two. `name_shifted` and
+`name_shifted_up`, the Budget name for ES one row down and one row up, each
+give exactly one break, where before 1e they gave 12 and 28.
+
+**Every block holds every account on Lists.** A line whose label is not on
+Lists is already one break, so lines not on Lists pair with missing accounts
+one to one within a block: the k-th line not on Lists, in row order, pairs
+with the k-th missing account, in Lists order. So n such lines excuse at most
+n missing accounts, and each such line's break names the account it
+displaced, in its message and its evidence (its id, kind and severity are as
+before). Every missing account left unpaired is reported in one medium
+break, accounts not in the block, naming the block and listing those
+accounts alone (by name in the message, by code and name in the evidence).
+So `unknown_account` (Volume relabelled) keeps its one break, which now names
+Volume; `block_short` (the Budget name two rows short) gives the accounts
+break; and a block with one line relabelled and two rows cut gives both, the
+relabelled line naming one account and the accounts break the other two.
+
+**The currency.** Each plan tab's Currency cell, found by its label like the
+Entity cell (B3 in the sample), must equal the unit of the money accounts on
+Lists: every account outside the Statistics section, EUR in the sample. If it
+does not, that is one high break naming the tab, the cell, the tab's value and
+the accounts' unit (`currency_changed`: Plan_AT's B3 reads USD). If the money
+accounts do not share one unit, that is one high break on Lists and no tab's
+currency is checked. A plan tab with no cell labelled "Entity" or "Currency"
+is one high break saying which label is missing.
 
 ### Calculation state
 
@@ -228,11 +314,19 @@ it; this control is the one that sees it. A link's target is recorded in
 the break's evidence, as text, with the cells whose formulas use it. It
 appears nowhere else: not in the message, the location or the id.
 
+A run of neighbouring hidden rows (or columns) on one tab is one break, with
+the range in its address and its evidence (`53:55`, `C:E`), so a file with
+thousands of hidden rows in a run gives one break, not thousands. It is high
+when any row or column of the run crosses a plan block. A single hidden row or
+column is the break it always was: D3 keeps its id, message and severity.
+Rows and columns hidden on a hidden tab are not reported apart: the tab's own
+break is enough.
+
 | Kind | Severity | What it detects |
 |---|---|---|
 | `hidden_sheet` | medium | A hidden tab |
-| `hidden_row` | medium | A hidden row; high when it crosses a plan block |
-| `hidden_column` | medium | A hidden column; high when it crosses a plan block |
+| `hidden_row` | medium | A hidden row, or a run of neighbouring hidden rows; high when it crosses a plan block |
+| `hidden_column` | medium | A hidden column, or a run of neighbouring hidden columns; high when it crosses a plan block |
 | `external_link` | medium | A link to another workbook |
 
 ### A long-format source
@@ -297,6 +391,35 @@ total that disagrees with the plan tabs.
 These controls detect; they do not prevent. Nothing here replaces an
 independent review of the model by a second person: an acknowledgement records
 that a named person saw each break, not that anyone re-performed the work.
+
+### What the controls do not see
+
+The controls find a fault by a difference: a cell unlike its row, a total
+that does not add up, an anchor that disagrees, a figure that is not the
+ledger's. A fault that leaves no difference passes them. These are known:
+
+- **A whole row wrong in the same way in all twelve months.** A row that
+  fetches the wrong driver in every month (Rent and facilities reading the IT
+  services rate, say) holds one pattern across the row, and every total is
+  computed from it, so nothing differs. The `wrong_driver_row` fixture is
+  exactly this, and `test_known_blind_spot_consistent_wrong_driver` asserts
+  that the whole start-up build against the committed ledger gives no break,
+  so a control that learns to see it must change that test on purpose.
+- **A changed input on Assumptions.** A driver someone changed is a decision,
+  not an error. The controls do not judge whether a driver is right.
+- **A figure wrong in the workbook and in the ledger by the same amount.**
+  Reconcile compares the two sources, and two equal wrong figures agree.
+- **Anything outside the blocks.** Only the plan blocks are read as figures:
+  a note, a scratch calculation or the Control tab's own totals are not
+  checked against them. Hidden rows and tabs are reported, but not what they
+  hold.
+- **Budget and Forecast against a second source.** Reconcile reads the
+  Actual block only, so a Budget or Forecast figure is never tied to anything
+  outside the workbook.
+- **A unit that is present but wrong.** A line with no unit is a break; a
+  line whose unit differs from its account's unit on Lists is not compared.
+- **Versions swapped whole.** If two blocks are swapped together with their
+  version labels and their defined names, every anchor agrees.
 
 ## Reconcile
 
@@ -402,16 +525,27 @@ warehouse.
 - **Acknowledgements belong to the pair.** A break's id is the same in every
   file by design, so an acknowledgement given for one pair never counts for
   the same break of another.
-- **Promote.** The pair is promoted only once every one of its breaks has an
-  acknowledgement; until then promotion is refused, with the count of breaks
-  still waiting. The promotion records the person and time of the pair's
-  last acknowledgement, and the time of the promotion.
+- **Promote.** A named person promotes, whatever the break count: the name
+  follows an acknowledger's rules (required, trimmed, at most 60 characters,
+  the same refusals) and is checked before the breaks. The pair is promoted
+  only once every one of its breaks has an acknowledgement; until then
+  promotion is refused, with the count of breaks still waiting. The promotion
+  records `promoted_by` and `promoted_at`, and the person and time of the
+  pair's last acknowledgement (`last_acknowledged_by`,
+  `last_acknowledged_at`), which are empty for a pair with no break.
+- **Promote rebuilds the facts.** `promote` records the promotion and
+  rebuilds the star schema from the promoted pair in one transaction. If the
+  rebuild fails, the transaction is rolled back: there is no new promotion
+  row, the previous promotion stays current, and the previous facts stay as
+  they were. DuckDB rolls back a `CREATE OR REPLACE TABLE` with the rest of
+  its transaction; a test makes one statement of the rebuild fail and
+  compares every star table row for row.
 - **The current pair.** The latest promotion is the current one: the
   previous promotion stays current until the next. The star schema's facts
   are built from the current pair only, `fact_plan` from its plan batch and
   `fact_actual_erp` from its ledger batch. At a fresh start nothing is
   promoted, so the facts are empty until someone acknowledges every break and
-  promotes.
+  a named person promotes.
 
 The breaks, the acknowledgements and the promotions are append-only tables
 in the warehouse (`gate_review`, `gate_break`, `gate_acknowledgement`,

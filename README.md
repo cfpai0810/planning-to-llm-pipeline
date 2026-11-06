@@ -24,7 +24,7 @@ A governed question-and-answer pipeline over planning data. A planning model bui
 ## Test suite
 
 <!-- test-count: written by tests/conftest.py after a full, passing run, from generated/test_counts.json; never typed -->
-The suite has **1017 tests**, counted by its last full, passing run (`generated/test_counts.json`).
+The suite has **1128 tests**, counted by its last full, passing run (`generated/test_counts.json`).
 <!-- /test-count -->
 
 The suite blocks every connection that leaves this machine, including during
@@ -35,6 +35,11 @@ servers.
 pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
 ```
+
+Running it locally on Windows, two things to know:
+
+- A virtual environment under a deeply nested folder cannot load DuckDB's DLL, because of the 260-character path limit; keep the venv's path short.
+- Git Bash's `rm -rf` cannot remove some files of a venv that uv installed; PowerShell's `Remove-Item -Recurse -Force` can.
 
 GitHub Actions runs the whole suite on every push and pull request, on Python
 3.13 and 3.14, installed from the lock files.

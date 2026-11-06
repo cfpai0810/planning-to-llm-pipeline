@@ -8,14 +8,18 @@ of an extraction (src/extract.py, src/long_format.py) and returns typed breaks.
 
 - Structure: the tabs, the block headers, the periods, accounts not on Lists,
   merged cells inside a plan block, line items with no unit, and member names
-  that fail the allow-list.
+  that fail the allow-list; and (part 1e) each block against its anchors (the
+  defined name against the sheet's version label and Entity cell), a block
+  that cannot be read, a block that lacks accounts on Lists, and each plan
+  tab's Currency cell against the unit of the money accounts on Lists.
 - Calculation state: formulas with no cached value, and error values.
 - Formula integrity: typed constants in formula rows, numeric constants inside
   formulas, and formulas that differ from the pattern of their row.
 - Totals: each FY cell against its own row's months, and the subtotals month
   by month, recomputed from the extracted cells and Lists.
 - Hidden content and links: hidden sheets, rows and columns, and links to
-  other workbooks.
+  other workbooks. A run of neighbouring hidden rows or columns is one break,
+  and nothing hidden on a hidden tab is reported apart from the tab.
 
 A break carries a stable id built from the control and the anchors, the
 control, its kind and every reason that caught it, a severity, the location
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -45,7 +50,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter, range_bo
 from openpyxl.utils.cell import coordinate_from_string
 
 from src import names as allow_list
-from src.extract import LABEL_HEADER, PLAN_SHEET, UNIT_HEADER
+from src.extract import BY_NAME, LABEL_HEADER, PLAN_SHEET, UNIT_HEADER, reads_block
 
 __all__ = ["CONTROLS", "KINDS", "SEVERITY", "Break", "ControlReport", "ControlResult",
            "RowPattern", "calculation_state", "formula_integrity", "formula_row",
@@ -66,9 +71,10 @@ ID_PREFIX = {STRUCTURE: "ST", CALCULATION_STATE: "CS", FORMULA_INTEGRITY: "FI", 
 
 # The kinds of each control, in the fixed order in which a break lists its reasons.
 KINDS = {
-    STRUCTURE: ("missing_tab", "entity_not_on_lists", "tab_not_on_list", "header_not_found",
-                "duplicate_period", "period_gap", "account_not_on_lists", "rejected_name",
-                "no_unit", "merged_cells"),
+    STRUCTURE: ("missing_tab", "entity_not_on_lists", "tab_not_on_list", "heading_not_found",
+                "anchor_disagreement", "block_unreadable", "header_not_found", "duplicate_period",
+                "period_gap", "accounts_not_in_block", "account_not_on_lists", "rejected_name",
+                "no_unit", "merged_cells", "currency_disagreement", "money_units_differ"),
     CALCULATION_STATE: ("no_cached_value", "error_value"),
     FORMULA_INTEGRITY: ("typed_constant", "embedded_constant", "pattern"),
     TOTALS: ("fy_total", "subtotal"),
@@ -86,6 +92,8 @@ SEVERITY = {
     "missing_tab": HIGH, "header_not_found": HIGH, "duplicate_period": HIGH,
     "period_gap": HIGH, "entity_not_on_lists": MEDIUM, "account_not_on_lists": MEDIUM,
     "rejected_name": MEDIUM, "no_unit": MEDIUM, "merged_cells": MEDIUM, "tab_not_on_list": LOW,
+    "heading_not_found": HIGH, "anchor_disagreement": HIGH, "block_unreadable": HIGH,
+    "accounts_not_in_block": MEDIUM, "currency_disagreement": HIGH, "money_units_differ": HIGH,
     "no_cached_value": HIGH, "error_value": HIGH,
     "typed_constant": MEDIUM, "embedded_constant": MEDIUM, "pattern": LOW,
     "fy_total": HIGH, "subtotal": HIGH,
@@ -104,6 +112,8 @@ EXPECTED_TABS = ("Control", "Assumptions", "Lists")
 EXPECTED_VERSIONS = ("Actual", "Budget", "Forecast")
 PATTERN_VERSIONS = ("Budget", "Forecast")
 SUBTOTAL, STOCK = "Subtotal", "Stock"
+# The money accounts are every account on Lists outside this section (part 1e).
+STATISTICS = "Statistics"
 SIGNS = {"Credit": 1, "Debit": -1}
 FORMULA_KINDS = ("formula", "array_formula")
 # The fixed origin of the pattern check: the last column a worksheet can have.
@@ -129,11 +139,32 @@ MESSAGES = {
                         "{columns}.",
     "period_gap": "The periods of block {block} have a gap: no column for {missing}.",
     "account_not_on_lists": "The line item {line} in block {block} is not an account on Lists.",
+    "account_not_on_lists_displaced": "The line item {line} in block {block} is not an account "
+                                      "on Lists; it takes the place of {account}, an account the "
+                                      "block lacks.",
     "rejected_name": "The {member} in {address} on {tab} fails the member-name allow-list "
                      "({reasons}): the member is excluded from the star schema and from every "
                      "prompt.",
     "no_unit": "The line item {line} in block {block} has no unit.",
     "merged_cells": "Cells {cells} on {tab} are merged inside block {block}.",
+    "heading_not_found": "The tab {tab} has no cell labelled {labels}, so the tab's {what} "
+                         "{verb} not checked.",
+    "anchor_version": "The defined name {name} names version {version}, but the label above "
+                      "its header row, in {cell} on {tab}, reads {label}.",
+    "anchor_entity": "The Entity cell of {tab}, {cell}, reads {value}, but the defined names "
+                     "of its blocks, {names}, say {entity}.",
+    "anchor_entity_tab": "The Entity cell of {tab}, {cell}, reads {value}, but the tab is the "
+                         "plan tab of {entity}.",
+    "anchor_name_unused": "The defined name {name} has the form of a block on {tab} but is not "
+                          "used, because it refers to {where}{scope}.",
+    "block_unreadable": "The block {block} on {tab} cannot be read: the first row of its range, "
+                        "{row}, has {reasons}.",
+    "accounts_not_in_block": "The block {block} does not hold {count} of the accounts on Lists: "
+                             "{accounts}.",
+    "currency_disagreement": "The Currency cell of {tab}, {cell}, reads {value}, but the "
+                             "money accounts on Lists are in {unit}.",
+    "money_units_differ": "The money accounts on Lists do not share one unit ({units}), so no "
+                          "plan tab's currency is checked.",
     "no_cached_value": "The formula in {address} on {tab} has no cached value.",
     "error_value": "The cell {address} on {tab} holds the error value {value}.",
     "typed_constant": "The cell {address} on {tab} holds a typed constant, {value}, in {where} "
@@ -152,6 +183,8 @@ MESSAGES = {
     "hidden_sheet": "The tab {tab} is hidden.",
     "hidden_row": "Row {index} on {tab} is hidden.",
     "hidden_column": "Column {index} on {tab} is hidden.",
+    "hidden_rows": "Rows {first} to {last} on {tab} are hidden.",
+    "hidden_columns": "Columns {first} to {last} on {tab} are hidden.",
     "external_link": "The workbook links to another workbook (link {number}).",
     "rejected_name_long": "The {member} on line {line} fails the member-name allow-list "
                           "({reasons}): the member is excluded from the star schema and from "
@@ -561,6 +594,9 @@ def structure(x) -> ControlResult:
                 "tab_not_on_list", None, ("tab", s.name), _at(sheet=s.name), "tab_not_on_list",
                 {"tab": _quote(s.name)}, (("expected tabs", listed),)))
 
+    findings += _tab_anchors(x, entities)
+    findings += _names_not_used(x, entities)
+
     versions_on: dict = defaultdict(set)
     for b in x.blocks:
         versions_on[b.sheet].add(b.version)
@@ -576,10 +612,24 @@ def structure(x) -> ControlResult:
                     {"block": _block_name(name, version, entity), "tab": _quote(sheet)},
                     (("block", name), ("expected blocks", ", ".join(EXPECTED_VERSIONS)))))
 
+    unreadable, displaced = {}, {}
     for b in x.blocks:
-        first, top, last, _ = range_boundaries(b.ref)
+        first, top, last, bottom = range_boundaries(b.ref)
         header_row = f"{get_column_letter(first)}{top}:{get_column_letter(last)}{top}"
         block = _block_name(b.name, b.version, b.entity)
+        if b.found_by == BY_NAME and b.header_row is not None and b.version_label != b.version:
+            findings.append(_version_disagrees(x, b, block))
+        why = _why_unreadable(b)
+        if why:
+            # One break says the block cannot be read, and nothing else in it is examined.
+            unreadable[b.name] = (b.sheet, (first, top, last, bottom))
+            findings.append(_finding(
+                "block_unreadable", None, ("anchor", b.name),
+                _at(b.sheet, b.name, b.entity, address=b.ref), "block_unreadable",
+                {"block": block, "tab": _quote(b.sheet), "row": header_row,
+                 "reasons": " and ".join(why)},
+                (("why it cannot be read", ", ".join(why)),)))
+            continue
         absent = _absent_months(b)
         problems = []
         for p in b.header_problems:
@@ -625,22 +675,40 @@ def structure(x) -> ControlResult:
                 _at(b.sheet, b.name, b.entity, address=merged), "merged_cells",
                 {"cells": merged, "tab": _quote(b.sheet), "block": block},
                 (("merged range", merged),)))
+        displaced.update(_displaced(x, b))
+        findings += _accounts_not_in_block(x, b, block)
+
+    def in_unreadable(sheet, address) -> bool:
+        if sheet is None or address is None:
+            return False
+        row, column = _row_of(address), _column_of(address)
+        return any(s == sheet and first <= column <= last and top <= row <= bottom
+                   for s, (first, top, last, bottom) in unreadable.values())
 
     blocks = {b.name: b for b in x.blocks}
     labels = {}
     for label in x.labels_not_on_lists:
+        if label.block in unreadable:
+            continue
         b = blocks.get(label.block)
         labels[(label.sheet, label.address)] = label
+        account = displaced.get((label.block, _row_of(label.address)))
+        values = {"line": _member(label.label) if label.label is not None else "with no label",
+                  "block": _block_name(label.block, b.version if b else None,
+                                       b.entity if b else None)}
+        evidence = (("line item", label.label or ""),)
+        if account is not None:
+            values["account"] = _member(account.name) if account.name else _member(account.code)
+            evidence += (("account it displaced", _account_text(account)),)
         findings.append(_finding(
             "account_not_on_lists", (label.sheet, label.address),
             ("cell", label.block, label.label, LABEL_HEADER),
             _at(label.sheet, label.block, b.entity if b else None, address=label.address),
-            "account_not_on_lists",
-            {"line": _member(label.label) if label.label is not None else "with no label",
-             "block": _block_name(label.block, b.version if b else None,
-                                  b.entity if b else None)},
-            (("line item", label.label or ""),)))
+            "account_not_on_lists_displaced" if account is not None else "account_not_on_lists",
+            values, evidence))
     for n in x.rejected_names:
+        if in_unreadable(n.sheet, n.address):
+            continue
         label = labels.get((n.sheet, n.address))
         if label is not None:
             cell, anchors = (n.sheet, n.address), ("cell", label.block, label.label, LABEL_HEADER)
@@ -654,6 +722,195 @@ def structure(x) -> ControlResult:
             (("member", n.member), ("name", n.name), ("reasons", ", ".join(n.reasons)),
              ("what the reasons mean", "; ".join(allow_list.REASONS[r] for r in n.reasons)))))
     return _result(STRUCTURE, x.batch.batch_id, findings)
+
+
+def _why_unreadable(b) -> tuple:
+    """Why a block cannot be read: its first row has no label header, or no month header."""
+    roles = {c.role for c in b.columns}
+    why = []
+    if "label" not in roles:
+        why.append(f"no {_quote(LABEL_HEADER)} header")
+    if "month" not in roles:
+        why.append("no month header")
+    return tuple(why)
+
+
+def _name_fact(x, b):
+    """The defined name a block was read through."""
+    return next((n for n in x.defined_names if n.name == b.name and len(n.destinations) == 1
+                 and n.scope in (None, b.sheet)), None)
+
+
+def _version_disagrees(x, b, block: str) -> _Finding:
+    """A block read through a defined name whose version is not the label above its header row.
+
+    The header row is found by its "Line item" label in the name's range, and
+    the version label is the cell above that label (src/extract.py): never the
+    cell above wherever the name happens to start.
+    """
+    cell = b.version_label_address or "(no row above it)"
+    fact = _name_fact(x, b)
+    title = b.version_label if b.version_label is not None else "nothing"
+    return _finding(
+        "anchor_disagreement", None, ("anchor", b.name),
+        _at(b.sheet, b.name, b.entity, address=b.ref), "anchor_version",
+        {"name": block, "version": _member(b.version), "cell": cell, "tab": _quote(b.sheet),
+         "label": _member(b.version_label) if b.version_label is not None else title},
+        (("defined name", b.name), ("refers to", fact.destinations[0] if fact else b.ref),
+         ("version the name gives", b.version), ("label above the header row", f"{cell}: {title}")))
+
+
+def _money_unit(lists) -> tuple:
+    """(the one unit of the money accounts on Lists, or None; the units if they are not one)."""
+    money = [a for a in lists.accounts if a.code and a.section != STATISTICS]
+    if not money:
+        return None, ()
+    units = sorted({a.unit for a in money}, key=lambda u: (u is None, u or ""))
+    if len(units) == 1 and units[0] is not None:
+        return units[0], ()
+    by_unit = [(u, [a.code for a in money if a.unit == u]) for u in units]
+    return None, by_unit
+
+
+def _tab_anchors(x, entities) -> list:
+    """Each plan tab's Entity and Currency cells, found by their labels, against its anchors."""
+    findings = []
+    unit, mixed = _money_unit(x.lists)
+    if mixed:
+        findings.append(_finding(
+            "money_units_differ", None, ("units", "Lists"), _at(sheet="Lists"),
+            "money_units_differ",
+            {"units": ", ".join(_member(u) if u is not None else "none" for u, _ in mixed)},
+            (("units of the money accounts", "; ".join(
+                f"{u if u is not None else 'none'}: {', '.join(codes)}" for u, codes in mixed)),
+             ("money accounts", "every account on Lists outside the Statistics section"))))
+    headings: dict = defaultdict(dict)
+    for h in x.headings:
+        headings[h.sheet].setdefault(h.label, h)
+    for sheet, entity in x.plan_sheets:
+        if entity not in entities:
+            continue             # the tab itself is the break
+        entity_cell, currency_cell = (headings[sheet].get(k) for k in ("Entity", "Currency"))
+        missing = [k for k, h in (("Entity", entity_cell), ("Currency", currency_cell))
+                   if h is None or h.label_address is None]
+        if missing:
+            findings.append(_finding(
+                "heading_not_found", None, ("heading", sheet), _at(sheet=sheet, entity=entity),
+                "heading_not_found",
+                {"tab": _quote(sheet), "labels": " or ".join(_quote(k) for k in missing),
+                 "what": " and ".join(k.lower() for k in missing),
+                 "verb": "are" if len(missing) > 1 else "is"},
+                (("labels not found", ", ".join(missing)),)))
+        if "Entity" not in missing and entity_cell.value != entity:
+            names = [b for b in x.blocks if b.sheet == sheet and b.found_by == BY_NAME]
+            value = _member(entity_cell.value) if entity_cell.value is not None else "nothing"
+            values = {"tab": _quote(sheet), "cell": entity_cell.address, "value": value,
+                      "entity": _member(entity)}
+            if names:
+                values["names"] = ", ".join(_block_name(b.name, b.version, b.entity)
+                                            for b in names)
+            findings.append(_finding(
+                "anchor_disagreement", None, ("entity cell", sheet),
+                _at(sheet=sheet, entity=entity, address=entity_cell.address),
+                "anchor_entity" if names else "anchor_entity_tab", values,
+                (("Entity cell", entity_cell.address),
+                 ("the tab's entity", entity_cell.value or ""),
+                 ("entity the tab and its defined names give", entity),
+                 ("defined names on the tab", ", ".join(b.name for b in names) or "none"))))
+        if "Currency" not in missing and unit is not None and currency_cell.value != unit:
+            value = _member(currency_cell.value) if currency_cell.value is not None else "nothing"
+            findings.append(_finding(
+                "currency_disagreement", None, ("currency", sheet),
+                _at(sheet=sheet, entity=entity, address=currency_cell.address),
+                "currency_disagreement",
+                {"tab": _quote(sheet), "cell": currency_cell.address, "value": value,
+                 "unit": _member(unit)},
+                (("Currency cell", currency_cell.address),
+                 ("the tab's currency", currency_cell.value or ""),
+                 ("unit of the money accounts on Lists", unit),
+                 ("money accounts", "every account on Lists outside the Statistics section"))))
+    return findings
+
+
+def _names_not_used(x, entities) -> list:
+    """A defined name of a block's form that the extractor does not read a block through.
+
+    The extractor reads a block through <version>_<entity> only when the name
+    refers to one range on that entity's plan tab; otherwise it reads the
+    block by its labels, and the name is reported here, so it is never ignored
+    in silence. Where no block of that name is found on the tab at all, this
+    break and the block's header-not-found break are one fault, so they share
+    their anchors and become one break with both reasons.
+    """
+    findings = []
+    for n in x.defined_names:
+        for sheet, entity in x.plan_sheets:
+            match = re.fullmatch(rf"(?P<version>.+)_{re.escape(entity)}", n.name)
+            if not match or entity not in entities or reads_block(n, sheet):
+                continue
+            where = ", ".join(_quote(d) for d in n.destinations) or "no range"
+            scope = (f" and belongs to the tab {_quote(n.scope)}"
+                     if n.scope not in (None, sheet) else "")
+            found = next((b for b in x.blocks if b.sheet == sheet and b.name == n.name), None)
+            anchors = ("anchor", n.name) if found else ("block", sheet, match["version"])
+            findings.append(_finding(
+                "anchor_disagreement", None, anchors,
+                _at(sheet=sheet, block=n.name, entity=entity), "anchor_name_unused",
+                {"name": _block_name(n.name, match["version"], entity), "tab": _quote(sheet),
+                 "where": where, "scope": scope},
+                (("defined name", n.name), ("refers to", n.text),
+                 ("scope", n.scope or "the workbook"),
+                 ("the block is read", "by its header labels" if found else "not at all"))))
+    return findings
+
+
+def _missing_accounts(x, b) -> list:
+    """The accounts on Lists a block lacks, in Lists order."""
+    held = {line.account for line in b.lines if line.account}
+    return list({a.code: a for a in x.lists.accounts if a.code and a.code not in held}.values())
+
+
+def _account_text(a) -> str:
+    return f"{a.code} {a.name}" if a.name else a.code
+
+
+def _displaced(x, b) -> dict:
+    """{(block, row): the missing account} for each line not on Lists that pairs with one.
+
+    The reviewer's rule (notes on the 1e brief): lines not on Lists pair with
+    missing accounts one to one within a block, the k-th such line in row
+    order with the k-th missing account in Lists order, so n renamed lines
+    excuse at most n missing accounts.
+    """
+    off_lists = [line for line in sorted(b.lines, key=lambda line: line.row)
+                 if line.account is None]
+    return {(b.name, line.row): account
+            for line, account in zip(off_lists, _missing_accounts(x, b))}
+
+
+def _accounts_not_in_block(x, b, block: str) -> list:
+    """The accounts on Lists a block lacks that no line not on Lists pairs with.
+
+    A line whose label is not on Lists is already one break (one fault, one
+    break), and it pairs with one missing account (_displaced), which its
+    break names. Every missing account left unpaired is listed in one break.
+    """
+    missing = _missing_accounts(x, b)
+    off_lists = sum(1 for line in b.lines if line.account is None)
+    paired, unpaired = missing[:off_lists], missing[off_lists:]
+    if not unpaired:
+        return []
+    evidence = (("accounts not in the block", ", ".join(map(_account_text, unpaired))),
+                ("lines in the block not on Lists", str(off_lists)))
+    if paired:
+        evidence += (("missing accounts paired with lines not on Lists",
+                      ", ".join(map(_account_text, paired))),)
+    return [_finding(
+        "accounts_not_in_block", None, ("accounts", b.name),
+        _at(b.sheet, b.name, b.entity, address=b.ref), "accounts_not_in_block",
+        {"block": block, "count": len(unpaired),
+         "accounts": ", ".join(_member(a.name) for a in unpaired)},
+        evidence)]
 
 
 def _long_format_structure(x) -> ControlResult:
@@ -818,16 +1075,12 @@ def hidden_content(x) -> ControlResult:
                 (("visibility", s.visibility), ("cells with content", str(s.cells)),
                  ("formulas", str(s.formulas)))))
     for s in x.sheets:
-        for h in s.hidden_rows + s.hidden_columns:
-            kind = f"hidden_{h.axis}"
-            findings.append(_finding(
-                kind, None, (h.axis, s.name, h.index),
-                _at(sheet=s.name, block=h.blocks[0] if h.blocks else None,
-                    address=f"{h.index}:{h.index}"),
-                kind, {"index": h.index, "tab": _quote(s.name)},
-                (("cells with content", ", ".join(h.cells) or "none"),
-                 ("blocks it crosses", ", ".join(h.blocks) or "none")),
-                severity=HIDDEN_IN_A_BLOCK if h.blocks else None))
+        if s.visibility != "visible":
+            continue             # a hidden tab's own break is enough
+        for axis, lines in (("row", s.hidden_rows), ("column", s.hidden_columns)):
+            for run in _runs(lines, axis):
+                findings.append(_hidden_line(s, axis, run[0]) if len(run) == 1
+                                else _hidden_run(s, axis, run))
     for number, target in enumerate(x.batch.external_links, start=1):
         users = [f"{f.sheet}!{f.address}" for f in x.formulas
                  if f.kind == "formula" and f"[{number}]" in f.formula]
@@ -835,6 +1088,48 @@ def hidden_content(x) -> ControlResult:
             "external_link", None, ("link", number), _at(), "external_link", {"number": number},
             (("target", target), ("cells that use it", ", ".join(users) or "none"))))
     return _result(HIDDEN_CONTENT, x.batch.batch_id, findings)
+
+
+def _runs(lines, axis: str) -> list:
+    """Hidden rows (or columns) in runs of neighbours, each run in order."""
+    def number(h):
+        return int(h.index) if axis == "row" else column_index_from_string(h.index)
+    runs: list = []
+    for h in sorted(lines, key=number):
+        if runs and number(h) == number(runs[-1][-1]) + 1:
+            runs[-1].append(h)
+        else:
+            runs.append([h])
+    return runs
+
+
+def _hidden_line(s, axis: str, h) -> _Finding:
+    """One hidden row or column with no hidden neighbour: the break of part 1d, unchanged."""
+    kind = f"hidden_{axis}"
+    return _finding(
+        kind, None, (axis, s.name, h.index),
+        _at(sheet=s.name, block=h.blocks[0] if h.blocks else None,
+            address=f"{h.index}:{h.index}"),
+        kind, {"index": h.index, "tab": _quote(s.name)},
+        (("cells with content", ", ".join(h.cells) or "none"),
+         ("blocks it crosses", ", ".join(h.blocks) or "none")),
+        severity=HIDDEN_IN_A_BLOCK if h.blocks else None)
+
+
+def _hidden_run(s, axis: str, run: list) -> _Finding:
+    """A run of neighbouring hidden rows or columns: one break, its range in the evidence."""
+    first, last = run[0].index, run[-1].index
+    span = f"{first}:{last}"
+    blocks = tuple(dict.fromkeys(name for h in run for name in h.blocks))
+    cells = [cell for h in run for cell in h.cells]
+    return _finding(
+        f"hidden_{axis}", None, (axis, s.name, span),
+        _at(sheet=s.name, block=blocks[0] if blocks else None, address=span),
+        f"hidden_{axis}s", {"first": first, "last": last, "tab": _quote(s.name)},
+        (("hidden range", span), (f"hidden {axis}s", str(len(run))),
+         ("cells with content", ", ".join(cells) or "none"),
+         ("blocks it crosses", ", ".join(blocks) or "none")),
+        severity=HIDDEN_IN_A_BLOCK if blocks else None)
 
 
 # == All five ===============================================================================

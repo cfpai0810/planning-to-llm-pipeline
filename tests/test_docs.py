@@ -84,3 +84,24 @@ class TestControlsAddsReconcileAndPromotion:
     def test_facts_about_the_file_are_never_findings_of_reconcile(self):
         text = flat(CONTROLS)
         assert re.search(r"reconcile never compares (them|the file's facts)", text)
+
+
+# -- Part 1e ---------------------------------------------------------------------------------
+
+README = ROOT / "README.md"
+
+
+class TestThe1eDocs:
+    def test_promotion_names_its_promoter_and_rebuilds_in_one_transaction(self):
+        text = flat(CONTROLS)
+        for phrase in ("named person", "`promoted_by`", "in one transaction",
+                       "the previous facts stay"):
+            assert phrase in text, phrase
+
+    def test_the_readme_states_the_two_windows_quirks_in_a_local_run_note(self):
+        readme = README.read_text(encoding="utf-8")
+        suite = readme.split("\n## Test suite\n", 1)[1].split("\n## ", 1)[0]
+        quirks = [line for line in suite.splitlines() if line.startswith("- ")]
+        assert len(quirks) == 2
+        assert "260" in quirks[0] and "DuckDB" in quirks[0]
+        assert "rm -rf" in quirks[1] and "Remove-Item" in quirks[1] and "uv" in quirks[1]

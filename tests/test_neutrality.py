@@ -10,9 +10,11 @@ depend on a product, so it is the one exception.
 The list was approved at the pilot review (1 November 2026), with the ERP
 and accounting names added. Ordinary English words that are also vendor
 names are listed in EXCLUDED_WORDS and deliberately not scanned: they would
-fire on plain prose. Excel and Microsoft are not vendors for this test (the
-product reads spreadsheets and says so), and the model vendor is named
-wherever the product calls it.
+fire on plain prose. Excel and Microsoft are not vendors for this test: the
+build note no longer names a spreadsheet product (part 1e), but openpyxl
+writes "Microsoft Excel Compatible" as the application of every workbook it
+saves, and tests/test_extract.py checks that fact about the file as data. The
+model vendor is named wherever the product calls it.
 """
 
 import ast

@@ -26,8 +26,12 @@ LINK_TARGET = "calder_plan_fy2025.xlsx"
 
 
 def promote_in(con, plan, lines):
-    """Lands plan beside the ledger, stores its breaks, acknowledges each one, promotes, builds."""
-    from src import controls, model, promotion, reconcile, warehouse
+    """Lands plan beside the ledger, stores its breaks, acknowledges each one, and promotes.
+
+    Promoting rebuilds the star schema from the promoted pair (part 1e), so no
+    separate build follows.
+    """
+    from src import controls, promotion, reconcile, warehouse
     warehouse.land(con, plan)
     pair = promotion.Pair(plan.batch.batch_id, lines.batch.batch_id)
     promotion.store_breaks(con, pair, controls.run_controls(plan).breaks()
@@ -35,8 +39,7 @@ def promote_in(con, plan, lines):
     for break_id in promotion.unacknowledged(con, pair):
         promotion.acknowledge(con, pair, break_id, "Test reviewer", "accepted",
                               clock=lambda: NOON)
-    promotion.promote(con, pair, clock=lambda: NOON)
-    model.build_model(con)
+    promotion.promote(con, pair, "Test promoter", clock=lambda: NOON)
     return pair
 
 
