@@ -2,3 +2,5 @@
 # compiled from this file (the command is in docs/releasing.md).
 -r requirements.txt
 pytest==9.1.1
+# Test only: the independent oracle (tests/oracle.py) builds its frames with it, at the version the lock already holds
+pandas==3.1.0

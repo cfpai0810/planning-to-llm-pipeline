@@ -210,3 +210,26 @@ class TestCommandLine:
     def test_main_is_no_longer_a_stub(self):
         # The command line itself is tests/test_main.py's.
         assert "Phase 0, not yet usable" not in (ROOT / "main.py").read_text(encoding="utf-8")
+
+
+# -- Part 2b: pandas, a direct test-only dependency ------------------------------------------------
+
+DEV_DIRECT = ROOT / "requirements-dev.in"
+
+
+class TestTheTestOnlyDependency:
+    def test_pandas_is_pinned_for_the_tests_at_the_version_already_locked(self):
+        lines = DEV_DIRECT.read_text(encoding="utf-8").splitlines()
+        assert "pandas==3.1.0" in lines
+        reason = lines[lines.index("pandas==3.1.0") - 1]
+        assert reason.startswith("# ") and "test" in reason and "oracle" in reason
+        assert _pins(DEV_LOCK)["pandas"] == _pins(LOCK)["pandas"] == "3.1.0"
+
+    def test_pandas_is_not_a_runtime_pin(self):
+        assert "pandas" not in _pins(DIRECT)
+
+    def test_the_dev_lock_names_requirements_dev_in_as_a_source_of_pandas(self):
+        text = DEV_LOCK.read_text(encoding="utf-8")
+        block = text.split("\npandas==3.1.0", 1)[1].split("\n", 1)[1]
+        sources = block.split("\n")[:4]
+        assert any("-r requirements-dev.in" in s for s in sources), sources

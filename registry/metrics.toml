@@ -1,0 +1,210 @@
+# The metric registry: the finance-owned definitions every answer is computed from.
+# Group Finance owns them. src/registry.py reads this file with tomllib and validates
+# it; registry/registry.lock.json holds a SHA-256 of each definition, so a definition
+# never changes without a new version and a changelog entry (scripts/lock_registry.py).
+#
+# A formula is structured data, never a query:
+# - sum: the accounts on Lists with a parent, or one account by its code;
+# - difference: the first metric less the others;
+# - ratio: a numerator over a denominator, each a metric or an inline sum, computed on
+#   the sums for the group and period asked for (a ratio of sums, never an average of
+#   ratios). A ratio has no time aggregation: its parts carry theirs.
+# The workbook's own Gross profit and EBIT rows are never read: they are recomputed
+# from the leaf accounts.
+
+version = "1.0.0"
+owner = "Group Finance"
+unit_system = "EUR"
+
+[[changelog]]
+version = "1.0.0"
+date = 2026-11-07
+change = "The first registry: the eleven metrics of the Phase 2 brief, for review before a compiler reproduces them."
+approved_by = "E. Marsh, Group Financial Controller, Calder Foods Group"
+
+[[metric]]
+id = "revenue"
+label = "Revenue"
+definition = "Product sales and co-packing income: every account whose parent on Lists is Revenue, summed over the months asked for."
+kind = "flow"
+time_aggregation = "sum"
+unit = "EUR"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "account", "month", "quarter"]
+filters = ["entity", "region", "account"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "sum"
+parent = "Revenue"
+
+[[metric]]
+id = "cost_of_sales"
+label = "Cost of sales"
+definition = "Materials, packaging and freight out: every account whose parent on Lists is Cost of sales, summed over the months asked for."
+kind = "flow"
+time_aggregation = "sum"
+unit = "EUR"
+polarity = "favourable_when_lower"
+dimensions = ["entity", "region", "account", "month", "quarter"]
+filters = ["entity", "region", "account"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "sum"
+parent = "Cost of sales"
+
+[[metric]]
+id = "gross_profit"
+label = "Gross profit"
+definition = "Revenue less cost of sales, recomputed from the accounts and never read from the workbook's Gross profit row."
+kind = "flow"
+time_aggregation = "sum"
+unit = "EUR"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "difference"
+metrics = ["revenue", "cost_of_sales"]
+
+[[metric]]
+id = "operating_expenses"
+label = "Operating expenses"
+definition = "Salaries, marketing, rent and facilities, and IT and software: every account whose parent on Lists is Operating expenses, summed over the months asked for. Grouped by account, it is operating expenses by category."
+kind = "flow"
+time_aggregation = "sum"
+unit = "EUR"
+polarity = "favourable_when_lower"
+dimensions = ["entity", "region", "account", "month", "quarter"]
+filters = ["entity", "region", "account"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "sum"
+parent = "Operating expenses"
+
+[[metric]]
+id = "ebit"
+label = "EBIT"
+definition = "Gross profit less operating expenses, recomputed from the accounts and never read from the workbook's EBIT row."
+kind = "flow"
+time_aggregation = "sum"
+unit = "EUR"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "difference"
+metrics = ["gross_profit", "operating_expenses"]
+
+[[metric]]
+id = "gross_margin_pct"
+label = "Gross margin %"
+definition = "Gross profit as a share of revenue, computed on the sums for the group and period asked for."
+kind = "ratio"
+unit = "%"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "ratio"
+numerator = "gross_profit"
+denominator = "revenue"
+
+[[metric]]
+id = "ebit_margin_pct"
+label = "EBIT margin %"
+definition = "EBIT as a share of revenue, computed on the sums for the group and period asked for."
+kind = "ratio"
+unit = "%"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "ratio"
+numerator = "ebit"
+denominator = "revenue"
+
+[[metric]]
+id = "marketing_pct_of_revenue"
+label = "Marketing % of revenue"
+definition = "Marketing, account 6100, as a share of revenue, computed on the sums for the group and period asked for."
+kind = "ratio"
+unit = "%"
+polarity = "favourable_when_lower"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "ratio"
+numerator = { type = "sum", account = "6100" }
+denominator = "revenue"
+
+[[metric]]
+id = "volume"
+label = "Volume"
+definition = "Units sold, the statistic VOL on Lists, summed over the months asked for."
+kind = "flow"
+time_aggregation = "sum"
+unit = "units"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "sum"
+account = "VOL"
+
+[[metric]]
+id = "headcount"
+label = "Headcount"
+definition = "Full-time equivalents, the statistic HC on Lists, at the close of the last month of the period that the version holds, added across entities and never summed across months. A change in headcount is never graded favourable or adverse."
+kind = "stock"
+time_aggregation = "closing"
+unit = "FTE"
+polarity = "ungraded"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "sum"
+account = "HC"
+
+[[metric]]
+id = "revenue_per_unit"
+label = "Revenue per unit"
+definition = "Revenue divided by volume, computed on the sums for the group and period asked for."
+kind = "ratio"
+unit = "EUR per unit"
+polarity = "favourable_when_higher"
+dimensions = ["entity", "region", "month", "quarter"]
+filters = ["entity", "region"]
+comparisons = ["budget", "forecast"]
+owner = "Group Finance"
+
+[metric.formula]
+type = "ratio"
+numerator = "revenue"
+denominator = "volume"

@@ -135,6 +135,7 @@ packaging==26.3
     #   streamlit
 pandas==3.1.0
     # via
+    #   -r requirements-dev.in
     #   -r requirements.txt
     #   streamlit
 pillow==12.3.0

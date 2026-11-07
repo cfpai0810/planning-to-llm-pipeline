@@ -1,0 +1,16 @@
+{
+  "registry_version": "1.0.0",
+  "metrics": {
+    "cost_of_sales": "510ae658536a0f9769a3cb92ef07ebb35e7aa93f3e9720ab7fbb0f2e8279284d",
+    "ebit": "37f26a5dc4f325612eb5998e7e66ba84821cb3194ae10e0db745c7397cb0bf78",
+    "ebit_margin_pct": "f60f3a5372c57b685cf40ca41a9f578b6751f46088ef9de4514b1893c6854387",
+    "gross_margin_pct": "bc1e87340e85a5c0183384e95ce80a79d01da1913cd724e627595d0625649991",
+    "gross_profit": "35a46b78848d179a10608a7c9615c619da8553c2b1507937615e634a85bbc188",
+    "headcount": "f7b24939549cb44da7f4702a21a74e321fa8e8ad27edd71e3bd4bd140649baed",
+    "marketing_pct_of_revenue": "370d20a14c0a46f427fe11c773ae80d488688dd4c6cb22e386d812e208151af3",
+    "operating_expenses": "65b79edcdce6841dd6dc699010b7659bf0a412996d492eb989ade58d39537b75",
+    "revenue": "5e4e17bf10c9a3d6938bb25c967ed1ea2e6efd420991a6a5fc84bdaed35df120",
+    "revenue_per_unit": "5f583e313b84a7514e051b64621bee34a30d47d06454b78a9ae25b52d4717632",
+    "volume": "6117527d5c7e905db2cad785b30ff3bc92d8f64f05cf857a389cdadbc65fc6f0"
+  }
+}

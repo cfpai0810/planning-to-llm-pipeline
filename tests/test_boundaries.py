@@ -233,3 +233,64 @@ class TestTheSuitesWarehouse:
                  for p in sorted((ROOT / "tests").glob("*.py"))
                  if (lines := committed_builds(p.read_text(encoding="utf-8")))}
         assert list(found) == ["tests/conftest.py"] and len(found["tests/conftest.py"]) == 1
+
+
+# -- Part 2b: pandas is a test tool, and the oracle stands apart ----------------------------------
+
+ORACLE = ROOT / "tests" / "oracle.py"
+# What the reviewer's brief forbids the oracle to import (section 4.3).
+NOT_FOR_THE_ORACLE = ("src.registry", "src.warehouse", "src.extract", "src.model",
+                      "src.compiler", "sql")
+
+
+def imports_with_relative(source: str) -> set[str]:
+    """imports_of, with a relative import kept as its dots and module (".oracle")."""
+    names = imports_of(source)
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.level:
+            base = "." * node.level + (node.module or "")
+            names.add(base)
+            joint = "" if base.endswith(".") else "."
+            names.update(f"{base}{joint}{alias.name}" for alias in node.names)
+    return names
+
+
+class TestThePandasBoundary:
+    def test_no_module_of_the_pipeline_or_the_pages_imports_pandas(self):
+        # A static scan of import statements: DuckDB's binding imports pandas at run time
+        # on its own, so a scan of sys.modules would prove nothing.
+        found = {p.relative_to(ROOT).as_posix(): sorted(n for n in imports_of(
+                     p.read_text(encoding="utf-8")) if n.split(".")[0] == "pandas")
+                 for p in _sources(("src", "streamlit_app"))}
+        assert {path: names for path, names in found.items() if names} == {}
+
+    def test_the_scan_sees_pandas_in_every_form(self):
+        for source in ("import pandas\n", "import pandas as pd\n", "from pandas import DataFrame\n",
+                       "def f():\n    import pandas.api.types\n"):
+            assert any(n.split(".")[0] == "pandas" for n in imports_of(source)), source
+
+    def test_the_oracle_imports_the_standard_library_pandas_openpyxl_and_the_sample_model(self):
+        import sys
+        names = imports_with_relative(ORACLE.read_text(encoding="utf-8"))
+        assert {"pandas", "openpyxl"} <= {n.split(".")[0] for n in names}
+        others = sorted(n for n in names if not (
+            n.split(".")[0] in sys.stdlib_module_names or n.split(".")[0] in ("pandas", "openpyxl")
+            or n in ("src", "src.sample_model")))
+        assert others == []
+
+    def test_the_oracle_imports_none_of_the_modules_the_reviewer_forbade(self):
+        source = ORACLE.read_text(encoding="utf-8")
+        names = imports_with_relative(source)
+        assert [n for n in names for f in NOT_FOR_THE_ORACLE
+                if n == f or n.startswith(f + ".")] == []
+        assert not [n for n in names if n.startswith(".")]
+        # Nor does it read the SQL files or the registry file.
+        assert ".sql" not in source and '"sql"' not in source and "metrics.toml" not in source
+
+    def test_the_relative_reader_sees_a_relative_import(self):
+        assert ".oracle" in imports_with_relative("from . import oracle\n")
+        assert "src.registry" in imports_with_relative("from src import registry\n")
+
+    def test_the_registry_imports_no_engine_and_no_data_library(self):
+        names = imports_of((ROOT / "src" / "registry.py").read_text(encoding="utf-8"))
+        assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot", "pandas")]
