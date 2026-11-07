@@ -23,6 +23,13 @@ Reads a planning workbook into typed rows and the facts the controls need
   a "Line item" cell, wherever the name starts; the block is still read from
   the first row of its range, as the name says.
 
+Part 2a. A block's version, from its defined name or from its label, is taken
+as Actual, Budget or Forecast when it is one of them after trimming and
+ignoring case (admitted_version); any other version is kept as it reads, and
+the block still lands. No cell is read twice: a block found by its labels
+whose range overlaps a block read through a defined name is not read, and is
+recorded in blocks_not_read.
+
 The workbook is read twice, once for formulas and once for the cached values
 the file holds, and the two are joined cell by cell. The pipeline never
 recalculates a file: a formula with no cached value is recorded as such.
@@ -82,9 +89,9 @@ from src.batch import (AS_RECEIVED, CALCULATED_BY_BUILD, DEFAULT_MANIFEST, NO_FO
                        calculation_for, control_totals)
 from src.hashing import file_sha256
 
-__all__ = ["AS_RECEIVED", "CALCULATED_BY_BUILD", "NO_FORMULAS", "ExtractError", "Extraction",
-           "Heading", "PlanCell", "BatchRecord", "ControlTotal", "extract_workbook",
-           "to_decimal"]
+__all__ = ["AS_RECEIVED", "CALCULATED_BY_BUILD", "NO_FORMULAS", "VERSIONS", "BlockNotRead",
+           "ExtractError", "Extraction", "Heading", "PlanCell", "BatchRecord", "ControlTotal",
+           "admitted_version", "extract_workbook", "to_decimal"]
 
 ExtractError = SourceError
 
@@ -99,6 +106,8 @@ ACCOUNT_HEADERS = {"Code": "code", "Name": "name", "Parent": "parent", "Section"
 ENTITY_HEADERS = {"Code": "code", "Name": "name", "Region": "region"}
 HEADING_LABELS = ("Entity", "Currency")
 BY_NAME, BY_LABELS = "defined name", "header labels"
+# The versions the star schema admits (part 2a), in their order.
+VERSIONS = ("Actual", "Budget", "Forecast")
 
 MAX_PART_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -295,6 +304,15 @@ class Heading:
 
 
 @dataclass(frozen=True)
+class BlockNotRead:
+    """A block found by its labels and not read, because its range overlaps a named block's."""
+    sheet: str
+    version: str                    # the version its label gives
+    ref: str                        # the range it would have been read from
+    overlaps: tuple                 # the blocks read through a defined name that it overlaps
+
+
+@dataclass(frozen=True)
 class Extraction:
     batch: BatchRecord
     cells: tuple
@@ -308,6 +326,7 @@ class Extraction:
     rejected_names: tuple
     control_totals: tuple
     headings: tuple = ()            # two Heading per plan tab, Entity then Currency
+    blocks_not_read: tuple = ()     # BlockNotRead, for each block left unread (part 2a)
 
 
 # == Values ============================================================================
@@ -629,6 +648,19 @@ def _role(header: Optional[str]) -> str:
     return "other"
 
 
+def admitted_version(text: Optional[str]) -> Optional[str]:
+    """Actual, Budget or Forecast, when text is one of them after trimming and ignoring case.
+
+    Both sides are compared with str.strip() and casefold() (part 2a), so " budget " is
+    Budget; strip also removes tabs, line breaks and the no-break space, but not a
+    zero-width character. Any other text gives None.
+    """
+    if text is None:
+        return None
+    folded = text.strip().casefold()
+    return next((v for v in VERSIONS if v.casefold() == folded), None)
+
+
 def reads_block(name: DefinedNameFact, title: str) -> bool:
     """True when a block is read through this defined name on the plan tab of that title.
 
@@ -642,30 +674,57 @@ def reads_block(name: DefinedNameFact, title: str) -> bool:
     return bool(bounds) and bounds[0] == title
 
 
-def _block_ranges(sheet: _Sheet, entity: str, names: list) -> list[tuple]:
-    """(version, found by, (first, top, last, bottom)) of every block on a plan sheet."""
+def _ref(bounds: tuple) -> str:
+    first, top, last, bottom = bounds
+    return f"{get_column_letter(first)}{top}:{get_column_letter(last)}{bottom}"
+
+
+def _bounds_overlap(a: tuple, b: tuple) -> bool:
+    return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
+
+
+def _block_ranges(sheet: _Sheet, entity: str, names: list) -> tuple[list, list]:
+    """The blocks of a plan sheet, and the blocks found by their labels that are not read.
+
+    The blocks are (version, found by, (first, top, last, bottom)), in sheet order. A
+    version that is Actual, Budget or Forecast after trimming and ignoring case takes
+    that name. A block found by its labels is read only when its version is not one
+    already read and its range overlaps no block read through a defined name, so no
+    cell is read twice (part 2a); one that overlaps is listed as a BlockNotRead.
+    """
     title = sheet.ws.title
     pattern = re.compile(rf"^(?P<version>.+)_{re.escape(entity)}$")
     blocks = []
     for name in names:
         match = pattern.match(name.name)
         if match and reads_block(name, title):
-            blocks.append((match["version"], BY_NAME, _bounds(name.destinations[0])[1]))
+            version = admitted_version(match["version"]) or match["version"]
+            blocks.append((version, BY_NAME, _bounds(name.destinations[0])[1]))
     named = {version for version, _, _ in blocks}
+    by_name = [(f"{version}_{entity}", bounds) for version, _, bounds in blocks]
+    not_read = []
     for (row, column), cell in sorted(sheet.cells.items()):
         if _text(cell.value) != LABEL_HEADER or row == 1:
             continue
-        version = sheet.text(row - 1, column)
-        if version is None or version in named:
+        label = sheet.text(row - 1, column)
+        if label is None:
+            continue
+        version = admitted_version(label) or label
+        if version in named:
             continue
         headers = [c for (r, c) in sheet.cells if r == row and c >= column]
         last = max(headers)
         bottom = row
         while any((bottom + 1, c) in sheet.cells for c in range(column, last + 1)):
             bottom += 1
-        blocks.append((version, BY_LABELS, (column, row, last, bottom)))
+        bounds = (column, row, last, bottom)
+        overlaps = tuple(name for name, other in by_name if _bounds_overlap(bounds, other))
+        if overlaps:
+            not_read.append(BlockNotRead(title, version, _ref(bounds), overlaps))
+            continue
+        blocks.append((version, BY_LABELS, bounds))
         named.add(version)
-    return sorted(blocks, key=lambda b: (b[2][1], b[2][0]))
+    return sorted(blocks, key=lambda b: (b[2][1], b[2][0])), not_read
 
 
 def _overlaps(merged: str, bounds: tuple) -> bool:
@@ -829,7 +888,7 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
     lists = _read_lists(sheets, names)
     entities_on_lists = set(lists.entity_codes())
 
-    plan_sheets, blocks, raw_rows, headings = [], [], [], []
+    plan_sheets, blocks, raw_rows, headings, not_read = [], [], [], [], []
     merged_of = {title: tuple(str(m) for m in sorted(s.ws.merged_cells.ranges,
                                                      key=lambda m: (m.min_row, m.min_col)))
                  for title, s in sheets.items()}
@@ -840,7 +899,9 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
         entity = match["entity"]
         plan_sheets.append((title, entity))
         headings += _headings(sheet)
-        for version, found_by, bounds in _block_ranges(sheet, entity, names):
+        ranges, unread = _block_ranges(sheet, entity, names)
+        not_read += unread
+        for version, found_by, bounds in ranges:
             block, rows = _block(sheet, entity, version, found_by, bounds, lists, merged_of[title])
             blocks.append(block)
             raw_rows += rows
@@ -897,4 +958,5 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
         blocks=tuple(blocks), plan_sheets=tuple(plan_sheets), lists=lists,
         defined_names=tuple(names), labels_not_on_lists=labels,
         rejected_names=_rejected(lists, blocks, labels),
-        control_totals=control_totals(batch_id, cells), headings=tuple(headings))
+        control_totals=control_totals(batch_id, cells), headings=tuple(headings),
+        blocks_not_read=tuple(not_read))

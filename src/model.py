@@ -6,16 +6,19 @@ Builds the star schema (brief 6.4) by running the plain SQL files in sql/ in
 the order of their names, on a connection the caller opened with
 warehouse.connect (this module never opens DuckDB itself):
 
-- dim_version, dim_time (the FY2026 fiscal calendar), dim_entity and
-  dim_account (section, sign convention, polarity, parent, unit, and the kind
-  of line, flow or stock);
+- dim_version (Actual, Budget and Forecast, fixed in its SQL file: part 2a),
+  dim_time (the FY2026 fiscal calendar), dim_entity and dim_account (section,
+  sign convention, polarity, parent, unit, and the kind of line, flow or
+  stock);
 - fact_plan and fact_actual_erp, kept apart so the tie-out stays visible;
 - then the indexes, each unique, once every table is loaded.
 
 The facts come from the promoted pair only (src/promotion.py): fact_plan from
 its plan batch, fact_actual_erp from its ledger batch, turned into
-presentation sign. The dimensions come from the promoted plan batch's Lists.
-At a fresh start nothing is promoted, so every table but dim_time is empty.
+presentation sign. dim_entity and dim_account come from the promoted plan
+batch's Lists. At a fresh start nothing is promoted, so every table but
+dim_version and dim_time is empty. A block of any version other than the
+three lands raw and is never built, because fact_plan joins on dim_version.
 Members whose names fail the allow-list, and unknown entities and accounts,
 are left out. Nothing here reads a fact about a file (raw_batch), and no
 statement changes or removes a raw row: each table is made anew from the raw

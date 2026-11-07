@@ -495,3 +495,66 @@ class TestThe1eFixtures:
             entry = next(f for f in manifest["fixtures"]
                          if f["file"] == f"tests/fixtures/{name}.xlsx")
             assert entry["purpose"] and entry["expected_in_1d"]
+
+
+# -- Part 2a: seven fixtures, built with --only ---------------------------------------------------
+# Each is made from the full clean workbook (write_workbook()) and records it as its base.
+# None of these tests runs LibreOffice.
+
+FIXTURES_2A = ("renamed_feeds_subtotal", "duplicate_account", "unit_column_empty",
+               "extra_version_block", "currency_lowercase", "currency_trailing_space",
+               "version_label_lowercase")
+
+
+def _cells(wb) -> dict:
+    return {(ws.title, c.coordinate): c.value for ws in wb.worksheets for row in ws.iter_rows()
+            for c in row if c.value is not None}
+
+
+class TestThe2aFixtures:
+    def test_the_full_build_makes_them_after_the_1e_fixtures(self, build):
+        assert [book.dest.stem for book in build.FIXTURE_BOOKS_2A] == list(FIXTURES_2A)
+        assert build.STEP_2[-1] is build.BASE
+        assert build.STEP_2[-1 - len(FIXTURES_2A):-1] == build.FIXTURE_BOOKS_2A
+        for name in FIXTURES_2A:
+            book = build.BOOKS[name]
+            assert book.shape == build.Shape() and book.base == build.CLEAN_BASE, name
+            assert book.purpose and book.expected, name
+
+    @pytest.mark.parametrize("name, changed", [
+        ("renamed_feeds_subtotal", {("Plan_ES", "A45"): "Staff costs"}),
+        ("duplicate_account", {("Plan_ES", "A25"): "Salaries"}),
+        ("unit_column_empty", {("Plan_ES", f"B{r}"): None for r in range(23, 36)}),
+        ("currency_lowercase", {("Plan_AT", "B3"): "eur"}),
+        ("currency_trailing_space", {("Plan_AT", "B3"): "EUR "}),
+        ("version_label_lowercase", {("Plan_ES", "A21"): "budget"}),
+    ])
+    def test_each_changes_the_clean_workbook_in_its_own_cells(self, build, name, changed):
+        wb, specials = build.BOOKS[name].make()
+        mine, clean = _cells(wb), _cells(build.write_workbook())
+        assert specials == {}
+        assert {k for k in set(mine) | set(clean) if mine.get(k) != clean.get(k)} == set(changed)
+        assert {k: mine.get(k) for k in changed} == changed
+
+    def test_extra_version_block_adds_a_block_whose_cells_compute_zero(self, build):
+        from src import sample_model as model
+        wb, specials = build.fixture_extra_version_block()
+        mine, clean = _cells(wb), _cells(build.write_workbook())
+        added = {k for k in mine if k not in clean}
+        assert {k for k in clean if mine.get(k) != clean[k]} == set()
+        assert {s for s, _ in added} == {"Plan_ES"}
+        rows = {int("".join(ch for ch in k if ch.isdigit())) for _, k in added}
+        assert rows == set(range(53, 68))
+        assert len(specials) == 13 * 13 and set(specials.values()) == {0}
+        assert set(specials) == {k for k in added if str(mine[k]).startswith("=")}
+        assert wb["Plan_ES"]["A53"].value == "Plan B" and model.FY == wb["Plan_ES"]["O54"].value
+
+    def test_a_partial_build_never_rebuilds_them(self, build):
+        import json
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for name in FIXTURES_2A:
+            with pytest.raises(build.BuildError, match=name):
+                build.check_partial(manifest, build.select_books([name]), APPROVED_VERSION)
+            entry = next(f for f in manifest["fixtures"]
+                         if f["file"] == f"tests/fixtures/{name}.xlsx")
+            assert entry["base"] == build.CLEAN_BASE and entry["purpose"] and entry["expected_in_1d"]

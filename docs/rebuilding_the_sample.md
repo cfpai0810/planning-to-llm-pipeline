@@ -62,6 +62,26 @@ drivers by the Entity cell) and `version_label_changed` (every Budget cell
 computes 0, because the formulas fetch drivers by the version label).
 LibreOffice kept every defined name as it was written.
 
+Part 2a added seven fixtures the same way, in one run:
+
+    python scripts/build_sample.py --only renamed_feeds_subtotal duplicate_account unit_column_empty extra_version_block currency_lowercase currency_trailing_space version_label_lowercase
+
+Each is the full clean workbook with one change and records it as its base:
+`renamed_feeds_subtotal` (the ES Forecast Salaries label reads Staff costs),
+`duplicate_account` (the ES Budget Materials label reads Salaries),
+`unit_column_empty` (the ES Budget block's thirteen units emptied, its Unit
+header kept), `currency_lowercase` and `currency_trailing_space` (Plan_AT's
+Currency cell reads eur, or EUR with a trailing space) and
+`version_label_lowercase` (the label above the ES Budget header reads
+budget). None of them changes a figure: no formula reads a label, a unit or a
+Currency cell, and the lookup by the version label ignores case, which the
+build's check of every cached value confirmed. `extra_version_block` adds a
+block on Plan_ES one blank row below the Forecast block, labelled Plan B, with
+no defined name: the Forecast block's labels and units, and formulas written
+for its own rows, which fetch their drivers by its label, Plan B, so every
+cell of it computes 0, given to the check as specials. The partial build of
+the seven took 38.3 seconds, 32.9 seconds of it in LibreOffice.
+
 ## Finding LibreOffice
 
 The build looks in this order: the `SOFFICE` environment variable, then

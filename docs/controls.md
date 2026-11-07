@@ -84,11 +84,15 @@ fixed address only where nothing else names the thing:
   the range;
 - a name on Lists or in a long-format source: `name`, the member and the name;
   a code in a long-format source: `code`, the member and the code;
-- a block against its anchors, or a block that cannot be read: `anchor` and
-  the block's name, so a name that disagrees and a block that cannot be read
-  are one break; a name of a block's form that is not used, where the tab's
-  block is not found either: the missing block's anchors, so the two are one
-  break; the accounts a block lacks: `accounts` and the block;
+- a block against its anchors, a block that cannot be read, or a block whose
+  version is not admitted: `anchor` and the block's name, so a name that
+  disagrees, a block that cannot be read and a version not admitted are one
+  break; a name of a block's form that is not used, where the tab's block is
+  not found either: the missing block's anchors, so the two are one break;
+  the accounts a block lacks: `accounts` and the block; an extra line of an
+  account the block already holds: `cell`, the block, its label and the
+  label header, as a line not on Lists is; a block without units: `units`
+  and the block;
 - a tab's Entity cell: `entity cell` and the tab; its Currency cell:
   `currency` and the tab; a tab whose Entity or Currency label is not found:
   `heading` and the tab; money accounts with more than one unit: `units` and
@@ -113,6 +117,15 @@ name is always shown that way. A line item or other member name is shown when
 it passes the allow-list, and a block name when its version and entity do; a
 name that fails it never enters a message, which says "(a name that fails the
 allow-list)" or names its cell instead, and the name is kept in the evidence.
+A value read from the Currency cell, a version label, the Entity cell or a
+block's version that fails the allow-list is described by the allow-list's
+reasons instead, for example "a value that has characters outside the allowed
+set (shown encoded in the evidence)", and the evidence shows it as
+`json.dumps` with `ensure_ascii` writes it, so a stray space, a tab or a
+zero-width character shows as an escape. The evidence is bounded at 60
+encoded characters, never cutting an escape in two, and then gives the
+value's length: `"EUR\u200b"`, or a long value's first part followed by
+"(100 characters in all)".
 Figures in a message are as the file holds them, with thousands separators;
 the evidence holds them as plain decimals.
 
@@ -125,8 +138,9 @@ the evidence holds them as plain decimals.
   or Currency cell cannot be found, a currency that is not the accounts' unit;
 - **medium**: a figure may be wrong, or a member is left out, or something is
   out of sight: a typed or embedded constant, a member not on Lists or failing
-  the allow-list, a line with no unit, merged cells, accounts not in the
-  block, hidden content, a link to another workbook;
+  the allow-list, a line with no unit or a block without units, merged cells,
+  accounts not in the block, an account twice in a block, a block whose
+  version is not admitted, hidden content, a link to another workbook;
 - **low**: a person should look, but nothing is shown to be wrong: a pattern
   difference alone, and a visible tab not on the expected list.
 
@@ -151,13 +165,16 @@ break, not two.
 | `heading_not_found` | high | A plan tab with no cell labelled "Entity" or "Currency": one break for the tab, naming the labels not found |
 | `anchor_disagreement` | high | A block's defined name that disagrees with the sheet: its version against the label above the block's header row, or the tab's Entity cell against the entity the tab and its names give; or a name of a block's form that is not used |
 | `block_unreadable` | high | A block that cannot be read: the first row of its range has no "Line item" header or no month header |
+| `version_not_admitted` | medium | A block whose version is not one of Actual, Budget, Forecast, after trimming and ignoring case: it is landed raw and not built |
 | `header_not_found` | high | A column of a block with no header, or a block (Actual, Budget, Forecast) whose header is not found on the plan tab of an entity on Lists |
 | `duplicate_period` | high | One period heading two or more columns of a block; the months this leaves with no column are named in its evidence |
 | `period_gap` | high | A month of the block's year with no column, when no duplicate or missing header in the block accounts for it |
 | `accounts_not_in_block` | medium | Accounts not in the block: a block that lacks accounts on Lists, beyond those its lines not on Lists stand for |
 | `account_not_on_lists` | medium | A line item whose label is not an account on Lists; when it pairs with a missing account, the break names that account |
+| `account_twice_in_block` | medium | An account on more than one line of a block: one break for each line after the first, listing every row that carries the label and naming the account it takes the place of, when it pairs with one |
 | `rejected_name` | medium | A member name that fails the allow-list, with its reason codes; the break says the member is excluded from the star schema and from every prompt |
-| `no_unit` | medium | A line item with no unit |
+| `block_without_units` | medium | A block whose "Unit" header is not found, or in which no line has a unit: one break naming the block |
+| `no_unit` | medium | A line item with no unit, in a block where other lines have one |
 | `merged_cells` | medium | Merged cells inside a plan block |
 | `currency_disagreement` | high | A plan tab's Currency cell that is not the unit of the money accounts on Lists |
 | `money_units_differ` | high | Money accounts on Lists that do not share one unit, so no tab's currency can be checked |
@@ -166,7 +183,8 @@ break, not two.
 name (`<version>_<entity>`), the control compares what the name says with
 what the sheet states: the version label above the block's header row, and
 the tab's Entity cell. All three are found by their labels, as the extractor
-finds everything else, never at fixed cells. The Entity cell is the cell to
+finds everything else, never at fixed cells. They are compared after
+trimming and ignoring case (below). The Entity cell is the cell to
 the right of the first cell that reads "Entity" (B2 in the sample, D5 in the
 `shifted` fixture). The version label is found through the block's header
 row: the first row of the name's range that holds a "Line item" cell, and
@@ -189,12 +207,23 @@ the name reads it, and its high break holds promotion until a named person
 acknowledges it (`name_wrong_version`: the Forecast name on the Budget rows
 lands the Budget figures as Forecast, and gives one break). A name that cannot
 be read through at all is not repaired either: it is reported, and the tab's
-block is read by its own labels where they are found, as it always was. One
-consequence is left as it is and stated here: when a block's version label
-is changed (`version_label_changed`: Plan B above the ES Budget header), the
-extractor also finds those rows by their labels as a block of that name, as
-it did before 1e, so they land twice, under Budget and under Plan B. That
-adds no break; the one high break holds promotion.
+block is read by its own labels where they are found, as it always was.
+
+**No cell is read twice.** A block found by its labels whose range overlaps a
+block read through a defined name is not read (part 2a). The extractor
+records it beside the blocks it read (`blocks_not_read`). So when a block's
+version label is changed (`version_label_changed`: Plan B above the ES Budget
+header), the rows are read once, through the name Budget_ES; until 2a they
+were also read by their labels as a block called Plan B. The one high break,
+the name against the label, holds promotion, and once it is acknowledged and
+the pair promoted the star schema holds three versions and the ES Budget rows
+once. In the committed workbooks such an overlap arises only there. It can
+arise without another break: a stray "Line item" cell typed above a named
+block reads as the header of a block whose rows run down over the named one,
+and that block is not read and not reported. No figure is lost, because every
+cell under it is read through the name. Two defined names on one range
+(`name_wrong_version`) are not covered by this rule: both are read, and the
+high break holds promotion.
 
 **A block that cannot be read.** A block whose first row has no "Line item"
 header or no month header cannot be read: one high break, with the reason.
@@ -212,7 +241,14 @@ one to one within a block: the k-th line not on Lists, in row order, pairs
 with the k-th missing account, in Lists order. So n such lines excuse at most
 n missing accounts, and each such line's break names the account it
 displaced, in its message and its evidence (its id, kind and severity are as
-before). Every missing account left unpaired is reported in one medium
+before). An account on more than one line pairs the same way (part 2a): of
+the lines that carry its label, the first, in row order, is the account's
+line, and each later one is an extra, one `account_twice_in_block` break
+each; the lines that cannot be placed, those not on Lists and the extras
+together, in row order, take the missing accounts in Lists order. An extra
+with nothing to pair is still the break, and says it repeats the first line
+(`duplicate_account`: the ES Budget Materials label overwritten by Salaries
+gives one break naming rows 25 and 29 and Materials, where at 1e it gave 25). Every missing account left unpaired is reported in one medium
 break, accounts not in the block, naming the block and listing those
 accounts alone (by name in the message, by code and name in the evidence).
 So `unknown_account` (Volume relabelled) keeps its one break, which now names
@@ -223,11 +259,59 @@ relabelled line naming one account and the accounts break the other two.
 **The currency.** Each plan tab's Currency cell, found by its label like the
 Entity cell (B3 in the sample), must equal the unit of the money accounts on
 Lists: every account outside the Statistics section, EUR in the sample. If it
-does not, that is one high break naming the tab, the cell, the tab's value and
-the accounts' unit (`currency_changed`: Plan_AT's B3 reads USD). If the money
+does not, after trimming and ignoring case, that is one high break naming the
+tab, the cell, the tab's value and the accounts' unit (`currency_changed`:
+Plan_AT's B3 reads USD). If the money
 accounts do not share one unit, that is one high break on Lists and no tab's
 currency is checked. A plan tab with no cell labelled "Entity" or "Currency"
 is one high break saying which label is missing.
+
+**One fault, one break (part 2a).** A block with a line-level structure break
+(a line not on Lists, an account missing from the block, an account twice)
+gives that break alone: the totals control does not examine the block's
+subtotals, neither their months nor their FY cells, because a subtotal
+recomputed from Lists would differ only because a line cannot be placed. The
+structure break says so in a second sentence naming the subtotals not
+checked, in Lists order ("The subtotals of block "Forecast_ES" are not
+checked: "Gross profit", "EBIT"."). The rule covers every subtotal of the
+block, even one the line does not feed. The leaf lines' FY totals in that
+block, and the subtotals of every other block, are checked as before.
+`renamed_feeds_subtotal` (Salaries relabelled Staff costs in the ES Forecast
+block) gives one break, where at 1e it gave 13; `unknown_account` and
+`block_short` keep their one break each, whose message now carries the
+sentence. A narrower rule, leaving unchecked only the subtotals the line
+feeds by its parent on Lists, was not taken.
+
+**A block without units.** A block whose "Unit" header is not found, or in
+which no line has a unit, is one medium break, `block_without_units`, one
+break naming the block and the column, with no `no_unit` break for its lines
+(`unit_column_empty`: the ES Budget Unit column emptied gives one break, where
+at 1e it gave 13). A block with some units missing keeps one `no_unit` break
+per line (`no_units`). A "Unit" header cell left empty is also a column with
+no header, which is its own `header_not_found` break.
+
+**Three versions.** `dim_version` holds Actual, Budget and Forecast and
+nothing else, fixed in its SQL file as `dim_time` is, whatever the promoted
+batch holds. A block whose version, from its defined name or its label, is
+not one of them after trimming and ignoring case is landed raw and not built:
+`fact_plan` joins on `dim_version`, so its rows never reach the star schema,
+and the structure control reports it as one medium break,
+`version_not_admitted` (`extra_version_block`: a block labelled Plan B below
+the Forecast block, with no defined name). A version that is one of the three
+in another case, or with spaces around it, takes the version's own name, so
+it is built.
+
+**Case and spaces.** The Currency cell against the unit of the money
+accounts, a version label against its defined name's version, and the Entity
+cell against the tab's entity are compared with Python's `str.strip()` and
+`casefold()` on both sides, so "eur", "EUR " and "budget" are no break
+(`currency_lowercase`, `currency_trailing_space`, `version_label_lowercase`).
+Python's strip removes more than the plain space: tabs, line breaks and the
+no-break space too. It keeps a zero-width character, so a value holding one
+still differs. Any other difference stays one high break. The message shows
+both values when the sheet's value passes the allow-list; otherwise it
+describes the value by the allow-list's reasons and the evidence shows it
+encoded (Breaks, above).
 
 ### Calculation state
 
@@ -300,7 +384,9 @@ shows both figures and the difference.
 An empty cell counts as zero. A comparison is made only when the total and
 every cell it is compared with hold a figure or are empty: a formula with no
 cached value, an error value or text is the calculation-state control's. The
-Control tab's summary and check cells are not read.
+Control tab's summary and check cells are not read. In a block with a
+line-level structure break the subtotals are not checked, and the structure
+break says so (One fault, one break, above).
 
 | Kind | Severity | What it detects |
 |---|---|---|

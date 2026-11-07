@@ -72,7 +72,13 @@ SEVERITY = {
     "heading_not_found": "high", "anchor_disagreement": "high", "block_unreadable": "high",
     "accounts_not_in_block": "medium", "currency_disagreement": "high",
     "money_units_differ": "high",
+    # Part 2a: one fault one break, and the three versions of the star.
+    "account_twice_in_block": "medium", "block_without_units": "medium",
+    "version_not_admitted": "medium",
 }
+# Part 2a: the clause a line-level structure break adds, for a block of the
+# committed Lists, whose subtotals are Gross profit and EBIT.
+NOT_CHECKED = ' The subtotals of block "{}" are not checked: "Gross profit", "EBIT".'
 
 # -- The sample's breaks, by hand -------------------------------------------------------------
 # (control, kind, reasons, severity, sheet, block, entity, account, period, address, message)
@@ -123,10 +129,12 @@ FIXTURE_BREAKS = {
          'The period 2026-07 heads 2 columns of block "Actual_ES": I, J.')],
     "unknown_account": [
         # The one change the reviewer asked for in an earlier fixture's result:
-        # the message names the account the renamed line displaced.
+        # the message names the account the renamed line displaced. Part 2a adds
+        # the subtotals the line leaves unchecked; its id, kind and severity stay.
         ("structure", "account_not_on_lists", ("account_not_on_lists",), "medium", "Plan_ES",
          "A50", 'The line item "Cases sold" in block "Forecast_ES" is not an account on Lists; '
-                'it takes the place of "Volume", an account the block lacks.')],
+                'it takes the place of "Volume", an account the block lacks.'
+                + NOT_CHECKED.format("Forecast_ES"))],
     "external_link": [
         ("hidden_content", "external_link", ("external_link",), "medium", None, None,
          "The workbook links to another workbook (link 1).")],
@@ -151,7 +159,7 @@ FIXTURE_BREAKS = {
     "block_short": [
         ("structure", "accounts_not_in_block", ("accounts_not_in_block",), "medium", "Plan_ES",
          "A22:O33", 'The block "Budget_ES" does not hold 2 of the accounts on Lists: "Volume", '
-         '"Headcount".')],
+         '"Headcount".' + NOT_CHECKED.format("Budget_ES"))],
     "name_shifted": [
         ("structure", "block_unreadable", ("block_unreadable",), "high", "Plan_ES", "A23:O36",
          'The block "Budget_ES" on "Plan_ES" cannot be read: the first row of its range, '
@@ -183,6 +191,29 @@ FIXTURE_BREAKS = {
         ("structure", "block_unreadable", ("block_unreadable",), "high", "Plan_ES", "A21:O34",
          'The block "Budget_ES" on "Plan_ES" cannot be read: the first row of its range, '
          'A21:O21, has no "Line item" header and no month header.')],
+    # Part 2a: the reviewer's Phase 2 brief, section 3. Each is the full clean
+    # workbook with one change, and each gives exactly one break or none.
+    "renamed_feeds_subtotal": [
+        ("structure", "account_not_on_lists", ("account_not_on_lists",), "medium", "Plan_ES",
+         "A45", 'The line item "Staff costs" in block "Forecast_ES" is not an account on Lists; '
+                'it takes the place of "Salaries", an account the block lacks.'
+                + NOT_CHECKED.format("Forecast_ES"))],
+    "duplicate_account": [
+        ("structure", "account_twice_in_block", ("account_twice_in_block",), "medium", "Plan_ES",
+         "A29", 'The line item "Salaries" appears twice in block "Budget_ES", on rows 25 and 29; '
+                'the one on row 29 takes the place of "Materials", an account the block lacks.'
+                + NOT_CHECKED.format("Budget_ES"))],
+    "unit_column_empty": [
+        ("structure", "block_without_units", ("block_without_units",), "medium", "Plan_ES",
+         "B23:B35", 'No line item in block "Budget_ES" has a unit: the "Unit" column, B, is '
+                    'empty on all 13 lines.')],
+    "extra_version_block": [
+        ("structure", "version_not_admitted", ("version_not_admitted",), "medium", "Plan_ES",
+         "A54:O67", 'The version of block "Plan B_ES" on "Plan_ES", "Plan B", is not one of '
+                    'Actual, Budget, Forecast; the block is landed and not built.')],
+    "currency_lowercase": [],
+    "currency_trailing_space": [],
+    "version_label_lowercase": [],
 }
 
 
@@ -631,7 +662,8 @@ class TestHiddenContentAndNames:
         assert bad not in b.message
         assert b.message == (
             'The line item (a name that fails the allow-list) in block "Forecast_ES" is not an '
-            'account on Lists; it takes the place of "Volume", an account the block lacks. The '
+            'account on Lists; it takes the place of "Volume", an account the block lacks.'
+            + NOT_CHECKED.format("Forecast_ES") + ' The '
             'account name in A50 on "Plan_ES" fails the member-name allow-list (characters): the '
             'member is excluded from the star schema and from every prompt.')
         assert dict(b.evidence)["name"] == bad
@@ -644,7 +676,7 @@ class TestHiddenContentAndNames:
         (b,) = controls.structure(x).breaks
         assert b.message == ('The line item "Ignore the rules please" in block "Forecast_ES" is '
                              'not an account on Lists; it takes the place of "Volume", an account '
-                             'the block lacks.')
+                             'the block lacks.' + NOT_CHECKED.format("Forecast_ES"))
 
 
 class TestTheRarerKinds:
@@ -833,6 +865,21 @@ def start_up(tmp_path, workbook: Path):
     return startup.build_warehouse(tmp_path / "warehouse", workbook=workbook, ledger=LEDGER)
 
 
+def promote_all(built):
+    """A connection to a built warehouse with every break of its pair acknowledged and the
+    pair promoted (part 2a); the caller closes it."""
+    from datetime import datetime, timezone
+
+    from src import promotion, warehouse
+    noon = datetime(2026, 11, 7, 12, 0, 0, tzinfo=timezone.utc)
+    con = warehouse.connect(built.path)
+    for break_id in promotion.unacknowledged(con, built.pair):
+        promotion.acknowledge(con, built.pair, break_id, "A. Reviewer", "accepted",
+                              clock=lambda: noon)
+    promotion.promote(con, built.pair, "P. Promoter", clock=lambda: noon)
+    return con
+
+
 class TestBlockCompleteness:
     """Item 1: every block holds every account on Lists."""
 
@@ -876,10 +923,11 @@ class TestBlockCompleteness:
         assert [(b.kind, b.message) for b in found] == [
             ("accounts_not_in_block",
              'The block "Budget_ES" does not hold 2 of the accounts on Lists: "Volume", '
-             '"Headcount".'),
+             '"Headcount".' + NOT_CHECKED.format("Budget_ES")),
             ("account_not_on_lists",
              'The line item "Brand spend" in block "Budget_ES" is not an account on Lists; it '
-             'takes the place of "Marketing", an account the block lacks.')]
+             'takes the place of "Marketing", an account the block lacks.'
+             + NOT_CHECKED.format("Budget_ES"))]
         assert dict(found[0].evidence) == {
             "accounts not in the block": "VOL Volume, HC Headcount",
             "lines in the block not on Lists": "1",
@@ -897,12 +945,15 @@ class TestBlockCompleteness:
         assert [(b.kind, b.block) for b in found] == [
             ("accounts_not_in_block", "Forecast_ES"), ("account_not_on_lists", "Forecast_ES")]
         assert found[0].message == ('The block "Forecast_ES" does not hold 1 of the accounts on '
-                                    'Lists: "Headcount".')
+                                    'Lists: "Headcount".' + NOT_CHECKED.format("Forecast_ES"))
         assert "Volume" in found[1].message
 
-    def test_a_line_relabelled_as_another_account_leaves_one_missing(self, controls):
-        # Co-packing income relabelled Product sales: no line is off Lists, so
-        # the missing account cannot pass as a renamed one.
+    def test_a_line_relabelled_as_another_account_is_the_account_twice(self, controls):
+        # Co-packing income relabelled Product sales. At 1e no line was off
+        # Lists, so the missing account could not pass as a renamed one and
+        # the block gave the accounts break. Part 2a: the label is now on two
+        # lines, and the later one is an extra that pairs with the missing
+        # account, so the fault is one account-twice break naming it.
         base = extraction(CLEAN)
 
         def relabel(b):
@@ -912,9 +963,12 @@ class TestBlockCompleteness:
                 dataclasses.replace(l, label="Product sales", account="4000")
                 if l.account == "4100" else l for l in b.lines))
         (b,) = controls.structure(with_blocks(base, relabel)).breaks
-        assert (b.kind, b.block, b.address) == ("accounts_not_in_block", "Budget_AT", "A22:O35")
-        assert b.message == ('The block "Budget_AT" does not hold 1 of the accounts on Lists: '
-                             '"Co-packing income".')
+        assert (b.kind, b.block, b.account, b.address) == (
+            "account_twice_in_block", "Budget_AT", "4000", "A24")
+        assert b.message == ('The line item "Product sales" appears twice in block "Budget_AT", '
+                             'on rows 23 and 24; the one on row 24 takes the place of '
+                             '"Co-packing income", an account the block lacks.'
+                             + NOT_CHECKED.format("Budget_AT"))
 
     def test_every_committed_block_holds_every_account(self):
         for path in (CLEAN, SAMPLE, FIXTURES / "shifted.xlsx", FIXTURES / "names.xlsx"):
@@ -975,15 +1029,38 @@ class TestAnchorConsistency:
         assert [r.control for r in report(FIXTURES / "name_shifted.xlsx").results
                 if r.breaks] == ["structure"]
 
-    def test_version_label_changed_is_one_break_and_the_relabelled_rows_add_none(self):
-        # The label above the Budget header reads Plan B. The name disagrees:
-        # one break. Reading by labels also finds those rows as a block called
-        # Plan B, as it did at afdd35e; that block adds no break (reported).
-        x = extraction(FIXTURES / "version_label_changed.xlsx")
+    def test_version_label_changed_reads_its_rows_once_and_promotes_three_versions(
+            self, tmp_path):
+        # Changed on purpose in part 2a (the 1e verdict, F12). At 1e this test
+        # pinned the Budget rows read twice: through the name Budget_ES, and by
+        # their labels as a block called Plan B, which put a fourth version and
+        # the same 156 rows into the star. Now a block found by its labels whose
+        # range overlaps a block read through a defined name is not read, and
+        # the star admits Actual, Budget and Forecast alone. The one high break
+        # holds promotion; once it and the pair's reconcile breaks are
+        # acknowledged, the promoted star has three versions, a unique grain,
+        # and the ES Budget rows once: 13 lines times 12 months.
+        path = FIXTURES / "version_label_changed.xlsx"
+        x = extraction(path)
         assert [(b.name, b.found_by, b.ref) for b in x.blocks if b.ref == "A22:O35"] == [
-            ("Budget_ES", "defined name", "A22:O35"), ("Plan B_ES", "header labels", "A22:O35")]
-        (b,) = breaks(FIXTURES / "version_label_changed.xlsx")
+            ("Budget_ES", "defined name", "A22:O35")]
+        assert [(n.sheet, n.version, n.ref, n.overlaps) for n in x.blocks_not_read] == [
+            ("Plan_ES", "Plan B", "A22:O35", ("Budget_ES",))]
+        (b,) = breaks(path)
         assert dict(b.evidence)["label above the header row"] == "A21: Plan B"
+        built = start_up(tmp_path, path)
+        con = promote_all(built)
+        try:
+            assert con.execute("SELECT version FROM dim_version ORDER BY version_order"
+                               ).fetchall() == [("Actual",), ("Budget",), ("Forecast",)]
+            assert con.execute("SELECT version, entity, account, period FROM fact_plan "
+                               "GROUP BY ALL HAVING count(*) > 1").fetchall() == []
+            assert con.execute("SELECT count(*) FROM fact_plan WHERE version = 'Budget' AND "
+                               "entity = 'ES'").fetchone() == (156,)
+            assert con.execute("SELECT DISTINCT version FROM fact_plan ORDER BY ALL"
+                               ).fetchall() == [("Actual",), ("Budget",), ("Forecast",)]
+        finally:
+            con.close()
 
     def test_name_other_tab_and_entity_changed_give_their_break_alone_in_the_whole_build(
             self, tmp_path):
@@ -1276,4 +1353,413 @@ class TestTheDocsOf1e:
         text = self.text()
         for phrase in ("accounts not in the block", "Currency cell", "Entity cell",
                        "cannot be read", "a run of neighbouring hidden rows"):
+            assert phrase in text, phrase
+
+
+# == Part 2a ======================================================================================
+# The reviewer's Phase 2 brief, section 3 (the 1e verdict, findings F11 to F13): one fault
+# gives one break; the star admits three versions and no cell is read twice; the Currency
+# cell, the version label and the Entity cell are compared after trimming and ignoring case.
+
+ADMITTED = "Actual, Budget, Forecast"
+COMMITTED = sorted([*(ROOT / "data").glob("*.xlsx"), *FIXTURES.glob("*.xlsx"),
+                    *MUTATIONS.glob("*.xlsx")])
+
+
+def with_lines(base, block: str, change):
+    """The extraction with one block's lines replaced by change(lines), in memory."""
+    return with_blocks(base, lambda b: dataclasses.replace(b, lines=tuple(change(b.lines)))
+                       if b.name == block else b)
+
+
+def relabelled(lines, rows: dict):
+    """Lines with the label (and the account it names on Lists) of some rows changed."""
+    return [dataclasses.replace(l, label=rows[l.row][0], account=rows[l.row][1])
+            if l.row in rows else l for l in lines]
+
+
+def the_id(*anchors) -> str:
+    text = json.dumps(["structure", *anchors], ensure_ascii=False, separators=(",", ":"))
+    return "ST-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def cell_of(x, block: str, line: str, period: str):
+    (c,) = [c for c in cells_of(x, block, line) if c.period == period]
+    return c
+
+
+class TestOneFaultOneBreak:
+    """Item 1: a line-level structure break, and a block without units, are one break."""
+
+    def test_renamed_feeds_subtotal_is_one_break_and_no_subtotal_break(self):
+        path = FIXTURES / "renamed_feeds_subtotal.xlsx"
+        (b,) = breaks(path)
+        assert dict(b.evidence) == {"line item": "Staff costs",
+                                    "account it displaced": "6000 Salaries"}
+        assert b.break_id == the_id("cell", "Forecast_ES", "Staff costs", "Line item")
+        assert report(path).result("totals").breaks == ()
+
+    def test_the_other_blocks_subtotals_and_the_leaf_totals_are_still_checked(self, controls):
+        # In the block with the renamed line, neither a subtotal month nor a
+        # subtotal's FY cell is examined; a leaf line's FY cell still is, and
+        # so is a subtotal of every other block.
+        base = extraction(FIXTURES / "renamed_feeds_subtotal.xlsx")
+        moved = {}
+        for block, line, period, change in (("Budget_ES", "Gross profit", "2026-01", 1000),
+                                            ("Budget_ES", "Gross profit", "FY2026", 1000),
+                                            ("Forecast_ES", "Marketing", "FY2026", 5),
+                                            ("Forecast_ES", "EBIT", "2026-03", 9),
+                                            ("Forecast_ES", "EBIT", "FY2026", 7),
+                                            ("Forecast_ES", "Gross profit", "2026-04", 3)):
+            c = cell_of(base, block, line, period)
+            moved[(c.sheet, c.address)] = dataclasses.replace(c, amount=c.amount + change)
+        found = controls.totals(with_cells(base, moved)).breaks
+        assert [(b.kind, b.block, b.account, b.period) for b in found] == [
+            ("fy_total", "Forecast_ES", "6100", "FY2026"),
+            ("subtotal", "Budget_ES", "GP", "2026-01")]
+
+    @pytest.mark.parametrize("fault, kind", [
+        ("not on Lists", "account_not_on_lists"),
+        ("missing", "accounts_not_in_block"),
+        ("twice", "account_twice_in_block")])
+    def test_each_line_level_break_leaves_its_blocks_subtotals_unchecked(self, controls, fault,
+                                                                         kind):
+        # Budget_DE, changed in memory: Rent relabelled to a label not on Lists,
+        # IT and software dropped, or Rent relabelled IT and software. A wrong
+        # EBIT month in the block then gives no subtotal break; the break says so.
+        from src.extract import LabelFact
+        base = extraction(CLEAN)
+        rent = next(l for b in base.blocks if b.name == "Budget_DE" for l in b.lines
+                    if l.account == "6200")
+        if fault == "not on Lists":
+            x = with_lines(base, "Budget_DE",
+                           lambda ls: relabelled(ls, {rent.row: ("Premises", None)}))
+            x = dataclasses.replace(x, labels_not_on_lists=(
+                LabelFact("Plan_DE", "Budget_DE", f"A{rent.row}", "Premises"),))
+        elif fault == "missing":
+            x = with_lines(base, "Budget_DE", lambda ls: [l for l in ls if l.account != "6300"])
+        else:
+            x = with_lines(base, "Budget_DE", lambda ls: relabelled(
+                ls, {rent.row: ("IT and software", "6300")}))
+        ebit = cell_of(x, "Budget_DE", "EBIT", "2026-05")
+        x = with_cells(x, {(ebit.sheet, ebit.address): dataclasses.replace(
+            ebit, amount=ebit.amount + 1)})
+        assert controls.totals(x).breaks == ()
+        (b,) = controls.structure(x).breaks
+        assert b.kind == kind and b.message.endswith(NOT_CHECKED.format("Budget_DE"))
+
+    def test_duplicate_account_is_one_break_naming_both_rows_and_the_displaced_account(self):
+        path = FIXTURES / "duplicate_account.xlsx"
+        (b,) = breaks(path)
+        assert (b.control, b.kind, b.severity, b.sheet, b.block, b.entity, b.account,
+                b.address) == ("structure", "account_twice_in_block", "medium", "Plan_ES",
+                               "Budget_ES", "ES", "6000", "A29")
+        assert dict(b.evidence) == {"line item": "Salaries", "cells that carry it": "A25, A29",
+                                    "account it displaced": "5000 Materials"}
+        assert b.break_id == the_id("cell", "Budget_ES", "Salaries", "Line item")
+        assert report(path).result("totals").breaks == ()
+
+    def test_an_extra_line_with_nothing_to_pair_is_still_the_break(self, controls):
+        from src.extract import Line
+        base = extraction(CLEAN)
+        x = with_lines(base, "Budget_ES", lambda ls: [*ls, Line(36, "Salaries", "EUR", "6000")])
+        (b,) = controls.structure(x).breaks
+        assert (b.kind, b.severity, b.account, b.address) == (
+            "account_twice_in_block", "medium", "6000", "A36")
+        assert b.message == ('The line item "Salaries" appears twice in block "Budget_ES", on '
+                             'rows 29 and 36; the one on row 36 repeats the line on row 29.'
+                             + NOT_CHECKED.format("Budget_ES"))
+        assert dict(b.evidence) == {"line item": "Salaries", "cells that carry it": "A29, A36"}
+
+    def test_extras_pair_with_missing_accounts_one_to_one_in_order(self, controls):
+        # Materials and Packaging both relabelled Salaries: the label is on rows
+        # 25, 26 and 29. The first is the account's line; the extras, in row
+        # order, take the missing accounts in Lists order.
+        base = extraction(CLEAN)
+        x = with_lines(base, "Budget_ES", lambda ls: relabelled(
+            ls, {25: ("Salaries", "6000"), 26: ("Salaries", "6000")}))
+        found = controls.structure(x).breaks
+        assert [(b.kind, b.address, dict(b.evidence)["account it displaced"]) for b in found] == [
+            ("account_twice_in_block", "A26", "5000 Materials"),
+            ("account_twice_in_block", "A29", "5100 Packaging")]
+        assert found[0].message == (
+            'The line item "Salaries" appears 3 times in block "Budget_ES", on rows 25, 26 and '
+            '29; the one on row 26 takes the place of "Materials", an account the block lacks.'
+            + NOT_CHECKED.format("Budget_ES"))
+        assert len({b.break_id for b in found}) == 2
+
+    def test_a_line_not_on_lists_and_an_extra_pair_in_row_order(self, controls):
+        # Product sales relabelled Gross sales (row 23) and Packaging relabelled
+        # Salaries (row 26, so the Salaries line on row 29 is the extra). The
+        # two lines that cannot be placed, in row order, take the two missing
+        # accounts in Lists order: Product sales, then Packaging.
+        from src.extract import LabelFact
+        base = extraction(CLEAN)
+        x = with_lines(base, "Budget_ES", lambda ls: relabelled(
+            ls, {23: ("Gross sales", None), 26: ("Salaries", "6000")}))
+        x = dataclasses.replace(x, labels_not_on_lists=(
+            LabelFact("Plan_ES", "Budget_ES", "A23", "Gross sales"),))
+        found = sorted(controls.structure(x).breaks, key=lambda b: b.address)
+        assert [(b.kind, b.address, dict(b.evidence)["account it displaced"]) for b in found] == [
+            ("account_not_on_lists", "A23", "4000 Product sales"),
+            ("account_twice_in_block", "A29", "5100 Packaging")]
+
+    def test_unit_column_empty_is_one_break(self):
+        (b,) = breaks(FIXTURES / "unit_column_empty.xlsx")
+        assert (b.kind, b.severity, b.block, b.entity, b.address) == (
+            "block_without_units", "medium", "Budget_ES", "ES", "B23:B35")
+        assert dict(b.evidence) == {"Unit header": "B22", "line items with no unit": "13"}
+        assert b.break_id == the_id("units", "Budget_ES")
+
+    def test_a_block_whose_unit_header_is_not_found_is_one_break(self, controls):
+        base = extraction(CLEAN)
+
+        def no_header(b):
+            if b.name != "Budget_DE":
+                return b
+            return dataclasses.replace(
+                b, columns=tuple(dataclasses.replace(c, header="Units", role="other")
+                                 if c.role == "unit" else c for c in b.columns),
+                lines=tuple(dataclasses.replace(l, unit=None) for l in b.lines))
+        (b,) = controls.structure(with_blocks(base, no_header)).breaks
+        assert (b.kind, b.severity, b.block, b.address, b.message) == (
+            "block_without_units", "medium", "Budget_DE", "A22:O35",
+            'No line item in block "Budget_DE" has a unit: the block has no "Unit" header.')
+        assert dict(b.evidence) == {"Unit header": "not found", "line items with no unit": "13"}
+
+    def test_a_block_with_some_units_missing_keeps_one_break_per_line(self, controls):
+        base = extraction(CLEAN)
+        x = with_lines(base, "Budget_DE", lambda ls: [
+            dataclasses.replace(l, unit=None) if l.account in ("6000", "VOL") else l for l in ls])
+        found = controls.structure(x).breaks
+        assert [(b.kind, b.address) for b in found] == [("no_unit", "B29"), ("no_unit", "B34")]
+
+    def test_no_workbook_committed_before_2a_gives_a_new_kind(self):
+        new = {"account_twice_in_block", "block_without_units", "version_not_admitted"}
+        for path in (CLEAN, SAMPLE, FIXTURES / "shifted.xlsx", FIXTURES / "no_units.xlsx",
+                     *sorted(MUTATIONS.glob("*.xlsx"))):
+            assert not [b for b in breaks(path) if b.kind in new], path.name
+
+
+class TestThreeVersions:
+    """Item 2: the star admits Actual, Budget and Forecast, and no cell is read twice."""
+
+    def test_extra_version_block_lands_raw_and_is_one_break(self):
+        path = FIXTURES / "extra_version_block.xlsx"
+        x = extraction(path)
+        (block,) = [b for b in x.blocks if b.version not in ("Actual", "Budget", "Forecast")]
+        assert (block.name, block.version, block.found_by, block.ref) == (
+            "Plan B_ES", "Plan B", "header labels", "A54:O67")
+        cells = cells_of(x, "Plan B_ES")
+        assert len(cells) == 13 * 13 and {c.amount for c in cells} == {Decimal(0)}
+        (b,) = breaks(path)
+        assert (b.kind, b.severity, b.block, b.entity) == (
+            "version_not_admitted", "medium", "Plan B_ES", "ES")
+        assert dict(b.evidence) == {"version": "Plan B", "found by": "header labels",
+                                    "versions admitted": ADMITTED}
+        assert b.break_id == the_id("anchor", "Plan B_ES")
+
+    def test_extra_version_block_promoted_builds_no_fourth_version(self, tmp_path):
+        built = start_up(tmp_path, FIXTURES / "extra_version_block.xlsx")
+        assert [short(b) for b in built.breaks] == FIXTURE_BREAKS["extra_version_block"]
+        con = promote_all(built)
+        try:
+            assert con.execute("SELECT version, version_order, is_actual FROM dim_version "
+                               "ORDER BY version_order").fetchall() == [
+                ("Actual", 1, True), ("Budget", 2, False), ("Forecast", 3, False)]
+            assert con.execute("SELECT count(*) FROM raw_plan_cell WHERE version = 'Plan B' "
+                               "AND batch_id = ?", [built.pair.plan_batch_id]).fetchone() == (169,)
+            assert con.execute("SELECT count(*) FROM fact_plan WHERE version NOT IN "
+                               "('Actual', 'Budget', 'Forecast')").fetchone() == (0,)
+            assert con.execute("SELECT count(*) FROM fact_plan").fetchone() == (1170,)
+        finally:
+            con.close()
+
+    def test_a_version_that_fails_the_allow_list_is_withheld(self, controls):
+        base = extraction(FIXTURES / "extra_version_block.xlsx")
+        x = with_blocks(base, lambda b: dataclasses.replace(b, version="Plan B; draft")
+                        if b.name == "Plan B_ES" else b)
+        (b,) = controls.structure(x).breaks
+        assert b.message == (
+            'The version of block (a name that fails the allow-list) on "Plan_ES", a value that '
+            'has characters outside the allowed set (shown encoded in the evidence), is not one '
+            'of Actual, Budget, Forecast; the block is landed and not built.')
+        assert dict(b.evidence)["version"] == '"Plan B; draft"'
+
+    @pytest.mark.parametrize("text, admitted", [
+        ("Budget", "Budget"), ("budget", "Budget"), (" FORECAST ", "Forecast"),
+        ("Actual\u00a0", "Actual"), ("Plan B", None), ("Budget 2", None), ("", None)])
+    def test_a_version_is_admitted_after_trimming_and_ignoring_case(self, text, admitted):
+        from src.extract import VERSIONS, admitted_version
+        assert VERSIONS == ("Actual", "Budget", "Forecast")
+        assert admitted_version(text) == admitted
+
+    def test_version_label_lowercase_reads_three_blocks_on_its_tab(self):
+        x = extraction(FIXTURES / "version_label_lowercase.xlsx")
+        assert [(b.name, b.version, b.found_by) for b in x.blocks if b.sheet == "Plan_ES"] == [
+            ("Actual_ES", "Actual", "defined name"), ("Budget_ES", "Budget", "defined name"),
+            ("Forecast_ES", "Forecast", "defined name")]
+        (budget,) = [b for b in x.blocks if b.name == "Budget_ES"]
+        assert (budget.version_label_address, budget.version_label) == ("A21", "budget")
+
+    @pytest.mark.parametrize("path", COMMITTED, ids=lambda p: p.name)
+    def test_no_cell_of_a_named_block_is_read_again_by_its_labels(self, path):
+        x = extraction(path)
+        kinds = {b.name: b.found_by for b in x.blocks}
+        named = {(c.sheet, c.address) for c in x.cells if kinds.get(c.block) == "defined name"}
+        labelled = {(c.sheet, c.address) for c in x.cells
+                    if kinds.get(c.block) == "header labels"}
+        assert named & labelled == set()
+
+    def test_every_committed_workbook_with_a_block_not_read_has_another_break(self):
+        # The coordinator's check: in the committed workbooks, an overlap that
+        # leaves a block unread arises only in version_label_changed, where the
+        # high anchor break already stands. The stray label test below shows it
+        # can arise without one.
+        found = {p.name: len(breaks(p)) for p in COMMITTED if extraction(p).blocks_not_read}
+        assert found == {"version_label_changed.xlsx": 1}
+
+    def test_a_stray_line_item_label_over_a_named_block_is_not_read_and_gives_no_break(
+            self, controls, tmp_path):
+        # Found while checking the rule, and reported: a "Line item" cell typed in
+        # A4 of Plan_ES, below the Currency cell, reads as the header of a block
+        # labelled Currency whose rows run down over the named Actual block. At
+        # 1e that block was read, could not be read, and gave one high break. Now
+        # it overlaps Actual_ES, so it is not read, and nothing is reported: no
+        # figure is lost, because every cell under it is read through the name.
+        from src.extract import extract_workbook
+
+        def stray(name, data):
+            if name == "xl/worksheets/sheet3.xml":
+                row = (b'<row r="4"><c r="A4" t="inlineStr"><is><t>Line item</t></is></c>'
+                       b'</row>')
+                data, count = re.subn(rb'(<row r="5")', row + rb"\1", data, count=1)
+                assert count == 1
+            return data
+        x = extract_workbook(zip_copy(CLEAN, tmp_path / "stray.xlsx", stray))
+        assert [(n.sheet, n.version, n.ref, n.overlaps) for n in x.blocks_not_read] == [
+            ("Plan_ES", "Currency", "A4:A19", ("Actual_ES",))]
+        assert [b.name for b in x.blocks] == [b.name for b in extraction(CLEAN).blocks]
+        assert controls.run_controls(x).breaks() == ()
+
+
+class TestCaseAndSpaces:
+    """Item 3: the Currency cell, the version label and the Entity cell, trimmed, any case."""
+
+    @pytest.mark.parametrize("name, value", [("currency_lowercase", "eur"),
+                                             ("currency_trailing_space", "EUR ")])
+    def test_the_fixtures_hold_the_value_the_brief_names(self, name, value):
+        x = extraction(FIXTURES / f"{name}.xlsx")
+        (h,) = [h for h in x.headings if (h.sheet, h.label) == ("Plan_AT", "Currency")]
+        assert (h.address, h.value) == ("B3", value)
+
+    @pytest.mark.parametrize("name", ["currency_lowercase", "currency_trailing_space",
+                                      "version_label_lowercase"])
+    def test_the_three_cases_give_no_break_in_the_whole_start_up_build(self, name, tmp_path):
+        assert start_up(tmp_path, FIXTURES / f"{name}.xlsx").breaks == ()
+
+    @pytest.mark.parametrize("value", [" EUR", "Eur", "EUR\t", "EUR\u00a0", "\neur  "])
+    def test_a_currency_differing_only_in_case_or_white_space(self, controls, value):
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value=value)
+                          if (h.sheet, h.label) == ("Plan_AT", "Currency") else h)
+        assert controls.structure(x).breaks == ()
+
+    @pytest.mark.parametrize("value", [" es", "Es", "ES\u00a0"])
+    def test_an_entity_cell_differing_only_in_case_or_white_space(self, controls, value):
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value=value)
+                          if (h.sheet, h.label) == ("Plan_ES", "Entity") else h)
+        assert controls.structure(x).breaks == ()
+
+    @pytest.mark.parametrize("label", [" BUDGET", "budget ", "Budget\t"])
+    def test_a_version_label_differing_only_in_case_or_white_space(self, controls, label):
+        x = with_blocks(extraction(CLEAN), lambda b: dataclasses.replace(b, version_label=label)
+                        if b.name == "Budget_AT" else b)
+        assert controls.structure(x).breaks == ()
+
+    def test_a_value_that_passes_the_allow_list_is_shown_beside_the_other(self, controls):
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value="FR")
+                          if (h.sheet, h.label) == ("Plan_ES", "Entity") else h)
+        (b,) = controls.structure(x).breaks
+        assert b.message == ('The Entity cell of "Plan_ES", B2, reads "FR", but the defined '
+                             'names of its blocks, "Actual_ES", "Budget_ES", "Forecast_ES", say '
+                             '"ES".')
+        assert dict(b.evidence)["the tab's entity"] == "FR"
+
+    def test_a_currency_that_fails_the_allow_list_is_withheld_and_encoded(self, controls):
+        value = "EUR\u200b"                      # a zero-width space, which strip keeps
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value=value)
+                          if (h.sheet, h.label) == ("Plan_AT", "Currency") else h)
+        (b,) = controls.structure(x).breaks
+        assert (b.kind, b.severity) == ("currency_disagreement", "high")
+        assert b.message == ('The Currency cell of "Plan_AT", B3, reads a value that has '
+                             'characters outside the allowed set (shown encoded in the '
+                             'evidence), but the money accounts on Lists are in "EUR".')
+        assert value not in b.message
+        assert dict(b.evidence)["the tab's currency"] == '"EUR\\u200b"'
+
+    def test_an_entity_cell_that_fails_the_allow_list_is_withheld_and_encoded(self, controls):
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value="ES;")
+                          if (h.sheet, h.label) == ("Plan_ES", "Entity") else h)
+        (b,) = controls.structure(x).breaks
+        assert b.message == ('The Entity cell of "Plan_ES", B2, reads a value that has '
+                             'characters outside the allowed set (shown encoded in the '
+                             'evidence), but the defined names of its blocks, "Actual_ES", '
+                             '"Budget_ES", "Forecast_ES", say "ES".')
+        assert dict(b.evidence)["the tab's entity"] == '"ES;"'
+
+    def test_a_version_label_that_fails_the_allow_list_is_withheld_and_encoded(self, controls):
+        x = with_blocks(extraction(CLEAN), lambda b: dataclasses.replace(
+            b, version_label="Budget\u200b") if b.name == "Budget_AT" else b)
+        (b,) = controls.structure(x).breaks
+        assert b.message == ('The defined name "Budget_AT" names version "Budget", but the '
+                             'label above its header row, in A21 on "Plan_AT", reads a value '
+                             'that has characters outside the allowed set (shown encoded in the '
+                             'evidence).')
+        assert dict(b.evidence)["label above the header row"] == 'A21: "Budget\\u200b"'
+
+    def test_a_long_value_is_bounded_at_60_encoded_characters(self, controls):
+        value = "Euro " * 20
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value=value)
+                          if (h.sheet, h.label) == ("Plan_AT", "Currency") else h)
+        (b,) = controls.structure(x).breaks
+        assert b.message == ('The Currency cell of "Plan_AT", B3, reads a value that is longer '
+                             'than 50 characters and has more than six words and starts or ends '
+                             'with a space (shown encoded in the evidence), but the money '
+                             'accounts on Lists are in "EUR".')
+        shown = dict(b.evidence)["the tab's currency"]
+        assert shown == '"' + "Euro " * 11 + 'Eur" (100 characters in all)'
+        assert len(shown.split(" (")[0]) == 60
+
+    def test_an_escape_is_never_cut_in_two(self, controls):
+        value = "\u200b" * 30
+        x = with_headings(extraction(CLEAN), lambda h: dataclasses.replace(h, value=value)
+                          if (h.sheet, h.label) == ("Plan_AT", "Currency") else h)
+        (b,) = controls.structure(x).breaks
+        assert dict(b.evidence)["the tab's currency"] == ('"' + "\\u200b" * 9
+                                                          + '" (30 characters in all)')
+
+
+class TestTheDocsOf2a:
+    def text(self) -> str:
+        return " ".join(CONTROLS_DOC.read_text(encoding="utf-8").split())
+
+    def test_one_fault_one_break_is_stated(self):
+        text = self.text()
+        for phrase in ("does not examine the block's subtotals", "leaf lines' FY totals",
+                       "the first, in row order, is the account's line",
+                       "one break naming the block", "no `no_unit` break"):
+            assert phrase in text, phrase
+
+    def test_the_three_versions_are_stated(self):
+        text = self.text()
+        for phrase in ("`dim_version` holds Actual, Budget and Forecast and nothing else",
+                       "landed raw and not built",
+                       "overlaps a block read through a defined name is not read"):
+            assert phrase in text, phrase
+        assert "land twice" not in text
+
+    def test_case_and_spaces_are_stated(self):
+        text = self.text()
+        for phrase in ("`str.strip()`", "`casefold()`", "no-break space", "zero-width",
+                       "60 encoded characters", "shown encoded in the evidence"):
             assert phrase in text, phrase

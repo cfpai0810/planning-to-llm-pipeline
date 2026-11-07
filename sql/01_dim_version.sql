@@ -1,16 +1,12 @@
--- dim_version: the versions of the promoted plan batch, Actual first.
--- A version whose name fails the allow-list has no cell with name_allowed,
--- so it is left out. With nothing promoted the table is empty.
+-- dim_version: the three versions the star schema admits, Actual first, built
+-- the way dim_time is: fixed here, whatever the promoted plan batch holds
+-- (part 2a). fact_plan joins on this table, so a block read under any other
+-- version is landed raw and never built; the structure control reports it
+-- (version_not_admitted). The table is the same before and after a promotion.
 CREATE OR REPLACE TABLE dim_version AS
-WITH promoted AS (
-    SELECT plan_batch_id FROM gate_promotion ORDER BY number DESC LIMIT 1
-)
-SELECT DISTINCT
-    c.version AS version,
-    CAST(CASE c.version WHEN 'Actual' THEN 1 WHEN 'Budget' THEN 2 WHEN 'Forecast' THEN 3
-         ELSE 4 END AS INTEGER) AS version_order,
-    c.version = 'Actual' AS is_actual
-FROM raw_plan_cell AS c
-JOIN promoted AS p ON c.batch_id = p.plan_batch_id
-WHERE c.version IS NOT NULL AND c.name_allowed
-ORDER BY version_order, version;
+SELECT
+    v.version,
+    CAST(v.version_order AS INTEGER) AS version_order,
+    v.version = 'Actual' AS is_actual
+FROM (VALUES ('Actual', 1), ('Budget', 2), ('Forecast', 3)) AS v(version, version_order)
+ORDER BY version_order;

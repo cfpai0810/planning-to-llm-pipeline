@@ -270,6 +270,10 @@ FULL = tuple(entity.code for entity in model.ENTITIES)
 LINE_ROW = {line.name: i for i, line in enumerate(model.LINES)}
 BLOCK_TITLE = {"Actual": 4, "Budget": 20, "Forecast": 36}
 OVERRIDE_ROW = 52                    # D3: one blank row below the Forecast block
+# Part 2a: the extra_version_block fixture's block, a copy of the Forecast
+# block's lines under the label Plan B, one blank row below the Forecast block.
+EXTRA_VERSION = "Plan B"
+EXTRA_TITLE = 52
 ASSUMPTIONS_HEADER = 3
 LISTS_ACCOUNTS = 2
 CONTROL_SUMMARY = 11
@@ -301,6 +305,8 @@ def col(shape: Shape, offset: int) -> str:
 
 
 def title_row(shape: Shape, version: str) -> int:
+    if version == EXTRA_VERSION:
+        return shape.row0 + EXTRA_TITLE
     return shape.row0 + BLOCK_TITLE[version]
 
 
@@ -913,6 +919,7 @@ def fixture_name_other_tab():
 
 
 VERSION_LABEL = "Plan B"
+RENAMED_SALARIES = "Staff costs"
 
 
 def fixture_version_label_changed():
@@ -937,7 +944,94 @@ def fixture_name_shifted_up():
     return wb, {}
 
 
-SHIFTED = Shape(row0=4, col0=3, banner="Calder Foods Group: draft for review, not for issue")
+# -- Part 2a: one fault one break, three versions, case and spaces ---------------------------
+# Every one is made from the full clean workbook and changes it in the cells
+# named below and nowhere else. Only extra_version_block adds formulas, and
+# they compute 0, given as specials.
+
+def _label_cell(shape: Shape, version: str, line: str) -> str:
+    return f"{col(shape, 0)}{line_row(shape, version, line)}"
+
+
+def fixture_renamed_feeds_subtotal():
+    # The ES Forecast Salaries line relabelled Staff costs, a label not on
+    # Lists; Salaries feeds EBIT. No formula reads a label.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_ES"][_label_cell(shape, "Forecast", "Salaries")] = RENAMED_SALARIES
+    return wb, {}
+
+
+def fixture_duplicate_account():
+    # The ES Budget Materials label overwritten by Salaries, so the block holds
+    # Salaries twice and no Materials. No formula reads a label.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_ES"][_label_cell(shape, "Budget", "Materials")] = "Salaries"
+    return wb, {}
+
+
+def fixture_unit_column_empty():
+    # The ES Budget block's Unit column emptied on all thirteen lines; its
+    # "Unit" header stays.
+    shape = Shape()
+    wb = write_workbook(shape)
+    for line in model.LINES:
+        wb["Plan_ES"][f"{col(shape, 1)}{line_row(shape, 'Budget', line.name)}"] = None
+    return wb, {}
+
+
+def fixture_extra_version_block():
+    # A copy of the ES Forecast block's lines, one blank row below it, under the
+    # label Plan B and with no defined name: the labels, the units, and the
+    # formulas written for the new block's own rows. They fetch their drivers
+    # by the block's label, Plan B, which Assumptions does not hold, so every
+    # cell computes 0.
+    shape = Shape()
+    wb = write_workbook(shape)
+    ws = wb["Plan_ES"]
+    version = EXTRA_VERSION
+    _put(ws, shape, title_row(shape, version), 0, version, bold=True)
+    for i, text in enumerate(["Line item", "Unit", *model.PERIODS, model.FY]):
+        _put(ws, shape, header_row(shape, version), i, text, bold=True)
+    specials = {}
+    for line in model.LINES:
+        row = line_row(shape, version, line.name)
+        _put(ws, shape, row, 0, line.name)
+        _put(ws, shape, row, 1, line.unit)
+        for period in model.PERIODS:
+            cell = _put(ws, shape, row, 2 + model.PERIODS.index(period),
+                        month_formula(shape, version, line.name, period),
+                        number_format=_format(line.name))
+            specials[(ws.title, cell.coordinate)] = Decimal(0)
+        cell = _put(ws, shape, row, 14, total_formula(shape, version, line.name),
+                    number_format=_format(line.name))
+        specials[(ws.title, cell.coordinate)] = Decimal(0)
+    return wb, specials
+
+
+def _currency(value: str):
+    def make():
+        # Plan_AT's Currency cell (B3, beside its label) differs from EUR in
+        # case or spaces only; no formula reads it.
+        shape = Shape()
+        wb = write_workbook(shape)
+        wb["Plan_AT"][f"{col(shape, 1)}{shape.row0 + 2}"] = value
+        return wb, {}
+    return make
+
+
+def fixture_version_label_lowercase():
+    # The label above the ES Budget block's header row reads budget. The
+    # Budget formulas fetch their drivers by that label, and the lookup
+    # ignores case, so every figure is the clean workbook's.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_ES"][f"{col(shape, 0)}{title_row(shape, 'Budget')}"] = "budget"
+    return wb, {}
+
+
+SHIFTED =Shape(row0=4, col0=3, banner="Calder Foods Group: draft for review, not for issue")
 
 # A target written for this machine: a drive, a root, a URI, or a folder name
 # that names the machine (with the user name and the work folder, checked below).
@@ -1204,6 +1298,55 @@ NAME_SHIFTED_UP = Book(
 FIXTURE_BOOKS += [BLOCK_SHORT, NAME_SHIFTED, NAME_WRONG_VERSION, CURRENCY_CHANGED,
                   WRONG_DRIVER_ROW, ENTITY_CHANGED, NAME_OTHER_TAB, VERSION_LABEL_CHANGED,
                   NAME_SHIFTED_UP]
+# Part 2a: the reviewer's Phase 2 brief, section 3. Each is made from the full
+# clean workbook and records it as its base.
+FIXTURE_BOOKS_2A = [
+    Book(FIXTURES / "renamed_feeds_subtotal.xlsx", fixture_renamed_feeds_subtotal,
+         base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the ES Forecast Salaries line relabelled "
+                 f"{RENAMED_SALARIES}, a label not on Lists. Salaries feeds EBIT. Every figure "
+                 "is the clean workbook's.",
+         expected="Structure: one medium break, the line item not on Lists, naming Salaries, the "
+                  "account it displaced, and the block's subtotals it leaves unchecked (Gross "
+                  "profit, EBIT); no subtotal break, and nothing else."),
+    Book(FIXTURES / "duplicate_account.xlsx", fixture_duplicate_account, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the ES Budget Materials label overwritten by Salaries, so "
+                 "the block holds Salaries twice and no Materials. Every figure is the clean "
+                 "workbook's.",
+         expected="Structure: one medium break, the account twice in the block, naming both rows "
+                  "and Materials, the account the second takes the place of, and the block's "
+                  "subtotals it leaves unchecked; no accounts-not-in-block break, no subtotal "
+                  "break, and nothing else."),
+    Book(FIXTURES / "unit_column_empty.xlsx", fixture_unit_column_empty, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the Unit column of the ES Budget block emptied on all "
+                 "thirteen lines; the Unit header stays. Every figure is the clean workbook's.",
+         expected="Structure: one medium break, the block without units, and no no-unit break "
+                  "for any line."),
+    Book(FIXTURES / "extra_version_block.xlsx", fixture_extra_version_block, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, plus a block on Plan_ES one blank row below the Forecast block, "
+                 f"labelled {EXTRA_VERSION}, with no defined name: a copy of the Forecast "
+                 "block's labels and units, and formulas written for its own rows. They fetch "
+                 f"their drivers by its label, {EXTRA_VERSION}, which Assumptions does not hold, "
+                 "so every cell of the block computes 0. Every other figure is the clean "
+                 "workbook's.",
+         expected="Structure: one medium break, the block's version is not one of Actual, "
+                  "Budget, Forecast, so it is landed and not built; nothing else."),
+    Book(FIXTURES / "currency_lowercase.xlsx", _currency("eur"), base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with Plan_AT's Currency cell, B3, reading eur. No formula reads "
+                 "the cell, so every figure is the clean workbook's.",
+         expected="No break: the currency is compared after trimming and ignoring case."),
+    Book(FIXTURES / "currency_trailing_space.xlsx", _currency("EUR "), base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with Plan_AT's Currency cell, B3, reading EUR followed by a "
+                 "space. No formula reads the cell, so every figure is the clean workbook's.",
+         expected="No break: the currency is compared after trimming and ignoring case."),
+    Book(FIXTURES / "version_label_lowercase.xlsx", fixture_version_label_lowercase,
+         base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the label above the ES Budget block's header row reading "
+                 "budget. The Budget formulas fetch their drivers by that label, and the lookup "
+                 "ignores case, so every figure is the clean workbook's.",
+         expected="No break: the version label is compared with the defined name's version "
+                  "after trimming and ignoring case, and its rows are read once."),
+]
 BASE = Book(FIXTURES / "shared_formula.xlsx", _simple(lambda: write_workbook(SMALL)), SMALL,
             purpose=f"{SMALL_NOTE}, recalculated, then the ES Budget Product sales months and "
                     "the ES Budget FY2026 column from Product sales to Volume stored as shared "
@@ -1214,7 +1357,7 @@ NO_CACHE = Book(FIXTURES / "no_cache.xlsx", _simple(lambda: write_workbook(SMALL
                 purpose=f"{SMALL_NOTE}, as openpyxl wrote it and never recalculated: no "
                         "formula cell has a cached value.",
                 expected="Calculation state: one break for every formula cell.")
-STEP_2 = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, BASE]
+STEP_2 = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, *FIXTURE_BOOKS_2A, BASE]
 BOOKS = {book.dest.stem: book for book in (CLEAN, *STEP_2, NO_CACHE)}
 
 

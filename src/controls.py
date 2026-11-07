@@ -11,12 +11,20 @@ of an extraction (src/extract.py, src/long_format.py) and returns typed breaks.
   that fail the allow-list; and (part 1e) each block against its anchors (the
   defined name against the sheet's version label and Entity cell), a block
   that cannot be read, a block that lacks accounts on Lists, and each plan
-  tab's Currency cell against the unit of the money accounts on Lists.
+  tab's Currency cell against the unit of the money accounts on Lists. Part
+  2a adds: an account on two lines of one block, a block in which no line has
+  a unit (one break, not one per line), and a block whose version is not one
+  of Actual, Budget, Forecast (landed and not built). The Currency cell, the
+  version label and the Entity cell are compared after trimming and ignoring
+  case.
 - Calculation state: formulas with no cached value, and error values.
 - Formula integrity: typed constants in formula rows, numeric constants inside
   formulas, and formulas that differ from the pattern of their row.
 - Totals: each FY cell against its own row's months, and the subtotals month
-  by month, recomputed from the extracted cells and Lists.
+  by month, recomputed from the extracted cells and Lists. A block with a
+  line-level structure break (a line not on Lists, an account missing, an
+  account twice) has its subtotals left unchecked, months and FY cell alike,
+  and that break says so (part 2a): one fault, one break.
 - Hidden content and links: hidden sheets, rows and columns, and links to
   other workbooks. A run of neighbouring hidden rows or columns is one break,
   and nothing hidden on a hidden tab is reported apart from the tab.
@@ -50,7 +58,7 @@ from openpyxl.utils import column_index_from_string, get_column_letter, range_bo
 from openpyxl.utils.cell import coordinate_from_string
 
 from src import names as allow_list
-from src.extract import BY_NAME, LABEL_HEADER, PLAN_SHEET, UNIT_HEADER, reads_block
+from src.extract import BY_NAME, LABEL_HEADER, PLAN_SHEET, UNIT_HEADER, VERSIONS, reads_block
 
 __all__ = ["CONTROLS", "KINDS", "SEVERITY", "Break", "ControlReport", "ControlResult",
            "RowPattern", "calculation_state", "formula_integrity", "formula_row",
@@ -72,9 +80,11 @@ ID_PREFIX = {STRUCTURE: "ST", CALCULATION_STATE: "CS", FORMULA_INTEGRITY: "FI", 
 # The kinds of each control, in the fixed order in which a break lists its reasons.
 KINDS = {
     STRUCTURE: ("missing_tab", "entity_not_on_lists", "tab_not_on_list", "heading_not_found",
-                "anchor_disagreement", "block_unreadable", "header_not_found", "duplicate_period",
-                "period_gap", "accounts_not_in_block", "account_not_on_lists", "rejected_name",
-                "no_unit", "merged_cells", "currency_disagreement", "money_units_differ"),
+                "anchor_disagreement", "block_unreadable", "version_not_admitted",
+                "header_not_found", "duplicate_period", "period_gap", "accounts_not_in_block",
+                "account_not_on_lists", "account_twice_in_block", "rejected_name",
+                "block_without_units", "no_unit", "merged_cells", "currency_disagreement",
+                "money_units_differ"),
     CALCULATION_STATE: ("no_cached_value", "error_value"),
     FORMULA_INTEGRITY: ("typed_constant", "embedded_constant", "pattern"),
     TOTALS: ("fy_total", "subtotal"),
@@ -94,6 +104,8 @@ SEVERITY = {
     "rejected_name": MEDIUM, "no_unit": MEDIUM, "merged_cells": MEDIUM, "tab_not_on_list": LOW,
     "heading_not_found": HIGH, "anchor_disagreement": HIGH, "block_unreadable": HIGH,
     "accounts_not_in_block": MEDIUM, "currency_disagreement": HIGH, "money_units_differ": HIGH,
+    "account_twice_in_block": MEDIUM, "block_without_units": MEDIUM,
+    "version_not_admitted": MEDIUM,
     "no_cached_value": HIGH, "error_value": HIGH,
     "typed_constant": MEDIUM, "embedded_constant": MEDIUM, "pattern": LOW,
     "fy_total": HIGH, "subtotal": HIGH,
@@ -109,7 +121,7 @@ NOT_RUN_NO_SHEETS = "not run: the source has no sheets"
 WORKBOOK = "workbook"
 
 EXPECTED_TABS = ("Control", "Assumptions", "Lists")
-EXPECTED_VERSIONS = ("Actual", "Budget", "Forecast")
+EXPECTED_VERSIONS = VERSIONS          # the versions the star admits (part 2a)
 PATTERN_VERSIONS = ("Budget", "Forecast")
 SUBTOTAL, STOCK = "Subtotal", "Stock"
 # The money accounts are every account on Lists outside this section (part 1e).
@@ -121,6 +133,18 @@ FAR_RIGHT = "XFD"
 NOT_TRANSLATED = "not translated: "
 ARRAY_NOTE = "array formula: recorded, not read as text, not compared with the pattern of its row"
 NAME_WITHHELD = "(a name that fails the allow-list)"
+# Part 2a: a value read from the Currency cell, the version label or the Entity
+# cell that fails the allow-list is described by its reasons and never printed;
+# the evidence shows it JSON-encoded with every character outside ASCII escaped,
+# bounded at EVIDENCE_LIMIT encoded characters.
+WITHHELD_REASONS = {
+    "empty": "is empty",
+    "characters": "has characters outside the allowed set",
+    "length": f"is longer than {allow_list.MAX_CHARACTERS} characters",
+    "words": "has more than six words",          # allow_list.MAX_WORDS is 6
+    "space": "starts or ends with a space",
+}
+EVIDENCE_LIMIT = 60
 MEMBER_WORDS = {"account": "account name", "account code": "account code",
                 "parent": "parent name", "entity": "entity name", "entity code": "entity code",
                 "version": "version name"}
@@ -142,6 +166,18 @@ MESSAGES = {
     "account_not_on_lists_displaced": "The line item {line} in block {block} is not an account "
                                       "on Lists; it takes the place of {account}, an account the "
                                       "block lacks.",
+    "account_twice_in_block_displaced": "The line item {line} appears {count} in block {block}, "
+                                        "on rows {rows}; the one on row {row} takes the place of "
+                                        "{account}, an account the block lacks.",
+    "account_twice_in_block": "The line item {line} appears {count} in block {block}, on rows "
+                              "{rows}; the one on row {row} repeats the line on row {first}.",
+    "subtotals_not_checked": "The {what} of block {block} {verb} not checked: {subtotals}.",
+    "block_without_units_empty": "No line item in block {block} has a unit: the {unit} column, "
+                                 "{column}, is empty on all {count} lines.",
+    "block_without_units_header": "No line item in block {block} has a unit: the block has no "
+                                  "{unit} header.",
+    "version_not_admitted": "The version of block {block} on {tab}, {version}, is not one of "
+                            "Actual, Budget, Forecast; the block is landed and not built.",
     "rejected_name": "The {member} in {address} on {tab} fails the member-name allow-list "
                      "({reasons}): the member is excluded from the star schema and from every "
                      "prompt.",
@@ -276,6 +312,58 @@ def _member(name: Optional[str]) -> str:
     if name is None:
         return "(no name)"
     return _quote(name) if allow_list.allowed(name) else NAME_WITHHELD
+
+
+def _same(a: Optional[str], b: Optional[str]) -> bool:
+    """Two values compared as part 2a compares them: str.strip() and casefold() on both sides.
+
+    Python's strip also removes tabs, line breaks and the no-break space; it keeps a
+    zero-width character, so a value holding one still differs.
+    """
+    if a is None or b is None:
+        return a is b
+    return a.strip().casefold() == b.strip().casefold()
+
+
+def _shown(value: Optional[str]) -> str:
+    """A value read from a cell, in a message: as data when it passes the allow-list; otherwise
+    described by the allow-list's reasons and never printed (part 2a)."""
+    if value is None:
+        return "nothing"
+    reasons = allow_list.check(value)
+    if not reasons:
+        return _quote(value)
+    return ("a value that " + " and ".join(WITHHELD_REASONS[r] for r in reasons)
+            + " (shown encoded in the evidence)")
+
+
+def _encoded(value: Optional[str]) -> str:
+    """The same value in the evidence: as it is when it passes the allow-list; otherwise
+    json.dumps with ensure_ascii, so an invisible character shows as an escape, bounded at
+    EVIDENCE_LIMIT encoded characters (an escape is never cut) and then its length."""
+    if value is None:
+        return ""
+    if allow_list.allowed(value):
+        return value
+    whole = json.dumps(value, ensure_ascii=True)
+    if len(whole) <= EVIDENCE_LIMIT:
+        return whole
+    pieces, used = ['"'], 2
+    for character in value:
+        piece = json.dumps(character, ensure_ascii=True)[1:-1]
+        if used + len(piece) > EVIDENCE_LIMIT:
+            break
+        pieces.append(piece)
+        used += len(piece)
+    return "".join(pieces) + f'" ({len(value)} characters in all)'
+
+
+def _times(count: int) -> str:
+    return "twice" if count == 2 else f"{count} times"
+
+
+def _and(items: list) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _block_name(name: Optional[str], version: Optional[str], entity: Optional[str]) -> str:
@@ -617,8 +705,11 @@ def structure(x) -> ControlResult:
         first, top, last, bottom = range_boundaries(b.ref)
         header_row = f"{get_column_letter(first)}{top}:{get_column_letter(last)}{top}"
         block = _block_name(b.name, b.version, b.entity)
-        if b.found_by == BY_NAME and b.header_row is not None and b.version_label != b.version:
+        if (b.found_by == BY_NAME and b.header_row is not None
+                and not _same(b.version_label, b.version)):
             findings.append(_version_disagrees(x, b, block))
+        if b.version not in EXPECTED_VERSIONS:
+            findings.append(_version_not_admitted(b, block))
         why = _why_unreadable(b)
         if why:
             # One break says the block cannot be read, and nothing else in it is examined.
@@ -659,24 +750,18 @@ def structure(x) -> ControlResult:
                 {"block": block, "missing": ", ".join(absent)},
                 (("months with no column", ", ".join(absent)),)))
         findings += problems
-        unit_letter = next((c.letter for c in b.columns if c.role == "unit"), None)
-        for line in b.lines:
-            if line.unit is None:
-                address = f"{unit_letter}{line.row}" if unit_letter else None
-                findings.append(_finding(
-                    "no_unit", (b.sheet, address) if address else None,
-                    ("cell", b.name, line.label, UNIT_HEADER),
-                    _at(b.sheet, b.name, b.entity, line.account, address=address), "no_unit",
-                    {"line": _member(line.label), "block": block},
-                    (("line item", line.label or ""),)))
+        findings += _units(b, block)
         for merged in b.merged:
             findings.append(_finding(
                 "merged_cells", None, ("merged", b.name, merged),
                 _at(b.sheet, b.name, b.entity, address=merged), "merged_cells",
                 {"cells": merged, "tab": _quote(b.sheet), "block": block},
                 (("merged range", merged),)))
-        displaced.update(_displaced(x, b))
-        findings += _accounts_not_in_block(x, b, block)
+        faults = _line_faults(x, b)
+        clause = _not_checked(x, block)
+        displaced.update(_displaced(b, faults))
+        findings += _accounts_twice(b, block, faults, displaced, clause)
+        findings += _accounts_not_in_block(b, block, faults, clause)
 
     def in_unreadable(sheet, address) -> bool:
         if sheet is None or address is None:
@@ -700,12 +785,12 @@ def structure(x) -> ControlResult:
         if account is not None:
             values["account"] = _member(account.name) if account.name else _member(account.code)
             evidence += (("account it displaced", _account_text(account)),)
-        findings.append(_finding(
+        findings.append(_with_clause(_finding(
             "account_not_on_lists", (label.sheet, label.address),
             ("cell", label.block, label.label, LABEL_HEADER),
             _at(label.sheet, label.block, b.entity if b else None, address=label.address),
             "account_not_on_lists_displaced" if account is not None else "account_not_on_lists",
-            values, evidence))
+            values, evidence), _not_checked(x, values["block"])))
     for n in x.rejected_names:
         if in_unreadable(n.sheet, n.address):
             continue
@@ -750,12 +835,12 @@ def _version_disagrees(x, b, block: str) -> _Finding:
     """
     cell = b.version_label_address or "(no row above it)"
     fact = _name_fact(x, b)
-    title = b.version_label if b.version_label is not None else "nothing"
+    title = _encoded(b.version_label) if b.version_label is not None else "nothing"
     return _finding(
         "anchor_disagreement", None, ("anchor", b.name),
         _at(b.sheet, b.name, b.entity, address=b.ref), "anchor_version",
         {"name": block, "version": _member(b.version), "cell": cell, "tab": _quote(b.sheet),
-         "label": _member(b.version_label) if b.version_label is not None else title},
+         "label": _shown(b.version_label)},
         (("defined name", b.name), ("refers to", fact.destinations[0] if fact else b.ref),
          ("version the name gives", b.version), ("label above the header row", f"{cell}: {title}")))
 
@@ -801,10 +886,10 @@ def _tab_anchors(x, entities) -> list:
                  "what": " and ".join(k.lower() for k in missing),
                  "verb": "are" if len(missing) > 1 else "is"},
                 (("labels not found", ", ".join(missing)),)))
-        if "Entity" not in missing and entity_cell.value != entity:
+        if "Entity" not in missing and not _same(entity_cell.value, entity):
             names = [b for b in x.blocks if b.sheet == sheet and b.found_by == BY_NAME]
-            value = _member(entity_cell.value) if entity_cell.value is not None else "nothing"
-            values = {"tab": _quote(sheet), "cell": entity_cell.address, "value": value,
+            values = {"tab": _quote(sheet), "cell": entity_cell.address,
+                      "value": _shown(entity_cell.value),
                       "entity": _member(entity)}
             if names:
                 values["names"] = ", ".join(_block_name(b.name, b.version, b.entity)
@@ -814,19 +899,19 @@ def _tab_anchors(x, entities) -> list:
                 _at(sheet=sheet, entity=entity, address=entity_cell.address),
                 "anchor_entity" if names else "anchor_entity_tab", values,
                 (("Entity cell", entity_cell.address),
-                 ("the tab's entity", entity_cell.value or ""),
+                 ("the tab's entity", _encoded(entity_cell.value)),
                  ("entity the tab and its defined names give", entity),
                  ("defined names on the tab", ", ".join(b.name for b in names) or "none"))))
-        if "Currency" not in missing and unit is not None and currency_cell.value != unit:
-            value = _member(currency_cell.value) if currency_cell.value is not None else "nothing"
+        if ("Currency" not in missing and unit is not None
+                and not _same(currency_cell.value, unit)):
             findings.append(_finding(
                 "currency_disagreement", None, ("currency", sheet),
                 _at(sheet=sheet, entity=entity, address=currency_cell.address),
                 "currency_disagreement",
-                {"tab": _quote(sheet), "cell": currency_cell.address, "value": value,
-                 "unit": _member(unit)},
+                {"tab": _quote(sheet), "cell": currency_cell.address,
+                 "value": _shown(currency_cell.value), "unit": _member(unit)},
                 (("Currency cell", currency_cell.address),
-                 ("the tab's currency", currency_cell.value or ""),
+                 ("the tab's currency", _encoded(currency_cell.value)),
                  ("unit of the money accounts on Lists", unit),
                  ("money accounts", "every account on Lists outside the Statistics section"))))
     return findings
@@ -874,43 +959,176 @@ def _account_text(a) -> str:
     return f"{a.code} {a.name}" if a.name else a.code
 
 
-def _displaced(x, b) -> dict:
-    """{(block, row): the missing account} for each line not on Lists that pairs with one.
+def _line_faults(x, b) -> tuple:
+    """(lines not on Lists, extra lines, missing accounts) of a block: its line-level faults.
 
-    The reviewer's rule (notes on the 1e brief): lines not on Lists pair with
-    missing accounts one to one within a block, the k-th such line in row
-    order with the k-th missing account in Lists order, so n renamed lines
-    excuse at most n missing accounts.
+    A label on Lists that is on more than one line of the block: the first, in
+    row order, is the account's line, and each later one is an extra (part 2a).
+    The missing accounts are in Lists order.
     """
-    off_lists = [line for line in sorted(b.lines, key=lambda line: line.row)
-                 if line.account is None]
-    return {(b.name, line.row): account
-            for line, account in zip(off_lists, _missing_accounts(x, b))}
+    lines = sorted(b.lines, key=lambda line: line.row)
+    off_lists = [line for line in lines if line.account is None]
+    seen, extras = set(), []
+    for line in lines:
+        if line.account is None:
+            continue
+        if line.account in seen:
+            extras.append(line)
+        seen.add(line.account)
+    return off_lists, extras, _missing_accounts(x, b)
 
 
-def _accounts_not_in_block(x, b, block: str) -> list:
-    """The accounts on Lists a block lacks that no line not on Lists pairs with.
+def _not_checked(x, block: str) -> str:
+    """The sentence a line-level structure break adds: the block's subtotals, not checked.
 
-    A line whose label is not on Lists is already one break (one fault, one
-    break), and it pairs with one missing account (_displaced), which its
-    break names. Every missing account left unpaired is listed in one break.
+    The subtotals are every Subtotal on Lists, in Lists order (Gross profit and
+    EBIT in the sample); "" when Lists has none.
     """
-    missing = _missing_accounts(x, b)
-    off_lists = sum(1 for line in b.lines if line.account is None)
-    paired, unpaired = missing[:off_lists], missing[off_lists:]
+    subtotals = [a for a in x.lists.accounts if a.code and a.section == SUBTOTAL]
+    if not subtotals:
+        return ""
+    return " " + MESSAGES["subtotals_not_checked"].format(
+        what="subtotals" if len(subtotals) > 1 else "subtotal", block=block,
+        verb="are" if len(subtotals) > 1 else "is",
+        subtotals=", ".join(_member(a.name or a.code) for a in subtotals))
+
+
+def _with_clause(finding: _Finding, clause: str) -> _Finding:
+    finding.sentence += clause
+    return finding
+
+
+def _displaced(b, faults) -> dict:
+    """{(block, row): the missing account} for each line that cannot be placed and pairs with one.
+
+    The reviewer's rule (notes on the 1e brief, and part 2a): the lines of a
+    block that cannot be placed, those not on Lists and the extra lines of an
+    account already in the block, pair with its missing accounts one to one,
+    the k-th such line in row order with the k-th missing account in Lists
+    order, so n such lines excuse at most n missing accounts.
+    """
+    off_lists, extras, missing = faults
+    unplaced = sorted(off_lists + extras, key=lambda line: line.row)
+    return {(b.name, line.row): account for line, account in zip(unplaced, missing)}
+
+
+def _accounts_twice(b, block: str, faults, displaced: dict, clause: str) -> list:
+    """One break for each extra line of an account the block already holds (part 2a).
+
+    The message lists every row that carries the label and names the account
+    the extra line takes the place of, when it pairs with one; it is anchored
+    as a line not on Lists is: its block, its label and the label header.
+    """
+    _, extras, _ = faults
+    if not extras:
+        return []
+    letter = next((c.letter for c in b.columns if c.role == "label"), b.columns[0].letter)
+    carriers: dict = defaultdict(list)
+    for line in sorted(b.lines, key=lambda line: line.row):
+        if line.account is not None:
+            carriers[line.account].append(line)
+    findings = []
+    for line in extras:
+        rows = carriers[line.account]
+        values = {"line": _member(line.label), "count": _times(len(rows)), "block": block,
+                  "rows": _and([str(r.row) for r in rows]), "row": line.row}
+        evidence = (("line item", line.label or ""),
+                    ("cells that carry it", ", ".join(f"{letter}{r.row}" for r in rows)))
+        account = displaced.get((b.name, line.row))
+        if account is not None:
+            values["account"] = _member(account.name) if account.name else _member(account.code)
+            evidence += (("account it displaced", _account_text(account)),)
+        else:
+            values["first"] = rows[0].row
+        address = f"{letter}{line.row}"
+        findings.append(_with_clause(_finding(
+            "account_twice_in_block", (b.sheet, address), ("cell", b.name, line.label, LABEL_HEADER),
+            _at(b.sheet, b.name, b.entity, line.account, address=address),
+            "account_twice_in_block_displaced" if account is not None
+            else "account_twice_in_block", values, evidence), clause))
+    return findings
+
+
+def _accounts_not_in_block(b, block: str, faults, clause: str) -> list:
+    """The accounts on Lists a block lacks that no line that cannot be placed pairs with.
+
+    A line whose label is not on Lists, or an extra line of an account the
+    block already holds, is already one break (one fault, one break), and it
+    pairs with one missing account (_displaced), which its break names. Every
+    missing account left unpaired is listed in one break.
+    """
+    off_lists, extras, missing = faults
+    placed = len(off_lists) + len(extras)
+    paired, unpaired = missing[:placed], missing[placed:]
     if not unpaired:
         return []
     evidence = (("accounts not in the block", ", ".join(map(_account_text, unpaired))),
-                ("lines in the block not on Lists", str(off_lists)))
+                ("lines in the block not on Lists", str(len(off_lists))))
+    if extras:
+        evidence += (("extra lines of accounts the block holds", str(len(extras))),)
     if paired:
-        evidence += (("missing accounts paired with lines not on Lists",
+        evidence += (("missing accounts paired with lines not on Lists" if not extras
+                      else "missing accounts paired with lines that cannot be placed",
                       ", ".join(map(_account_text, paired))),)
-    return [_finding(
+    return [_with_clause(_finding(
         "accounts_not_in_block", None, ("accounts", b.name),
         _at(b.sheet, b.name, b.entity, address=b.ref), "accounts_not_in_block",
         {"block": block, "count": len(unpaired),
          "accounts": ", ".join(_member(a.name) for a in unpaired)},
-        evidence)]
+        evidence), clause)]
+
+
+def _units(b, block: str) -> list:
+    """One break for a block in which no line has a unit; otherwise one per line with none.
+
+    A block whose "Unit" header is not found, or in which every line lacks a
+    unit, is one block_without_units break naming the block (part 2a); a block
+    with some units missing keeps one no_unit break per line.
+    """
+    column = next((c for c in b.columns if c.role == "unit"), None)
+    if column is None or (b.lines and all(line.unit is None for line in b.lines)):
+        _, top, _, _ = range_boundaries(b.ref)
+        if column is None:
+            address, template, header = b.ref, "block_without_units_header", "not found"
+        else:
+            rows = [line.row for line in b.lines]
+            address = f"{column.letter}{min(rows)}:{column.letter}{max(rows)}"
+            template, header = "block_without_units_empty", f"{column.letter}{top}"
+        return [_finding(
+            "block_without_units", None, ("units", b.name),
+            _at(b.sheet, b.name, b.entity, address=address), template,
+            {"block": block, "unit": _quote(UNIT_HEADER), "count": len(b.lines),
+             "column": column.letter if column else ""},
+            (("Unit header", header), ("line items with no unit", str(len(b.lines)))))]
+    findings = []
+    for line in b.lines:
+        if line.unit is None:
+            address = f"{column.letter}{line.row}"
+            findings.append(_finding(
+                "no_unit", (b.sheet, address), ("cell", b.name, line.label, UNIT_HEADER),
+                _at(b.sheet, b.name, b.entity, line.account, address=address), "no_unit",
+                {"line": _member(line.label), "block": block},
+                (("line item", line.label or ""),)))
+    return findings
+
+
+def _version_not_admitted(b, block: str) -> _Finding:
+    """A block whose version is not Actual, Budget or Forecast: landed, and not built (part 2a).
+
+    Anchored as the block's own anchors are, so a block that also cannot be
+    read, or whose defined name disagrees with the sheet, is one break.
+    """
+    return _finding(
+        "version_not_admitted", None, ("anchor", b.name),
+        _at(b.sheet, b.name, b.entity, address=b.ref), "version_not_admitted",
+        {"block": block, "tab": _quote(b.sheet), "version": _shown(b.version)},
+        (("version", _encoded(b.version)), ("found by", b.found_by),
+         ("versions admitted", ", ".join(EXPECTED_VERSIONS))))
+
+
+def _blocks_with_line_faults(x) -> set:
+    """The readable blocks with a line-level structure break: their subtotals are not checked."""
+    return {b.name for b in x.blocks if not _why_unreadable(b) and any(_line_faults(x, b))}
 
 
 def _long_format_structure(x) -> ControlResult:
@@ -1010,14 +1228,24 @@ def totals(x) -> ControlResult:
     made only when the total and every cell it is compared with hold a figure
     or are empty (an empty cell counts as zero): a formula with no cached
     value, an error value or text is the calculation-state control's.
+
+    A block with a line-level structure break (a line not on Lists, an account
+    missing, an account twice) has its subtotals left out, months and FY cell
+    alike: the control cannot place every line, so a subtotal recomputed from
+    Lists would differ for that reason alone, and the structure break says
+    which subtotals are not checked (part 2a). Its leaf lines' FY totals, and
+    every other block's subtotals, are checked as before.
     """
     if x.batch.source != WORKBOOK:
         return _not_run(TOTALS, NOT_RUN_NO_TOTALS)
     accounts = {a.code: a for a in x.lists.accounts if a.code}
+    subtotals, unchecked = _subtotal_codes(x.lists), _blocks_with_line_faults(x)
     findings = []
     for cells in _rows(x.cells).values():
         months = [c for c in cells if c.column_kind == "month"]
         if any(_unreadable(c) for c in months):
+            continue
+        if cells[0].block in unchecked and cells[0].account in subtotals:
             continue
         for t in (c for c in cells if c.column_kind == "total" and c.amount is not None):
             account = accounts.get(t.account)
@@ -1041,7 +1269,9 @@ def totals(x) -> ControlResult:
     for c in x.cells:
         if c.block is not None and c.column_kind == "month" and c.account is not None:
             columns[(c.block, _letter_of(c.address))][c.account] = c
-    for by_account in columns.values():
+    for (block, _), by_account in columns.items():
+        if block in unchecked:
+            continue
         for code, signed in parts.items():
             s = by_account.get(code)
             if s is None or s.amount is None:

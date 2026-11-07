@@ -117,6 +117,15 @@ RECALCULATED = {
     # other three are checked cell by cell against their base below.
     FIXTURES / "block_short.xlsx": Book(sheets=SMALL),
     FIXTURES / "currency_changed.xlsx": Book(),
+    # Part 2a: six of the seven new fixtures keep every figure of the clean
+    # workbook; extra_version_block adds a block outside every defined name and
+    # is checked on its own below.
+    FIXTURES / "renamed_feeds_subtotal.xlsx": Book(),
+    FIXTURES / "duplicate_account.xlsx": Book(),
+    FIXTURES / "unit_column_empty.xlsx": Book(),
+    FIXTURES / "currency_lowercase.xlsx": Book(),
+    FIXTURES / "currency_trailing_space.xlsx": Book(),
+    FIXTURES / "version_label_lowercase.xlsx": Book(),
 }
 SMALL_FIXTURES = [p for p, b in RECALCULATED.items() if b.sheets == SMALL] + [
     FIXTURES / "name_shifted.xlsx", FIXTURES / "name_wrong_version.xlsx",
@@ -564,7 +573,12 @@ class TestTheFixtures:
                          "block_short.xlsx", "name_shifted.xlsx", "name_wrong_version.xlsx",
                          "currency_changed.xlsx", "wrong_driver_row.xlsx", "entity_changed.xlsx",
                          "name_other_tab.xlsx", "version_label_changed.xlsx",
-                         "name_shifted_up.xlsx"}
+                         "name_shifted_up.xlsx",
+                         # Part 2a.
+                         "renamed_feeds_subtotal.xlsx", "duplicate_account.xlsx",
+                         "unit_column_empty.xlsx", "extra_version_block.xlsx",
+                         "currency_lowercase.xlsx", "currency_trailing_space.xlsx",
+                         "version_label_lowercase.xlsx"}
         assert len(list(MUTATIONS.glob("*.xlsx"))) == 10
 
     @pytest.mark.parametrize("path", SMALL_FIXTURES, ids=_id)
@@ -651,7 +665,7 @@ class TestTheFixtures:
         # Was test_no_workbook_links_to_another: the stop 1 verdict (option A)
         # added exactly this one linked fixture.
         books = committed_workbooks()
-        assert len(books) == 36
+        assert len(books) == 43
         assert [_id(p) for p in books if formulas(p)._external_links] == [
             "tests/fixtures/external_link.xlsx"]
 
@@ -802,7 +816,11 @@ NAME_FIXTURES = {
 FIXTURES_1E = ("block_short", "name_shifted", "name_wrong_version", "currency_changed",
                "wrong_driver_row", "entity_changed", "name_other_tab", "version_label_changed",
                "name_shifted_up")
-FULL_BASED = {"currency_changed", "wrong_driver_row", "entity_changed", "name_other_tab"}
+FIXTURES_2A = ("renamed_feeds_subtotal", "duplicate_account", "unit_column_empty",
+               "extra_version_block", "currency_lowercase", "currency_trailing_space",
+               "version_label_lowercase")
+FULL_BASED = {"currency_changed", "wrong_driver_row", "entity_changed", "name_other_tab",
+              *FIXTURES_2A}
 
 
 def sheet_cells(wb, title) -> dict:
@@ -864,7 +882,7 @@ class TestThe1eFixtures:
     def test_each_records_its_base_in_the_manifest(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         entries = {f["file"]: f for f in manifest["fixtures"]}
-        for name in FIXTURES_1E:
+        for name in FIXTURES_1E + FIXTURES_2A:
             base = entries[f"tests/fixtures/{name}.xlsx"]["base"]
             if name in FULL_BASED:
                 assert base.startswith("the full clean workbook"), name
@@ -872,7 +890,7 @@ class TestThe1eFixtures:
                 assert base.startswith("the small base"), name
         # Every entry approved before 1e keeps its keys: the base is new with 1e.
         assert [f["file"] for f in manifest["fixtures"] if "base" in f] == [
-            f"tests/fixtures/{name}.xlsx" for name in FIXTURES_1E]
+            f"tests/fixtures/{name}.xlsx" for name in FIXTURES_1E + FIXTURES_2A]
 
     def test_name_other_tab_differs_from_the_clean_workbook_in_one_name(self):
         path = FIXTURES / "name_other_tab.xlsx"
@@ -982,3 +1000,110 @@ class TestTheBuildNote:
         note = " ".join(BUILD_NOTE.read_text(encoding="utf-8").split())
         assert "as spreadsheet applications write them" in note
         assert not re.search(r"\bExcel\b", note)
+
+
+# -- Part 2a: the seven new fixtures --------------------------------------------------------------
+# Each is the full clean workbook changed in the cells named here and nowhere else, in
+# both readings (formulas and cached values). Every expectation is written by hand.
+
+def cells_in(sheet: str, first: str, last: str) -> set:
+    from openpyxl.utils import range_boundaries
+    c1, r1, c2, r2 = range_boundaries(f"{first}:{last}")
+    from openpyxl.utils import get_column_letter
+    return {(sheet, f"{get_column_letter(c)}{r}") for c in range(c1, c2 + 1)
+            for r in range(r1, r2 + 1)}
+
+
+CHANGED_2A = {
+    "renamed_feeds_subtotal": {("Plan_ES", "A45")},
+    "duplicate_account": {("Plan_ES", "A25")},
+    "unit_column_empty": cells_in("Plan_ES", "B23", "B35"),
+    "currency_lowercase": {("Plan_AT", "B3")},
+    "currency_trailing_space": {("Plan_AT", "B3")},
+    "version_label_lowercase": {("Plan_ES", "A21")},
+}
+
+
+class TestThe2aFixtures:
+    @pytest.mark.parametrize("name", sorted(CHANGED_2A))
+    def test_each_is_the_clean_workbook_changed_in_its_own_cells(self, name):
+        path = FIXTURES / f"{name}.xlsx"
+        assert formulas(path).sheetnames == TABS
+        assert differences(path, CLEAN, TABS) == {
+            (reading, sheet, cell) for reading in ("formulas", "values")
+            for sheet, cell in CHANGED_2A[name]}
+        assert defined(path) == defined(CLEAN)
+
+    @pytest.mark.parametrize("name, sheet, cell, value", [
+        ("renamed_feeds_subtotal", "Plan_ES", "A45", "Staff costs"),
+        ("duplicate_account", "Plan_ES", "A25", "Salaries"),
+        ("currency_lowercase", "Plan_AT", "B3", "eur"),
+        ("currency_trailing_space", "Plan_AT", "B3", "EUR "),
+        ("version_label_lowercase", "Plan_ES", "A21", "budget"),
+    ])
+    def test_the_changed_cell_holds_what_the_brief_names(self, name, sheet, cell, value):
+        assert formulas(FIXTURES / f"{name}.xlsx")[sheet][cell].value == value
+
+    def test_duplicate_account_holds_salaries_twice_and_no_materials(self):
+        wb = formulas(FIXTURES / "duplicate_account.xlsx")
+        labels = [wb["Plan_ES"][f"A{r}"].value for r in range(23, 36)]
+        assert labels.count("Salaries") == 2 and "Materials" not in labels
+        assert [r for r in range(23, 36) if wb["Plan_ES"][f"A{r}"].value == "Salaries"] == [25, 29]
+
+    def test_unit_column_empty_keeps_its_unit_header(self):
+        wb = formulas(FIXTURES / "unit_column_empty.xlsx")
+        assert wb["Plan_ES"]["B22"].value == "Unit"
+        assert [wb["Plan_ES"][f"B{r}"].value for r in range(23, 36)] == [None] * 13
+
+    def test_version_label_lowercase_keeps_every_figure(self):
+        # The Budget formulas fetch their drivers by the label, and the lookup
+        # ignores case: no cached value differs from the clean workbook's (the
+        # test above), so every figure is the same.
+        path = FIXTURES / "version_label_lowercase.xlsx"
+        for line in LINES:
+            for key in PERIODS + (FY,):
+                assert anchor(values(path), "Budget", "ES", line, key).value == \
+                    anchor(values(CLEAN), "Budget", "ES", line, key).value
+
+    def test_extra_version_block_adds_one_block_of_zeros_below_the_forecast_block(self, model):
+        path = FIXTURES / "extra_version_block.xlsx"
+        f, v = formulas(path), values(path)
+        assert f.sheetnames == TABS and defined(path) == defined(CLEAN)
+        block = cells_in("Plan_ES", "A53", "O53") | cells_in("Plan_ES", "A54", "O67")
+        found = differences(path, CLEAN, TABS)
+        content = {(s, k) for s, k in block if f[s][k].value is not None}
+        assert found == {(reading, s, k) for reading in ("formulas", "values")
+                         for s, k in content}
+        ws = f["Plan_ES"]
+        assert ws["A52"].value is None and ws["A53"].value == "Plan B"
+        assert [ws.cell(54, c).value for c in range(1, 16)] == ["Line item", "Unit", *PERIODS, FY]
+        assert [ws[f"A{r}"].value for r in range(55, 68)] == list(LINES)
+        assert {ws[f"B{r}"].value for r in range(55, 68)} == {"EUR", "units", "FTE"}
+        assert [ws[f"B{r}"].value for r in range(55, 68)] == [UNITS[line] for line in LINES]
+        # Formulas written for the block's own rows: the Forecast block's, moved
+        # down 16 rows, with the lookup reading the block's own label in A53.
+        lookups = 0
+        for r in range(55, 68):
+            for c in range(3, 16):
+                cell = ws.cell(r, c)
+                above = f["Plan_ES"].cell(r - 16, c).value
+                assert is_formula(cell.value)
+                assert cell.value.replace("$A$53", "$A$37") == translated(above, r - 16, c, r)
+                assert v["Plan_ES"].cell(r, c).value == 0
+                lookups += "$A$53" in cell.value
+        assert lookups == 11 * 12           # every driven month; not the subtotals or FY2026
+
+
+def translated(formula: str, row: int, column: int, to_row: int) -> str:
+    from openpyxl.formula.translate import Translator
+    from openpyxl.utils import get_column_letter
+    letter = get_column_letter(column)
+    return Translator(formula, origin=f"{letter}{row}").translate_formula(f"{letter}{to_row}")
+
+
+class TestTheBuildNoteOf2a:
+    def test_the_build_note_lists_the_2a_fixtures_and_the_partial_build(self):
+        note = " ".join(BUILD_NOTE.read_text(encoding="utf-8").split())
+        assert ("python scripts/build_sample.py --only " + " ".join(FIXTURES_2A)) in note
+        for name in FIXTURES_2A:
+            assert name in note, name

@@ -84,11 +84,26 @@ class TestTheBuild:
         assert all(p.parent == SQL for p in model.sql_files())
 
     def test_at_a_fresh_start_the_facts_are_empty(self, built_warehouse):
+        # Part 2a: dim_version is a fixed table of the three versions, like
+        # dim_time, so it is not empty before a promotion; at 1e it was built
+        # from the promoted batch and was empty until then.
         from src import warehouse
         with warehouse.connect(built_warehouse.path) as con:
             for table in STAR:
                 count = con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
-                assert count == (12 if table == "dim_time" else 0), table
+                assert count == {"dim_time": 12, "dim_version": 3}.get(table, 0), table
+            assert rows(con, "SELECT version, version_order, is_actual FROM dim_version ORDER BY "
+                             "version_order") == [("Actual", 1, True), ("Budget", 2, False),
+                                                  ("Forecast", 3, False)]
+
+    def test_dim_version_is_written_like_dim_time(self):
+        # The three versions are fixed in the SQL file; nothing in it reads the
+        # promoted batch, so no other version can reach the star.
+        text = (SQL / "01_dim_version.sql").read_text(encoding="utf-8")
+        body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
+        for word in ("raw_plan_cell", "gate_promotion", "ELSE"):
+            assert word not in body, word
+        assert "('Actual', 1)" in body and "('Budget', 2)" in body and "('Forecast', 3)" in body
 
     def test_the_star_tables_declare_no_key_and_the_indexes_come_last(self):
         texts = {p.name: p.read_text(encoding="utf-8") for p in sorted(SQL.glob("*.sql"))}
