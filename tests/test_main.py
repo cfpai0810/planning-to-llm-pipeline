@@ -453,6 +453,38 @@ class TestQueryAnswers:
         main.remove_folder(folder)
         assert not folder.exists()
 
+    def test_removing_the_folder_only_ever_adds_the_write_bit(self, tmp_path, monkeypatch):
+        # Part 2e (fix): remove_folder once set every path, directories included, to 0o600,
+        # which on Linux takes a directory's search bit and stops the removal. It may now only
+        # add the write bit to the mode a path already has, and never leave a directory
+        # without its search bit. On Windows the read-only template file needs the write bit
+        # (the attribute) back before it can be deleted, so the change is seen there too.
+        import os
+        import stat
+        from pathlib import Path
+
+        import main
+        folder = tmp_path / "work"
+        (folder / "inner" / "deeper").mkdir(parents=True)
+        locked = folder / "inner" / "template.duckdb"
+        locked.write_bytes(b"x")
+        (folder / "inner" / "deeper" / "note.txt").write_text("x", encoding="utf-8")
+        os.chmod(locked, stat.S_IREAD)
+        before = {p: os.stat(p).st_mode for p in [folder, *folder.rglob("*")]}
+        calls = []
+        real = os.chmod
+
+        def spy(path, mode, *args, **kwargs):
+            calls.append((Path(path), mode))
+            return real(path, mode, *args, **kwargs)
+        monkeypatch.setattr(os, "chmod", spy)
+        main.remove_folder(folder)
+        assert not folder.exists()
+        for path, mode in calls:
+            old = stat.S_IMODE(before[path])
+            assert mode & old == old and mode & stat.S_IWRITE, (path, oct(old), oct(mode))
+            assert not stat.S_ISDIR(before[path]) or mode & stat.S_IXUSR, path
+
     def test_the_usage_names_the_query_command(self, capsys):
         import main
         assert main.main([]) == 0

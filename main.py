@@ -168,12 +168,21 @@ class Refused(Exception):
         super().__init__(line)
 
 
+def _add_write_bit_and_retry(function, path, error) -> None:
+    """shutil.rmtree's handler: the path that could not be removed gets the write bit added
+    to the mode it has (nothing taken away, so a directory keeps its search bit), and the
+    removal is tried once more; a second failure is raised, never ignored."""
+    os.chmod(path, stat.S_IMODE(os.stat(path).st_mode) | stat.S_IWRITE)
+    function(path)
+
+
 def remove_folder(folder: Path) -> None:
-    """Removes a folder and everything in it, read-only files included: on Windows shutil
-    cannot delete a read-only file, and with ignore_errors it would leave it silently."""
-    for path in sorted(Path(folder).rglob("*"), reverse=True):
-        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
-    shutil.rmtree(folder)
+    """Removes a folder and everything in it, read-only files included. On Windows a
+    read-only file cannot be deleted until its write bit is back, and ignore_errors would
+    leave it silently; so a path whose removal fails gets the write bit added and is tried
+    again (part 2e fix: setting every path to one mode took a directory's search bit on
+    Linux)."""
+    shutil.rmtree(folder, onexc=_add_write_bit_and_retry)
 
 
 def _options(argv: list[str]) -> dict:
