@@ -578,7 +578,9 @@ class TestTheFixtures:
                          "renamed_feeds_subtotal.xlsx", "duplicate_account.xlsx",
                          "unit_column_empty.xlsx", "extra_version_block.xlsx",
                          "currency_lowercase.xlsx", "currency_trailing_space.xlsx",
-                         "version_label_lowercase.xlsx"}
+                         "version_label_lowercase.xlsx",
+                         # Part 2a2.
+                         *(f"{name}.xlsx" for name in FIXTURES_2A2)}
         assert len(list(MUTATIONS.glob("*.xlsx"))) == 10
 
     @pytest.mark.parametrize("path", SMALL_FIXTURES, ids=_id)
@@ -665,7 +667,7 @@ class TestTheFixtures:
         # Was test_no_workbook_links_to_another: the stop 1 verdict (option A)
         # added exactly this one linked fixture.
         books = committed_workbooks()
-        assert len(books) == 43
+        assert len(books) == 55          # 43 to part 2a, and the twelve of part 2a2
         assert [_id(p) for p in books if formulas(p)._external_links] == [
             "tests/fixtures/external_link.xlsx"]
 
@@ -819,8 +821,12 @@ FIXTURES_1E = ("block_short", "name_shifted", "name_wrong_version", "currency_ch
 FIXTURES_2A = ("renamed_feeds_subtotal", "duplicate_account", "unit_column_empty",
                "extra_version_block", "currency_lowercase", "currency_trailing_space",
                "version_label_lowercase")
+FIXTURES_2A2 = ("names_same_range", "names_partly_overlap", "blank_cell_forecast",
+                "blank_run_budget", "blank_month_budget", "unit_header_empty", "stray_line_item",
+                "header_only_block", "block_short_wrong_ebit", "actual_account_displaced",
+                "landed_block_short", "version_label_padded")
 FULL_BASED = {"currency_changed", "wrong_driver_row", "entity_changed", "name_other_tab",
-              *FIXTURES_2A}
+              *FIXTURES_2A, *(n for n in FIXTURES_2A2 if n != "block_short_wrong_ebit")}
 
 
 def sheet_cells(wb, title) -> dict:
@@ -882,7 +888,7 @@ class TestThe1eFixtures:
     def test_each_records_its_base_in_the_manifest(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         entries = {f["file"]: f for f in manifest["fixtures"]}
-        for name in FIXTURES_1E + FIXTURES_2A:
+        for name in FIXTURES_1E + FIXTURES_2A + FIXTURES_2A2:
             base = entries[f"tests/fixtures/{name}.xlsx"]["base"]
             if name in FULL_BASED:
                 assert base.startswith("the full clean workbook"), name
@@ -890,7 +896,7 @@ class TestThe1eFixtures:
                 assert base.startswith("the small base"), name
         # Every entry approved before 1e keeps its keys: the base is new with 1e.
         assert [f["file"] for f in manifest["fixtures"] if "base" in f] == [
-            f"tests/fixtures/{name}.xlsx" for name in FIXTURES_1E + FIXTURES_2A]
+            f"tests/fixtures/{name}.xlsx" for name in FIXTURES_1E + FIXTURES_2A + FIXTURES_2A2]
 
     def test_name_other_tab_differs_from_the_clean_workbook_in_one_name(self):
         path = FIXTURES / "name_other_tab.xlsx"
@@ -1106,4 +1112,126 @@ class TestTheBuildNoteOf2a:
         note = " ".join(BUILD_NOTE.read_text(encoding="utf-8").split())
         assert ("python scripts/build_sample.py --only " + " ".join(FIXTURES_2A)) in note
         for name in FIXTURES_2A:
+            assert name in note, name
+
+
+# -- Part 2a2: the twelve new fixtures ------------------------------------------------------------
+# Each is its base changed in the cells named here and nowhere else, in both readings; where a
+# formula reads a cell the fixture empties, or a formula it changes, the cached values that move
+# are named too, and each moves by the figure taken out. Every expectation is written by hand.
+
+def cell_set(sheet: str, *refs) -> set:
+    found = set()
+    for ref in refs:
+        found |= cells_in(sheet, *ref.split(":")) if ":" in ref else {(sheet, ref)}
+    return found
+
+
+# name: (base, cells whose formula or text changes, cells whose cached value alone changes)
+CHANGED_2A2 = {
+    "names_same_range": (CLEAN, set(), set()),
+    "names_partly_overlap": (CLEAN, set(), set()),
+    "unit_header_empty": (CLEAN, {("Plan_DE", "B22")}, set()),
+    "stray_line_item": (CLEAN, {("Plan_ES", "A4")}, set()),
+    "header_only_block": (CLEAN, cell_set("Plan_ES", "A60:C60"), set()),
+    "actual_account_displaced": (CLEAN, {("Plan_AT", "A10")}, set()),
+    "landed_block_short": (CLEAN, cell_set("Plan_ES", "A53", "A54:C54", "A55:C59"), set()),
+    "blank_cell_forecast": (CLEAN, {("Plan_ES", "E41")},
+                            cell_set("Plan_ES", "E44", "E49", "O41", "O44", "O49")
+                            | cell_set("Control", "E15", "E16")),
+    "blank_run_budget": (CLEAN, cell_set("Plan_DE", "F30:H30"),
+                         cell_set("Plan_DE", "F33:H33", "O30", "O33") | {("Control", "D16")}),
+    "blank_month_budget": (CLEAN, cell_set("Plan_DE", "J23:J35"),
+                           cell_set("Plan_DE", "O23:O34") | cell_set("Control", "D14:D16")),
+    "block_short_wrong_ebit": (FIXTURES / "extra_tab.xlsx", {("Plan_ES", "E49")},
+                               {("Plan_ES", "O49"), ("Control", "E16")}),
+}
+NAMES_2A2 = {"names_same_range": "Plan_ES!$A$22:$O$35",
+             "names_partly_overlap": "Plan_ES!$A$30:$O$51",
+             "block_short_wrong_ebit": "Plan_ES!$A$38:$O$49"}
+
+
+def number(path: Path, sheet: str, ref: str) -> Decimal:
+    return Decimal(str(values(path)[sheet][ref].value))
+
+
+class TestThe2a2Fixtures:
+    @pytest.mark.parametrize("name", sorted(CHANGED_2A2))
+    def test_each_is_its_base_changed_in_its_own_cells(self, name):
+        path = FIXTURES / f"{name}.xlsx"
+        base, changed, moved = CHANGED_2A2[name]
+        tabs = TABS if base == CLEAN else SMALL_TABS
+        assert formulas(path).sheetnames == tabs
+        assert differences(path, base, tabs) == (
+            {("formulas", s, k) for s, k in changed}
+            | {("values", s, k) for s, k in changed | moved})
+        names, before = defined(path), defined(base)
+        assert {n for n in set(names) | set(before) if names.get(n) != before.get(n)} == (
+            {"Forecast_ES"} if name in NAMES_2A2 else set())
+        if name in NAMES_2A2:
+            assert names["Forecast_ES"] == NAMES_2A2[name]
+
+    def test_the_blanked_cells_are_empty_and_what_reads_them_moves_by_their_figure(self):
+        path = FIXTURES / "blank_cell_forecast.xlsx"
+        assert formulas(path)["Plan_ES"]["E41"].value is None
+        materials = number(CLEAN, "Plan_ES", "E41")
+        assert materials == 747487
+        for sheet, ref in (("Plan_ES", "E44"), ("Plan_ES", "E49"), ("Plan_ES", "O44"),
+                           ("Plan_ES", "O49"), ("Control", "E15"), ("Control", "E16")):
+            assert number(path, sheet, ref) == number(CLEAN, sheet, ref) + materials, ref
+        assert number(path, "Plan_ES", "O41") == number(CLEAN, "Plan_ES", "O41") - materials
+        run = FIXTURES / "blank_run_budget.xlsx"
+        marketing = [number(CLEAN, "Plan_DE", f"{c}30") for c in "FGH"]
+        assert marketing == [108349, 113651, 117892]
+        for c, m in zip("FGH", marketing):
+            assert formulas(run)["Plan_DE"][f"{c}30"].value is None
+            assert number(run, "Plan_DE", f"{c}33") == number(CLEAN, "Plan_DE", f"{c}33") + m
+        assert number(run, "Control", "D16") == number(CLEAN, "Control", "D16") + sum(marketing)
+        month = FIXTURES / "blank_month_budget.xlsx"
+        assert [formulas(month)["Plan_DE"][f"J{r}"].value for r in range(23, 36)] == [None] * 13
+        for r in range(23, 35):
+            assert number(month, "Plan_DE", f"O{r}") == (
+                number(CLEAN, "Plan_DE", f"O{r}") - number(CLEAN, "Plan_DE", f"J{r}")), r
+
+    def test_block_short_wrong_ebit_leaves_out_it_and_software_in_march(self):
+        path = FIXTURES / "block_short_wrong_ebit.xlsx"
+        assert formulas(path)["Plan_ES"]["E49"].value == "=E44-SUM(E45:E47)"
+        assert formulas(path)["Plan_ES"]["D49"].value == "=D44-SUM(D45:D48)"
+        it = number(path, "Plan_ES", "E48")
+        assert it == 21400
+        assert number(path, "Plan_ES", "E49") == number(
+            FIXTURES / "extra_tab.xlsx", "Plan_ES", "E49") + it == 211072
+
+    def test_landed_block_short_types_five_lines_of_one_month(self):
+        ws = formulas(FIXTURES / "landed_block_short.xlsx")["Plan_ES"]
+        assert ws["A52"].value is None and ws["A53"].value == "Scenario"
+        assert [ws.cell(54, c).value for c in range(1, 5)] == ["Line item", "Unit", "2026-01",
+                                                               None]
+        assert [ws[f"A{r}"].value for r in range(55, 60)] == list(LINES[:5])
+        assert [ws[f"C{r}"].value for r in range(55, 60)] == [
+            values(CLEAN)["Plan_ES"][f"C{r}"].value for r in range(39, 44)]
+        assert ws["A60"].value is None
+
+    def test_version_label_padded_is_extra_version_block_with_a_space_each_side(self):
+        path = FIXTURES / "version_label_padded.xlsx"
+        other = FIXTURES / "extra_version_block.xlsx"
+        assert formulas(path)["Plan_ES"]["A53"].value == " Plan B "
+        assert differences(path, other, TABS) == {("formulas", "Plan_ES", "A53"),
+                                                  ("values", "Plan_ES", "A53")}
+
+    def test_the_text_cells_hold_what_the_brief_names(self):
+        assert formulas(FIXTURES / "stray_line_item.xlsx")["Plan_ES"]["A4"].value == "Line item"
+        ws = formulas(FIXTURES / "header_only_block.xlsx")["Plan_ES"]
+        assert [ws[f"{c}60"].value for c in "ABCD"] == ["Line item", "Unit", "2026-01", None]
+        assert ws["A59"].value is None and ws["A61"].value is None
+        assert formulas(FIXTURES / "unit_header_empty.xlsx")["Plan_DE"]["B22"].value is None
+        displaced = formulas(FIXTURES / "actual_account_displaced.xlsx")["Plan_AT"]["A10"]
+        assert displaced.value == "Materials"
+
+
+class TestTheBuildNoteOf2a2:
+    def test_the_build_note_lists_the_2a2_fixtures_and_the_partial_build(self):
+        note = " ".join(BUILD_NOTE.read_text(encoding="utf-8").split())
+        assert ("python scripts/build_sample.py --only " + " ".join(FIXTURES_2A2)) in note
+        for name in FIXTURES_2A2:
             assert name in note, name

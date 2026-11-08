@@ -285,6 +285,54 @@
     "tests/fixtures/version_label_lowercase.xlsx": {
       "formula_cells": 1098,
       "largest_difference": "0"
+    },
+    "tests/fixtures/names_same_range.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/names_partly_overlap.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/blank_cell_forecast.xlsx": {
+      "formula_cells": 1097,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/blank_run_budget.xlsx": {
+      "formula_cells": 1095,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/blank_month_budget.xlsx": {
+      "formula_cells": 1085,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/unit_header_empty.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/stray_line_item.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/header_only_block.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/block_short_wrong_ebit.xlsx": {
+      "formula_cells": 372,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/actual_account_displaced.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/landed_block_short.xlsx": {
+      "formula_cells": 1098,
+      "largest_difference": "0"
+    },
+    "tests/fixtures/version_label_padded.xlsx": {
+      "formula_cells": 1267,
+      "largest_difference": "0"
     }
   },
   "fixtures": [
@@ -508,6 +556,78 @@
       "purpose": "The clean workbook (ES, AT and DE), with the label above the ES Budget block's header row reading budget. The Budget formulas fetch their drivers by that label, and the lookup ignores case, so every figure is the clean workbook's.",
       "expected_in_1d": "No break: the version label is compared with the defined name's version after trimming and ignoring case, and its rows are read once.",
       "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/names_same_range.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the defined name Forecast_ES pointing at the ES Budget rows, Plan_ES!$A$22:$O$35, where Budget_ES also points. Every cell is the clean workbook's.",
+      "expected_in_1d": "Structure: one high break, blocks overlap, naming Budget_ES and Forecast_ES and their range, saying neither is built, carrying the name against the label (Forecast_ES over the label Budget) and naming the Forecast header in A38 that is left unread; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/names_partly_overlap.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the defined name Forecast_ES pointing at Plan_ES!$A$30:$O$51, from the Budget Marketing row to the end of the Forecast block. Every cell is the clean workbook's.",
+      "expected_in_1d": "Structure: one high break, the Forecast_ES block cannot be read (the first row of its range, A30:O30, has no Line item header and no month header); it lands no cell, so it overlaps nothing, the ES Budget block is built, and nothing is built for ES Forecast; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/blank_cell_forecast.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the ES Forecast Materials cell for 2026-03 (E41) emptied. The Gross profit and EBIT formulas of that month count it as 0, so they, the three FY2026 totals and the Control tab's Forecast Gross profit and EBIT move (given as specials).",
+      "expected_in_1d": "Structure: one medium break, a blank figure, Materials in the ES Forecast block in 2026-03 (E41), with nothing built for it; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/blank_run_budget.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the DE Budget Marketing cells for 2026-04 to 2026-06 (F30:H30) emptied. The EBIT formulas of those months count them as 0, so they, the two FY2026 totals and the Control tab's Budget EBIT move (given as specials).",
+      "expected_in_1d": "Structure: one medium break, a blank figure, Marketing in the DE Budget block from 2026-04 to 2026-06 (F30:H30); against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/blank_month_budget.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with every line of the DE Budget block emptied in 2026-08 (J23:J35), the two subtotals included. The FY2026 totals and the Control tab's Budget figures move (given as specials).",
+      "expected_in_1d": "Structure: one medium break, a blank month, the DE Budget block in 2026-08, one break for all its lines; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/unit_header_empty.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the Unit header of the DE Budget block (B22) emptied; every unit below it stays. Every figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one medium break, the block without units, naming the empty header cell, and no header-not-found break; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/stray_line_item.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the text Line item typed in A4 of Plan_ES, below the Currency cell. Every figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one low break, a Line item header not read, naming A4; the star schema is the clean workbook's; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/header_only_block.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with a header row on Plan_ES, row 60, far below the last block: Line item, Unit and 2026-01, with nothing above it and nothing under it. Every figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one low break, a Line item header not read, naming A60; the star schema is the clean workbook's; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/block_short_wrong_ebit.xlsx",
+      "purpose": "The small base (the clean workbook with ES alone on Lists, Assumptions and Plan), with the defined name Forecast_ES ending at the EBIT row, so the block lacks Volume and Headcount, and the March EBIT formula (E49) leaving out IT and software. EBIT for March, its FY2026 total and the Control tab's Forecast EBIT move (given as specials).",
+      "expected_in_1d": "Three breaks, as the reviewer's ruling of 8 November expects: structure, the accounts not in the block (Volume and Headcount feed no subtotal, so the block's subtotals are still checked); totals, a subtotal break on the March EBIT, E49; formula integrity, a low pattern break on the same cell; none on Gross profit. Against the committed ledger, the two unknown-entity breaks every small-base fixture gives.",
+      "base": "the small base: write_workbook(SMALL) in scripts/build_sample.py, the clean workbook written with ES alone on Lists, Assumptions and Plan; it has no committed file of its own"
+    },
+    {
+      "file": "tests/fixtures/actual_account_displaced.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), with the AT Actual Packaging label (A10) overwritten by Materials, so the block holds Materials twice and no Packaging. Every figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one medium break, the account twice in the block, naming rows 9 and 10 and Packaging, the account the second takes the place of, and saying that reconcile leaves Materials and Packaging of AT out of the ledger tie-out; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/landed_block_short.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), plus a block labelled Scenario on Plan_ES one blank row below the Forecast block, with no defined name: one month (2026-01) and the first five lines, typed. Every other figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one medium break, the block's version is not one of Actual, Budget, Forecast, so it is landed and not built; no period-gap or accounts-not-in-block break; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
+    },
+    {
+      "file": "tests/fixtures/version_label_padded.xlsx",
+      "purpose": "The clean workbook (ES, AT and DE), plus the extra_version_block layout under the label \" Plan B \", a space each side. Its formulas fetch their drivers by that label, which Assumptions does not hold, so every cell of the block computes 0. Every other figure is the clean workbook's.",
+      "expected_in_1d": "Structure: one medium break, the version not admitted, its message giving the allow-list's reason and its evidence the value encoded; no rejected-name break; against the committed ledger, nothing else.",
+      "base": "the full clean workbook: write_workbook() in scripts/build_sample.py, as data/planning_model_clean.xlsx is built (ES, AT and DE)"
     }
   ],
   "timing_seconds": {
@@ -528,13 +648,33 @@
       "sha256": "a7083781a029e7cc706f1065af58c1953a8303a91dab83ea9492887d35eed49b",
       "bytes": 37237
     },
+    "tests/fixtures/actual_account_displaced.xlsx": {
+      "sha256": "1d824f8b115c2601e98aa9a99165819c8bfd16e3280516fe4f064cbdfa7ecd4b",
+      "bytes": 37236
+    },
     "tests/fixtures/array_formula.xlsx": {
       "sha256": "a892838c8d0e1731d8d4b61fa1c2a800aceaabe08f8002576bbef9547d4a8b51",
       "bytes": 19851
     },
+    "tests/fixtures/blank_cell_forecast.xlsx": {
+      "sha256": "7c8e1b78972ec5a465143018d5aa205ef7abd7af6aff6182ad7f17bf18f3f5f7",
+      "bytes": 37219
+    },
+    "tests/fixtures/blank_month_budget.xlsx": {
+      "sha256": "a8f9c079df36d7a055fdc1bba2610355e484cf1f486cf816526f8d25f9057723",
+      "bytes": 37124
+    },
+    "tests/fixtures/blank_run_budget.xlsx": {
+      "sha256": "88e86672d6cb4bdddeb43c9b84b5ca1f4e01fca2f9816ea3dccff683adc2479d",
+      "bytes": 37201
+    },
     "tests/fixtures/block_short.xlsx": {
       "sha256": "c32eef733eea4aa82827569ead5222af04d29d19fd4ad300b192fb835a3609a3",
       "bytes": 19835
+    },
+    "tests/fixtures/block_short_wrong_ebit.xlsx": {
+      "sha256": "4cd3a41676c3f44afebe39e705f7953b1a514d356b407c8f39a9319aad9b8b53",
+      "bytes": 19832
     },
     "tests/fixtures/currency_changed.xlsx": {
       "sha256": "436d151ca1cbbf61987cd0050f60c246c0048bb0d791ab415286f29ff97401be",
@@ -575,6 +715,14 @@
     "tests/fixtures/extra_version_block.xlsx": {
       "sha256": "37bcffa85520e6a69da22d3e0ad09258100e33bf8e62c4cb5da40d71a88368cb",
       "bytes": 39137
+    },
+    "tests/fixtures/header_only_block.xlsx": {
+      "sha256": "0c5b22920844c9093c9cb468bc100ed56261a6f72bac5ae6289ef74403420b81",
+      "bytes": 37255
+    },
+    "tests/fixtures/landed_block_short.xlsx": {
+      "sha256": "84a41e7807b4aa2cefbe6addb966b6016daf2df7a3410bb1c2e7d7098ec47cd0",
+      "bytes": 37385
     },
     "tests/fixtures/merged_cells.xlsx": {
       "sha256": "714215625d5a61bd7f4ec264c3e001f09177cd7a80c277128f7ae5339b156ff3",
@@ -648,6 +796,14 @@
       "sha256": "8fb0a488276e4b27a55271514a2a36d3181b3802f9e68d84338c06a4d9eb857b",
       "bytes": 19941
     },
+    "tests/fixtures/names_partly_overlap.xlsx": {
+      "sha256": "5a7d9e9c5238b0c973dc2114d95083c46fcbf85fff1750e88d6d6126c60fa317",
+      "bytes": 37238
+    },
+    "tests/fixtures/names_same_range.xlsx": {
+      "sha256": "292baa051ad9426bbbe65a405cea9037986a02a611f38ae50fd4a0c26240d534",
+      "bytes": 37234
+    },
     "tests/fixtures/no_cache.xlsx": {
       "sha256": "9a1d32a325d09706c15753079a5c56025dd79a382bb667f711ef4017eed03f9a",
       "bytes": 14783
@@ -668,6 +824,10 @@
       "sha256": "045cac4eae16545dc228a0872e2495cca2effd47a4960d818d19469e828a5433",
       "bytes": 37357
     },
+    "tests/fixtures/stray_line_item.xlsx": {
+      "sha256": "c66e9bb4b9dd8e280b400e642013b03fd69e2fdb31430a4d60fa2f0ccede4f22",
+      "bytes": 37248
+    },
     "tests/fixtures/typed_subtotal.xlsx": {
       "sha256": "e62f116330ef43de5dbbcc169bfad5f4bc097e38439e6bff41ef57a6f549dff3",
       "bytes": 19827
@@ -675,6 +835,10 @@
     "tests/fixtures/unit_column_empty.xlsx": {
       "sha256": "8cc18722730dbe45a6ed701d4aab224e22462ce005a3ed8fea7cc4ab8478aca5",
       "bytes": 37194
+    },
+    "tests/fixtures/unit_header_empty.xlsx": {
+      "sha256": "1445f575635dad3455e43f352b0d74b1c51f4d82f3663b54467497c6a1849ccb",
+      "bytes": 37239
     },
     "tests/fixtures/unknown_account.xlsx": {
       "sha256": "504f67d0e9f8cb75db0852f581506d14f867183123c35e2e94104ed9c3fb49e3",
@@ -687,6 +851,10 @@
     "tests/fixtures/version_label_lowercase.xlsx": {
       "sha256": "3fb448ce9a88661e500a640e15c9e0881e8abf5480551e251e16a38974469d68",
       "bytes": 37247
+    },
+    "tests/fixtures/version_label_padded.xlsx": {
+      "sha256": "491371eb128e28853569a7a6e017a630ccbdcb77523e36db5eae1789bbbc248c",
+      "bytes": 39140
     },
     "tests/fixtures/wrong_driver_row.xlsx": {
       "sha256": "144de8cb3695f9dc647cfbf572781c5b4e3c4040dc29292770da49b67f39895e",

@@ -82,6 +82,33 @@ for its own rows, which fetch their drivers by its label, Plan B, so every
 cell of it computes 0, given to the check as specials. The partial build of
 the seven took 38.3 seconds, 32.9 seconds of it in LibreOffice.
 
+Part 2a2 added twelve fixtures the same way, in one run:
+
+    python scripts/build_sample.py --only names_same_range names_partly_overlap blank_cell_forecast blank_run_budget blank_month_budget unit_header_empty stray_line_item header_only_block block_short_wrong_ebit actual_account_displaced landed_block_short version_label_padded
+
+All but one are the full clean workbook with one change, and each records its
+base. Two move the defined name Forecast_ES: onto the ES Budget rows
+(`names_same_range`) and onto A30:O51, from the Budget Marketing row to the end
+of the Forecast block (`names_partly_overlap`). Three empty cells of a Budget
+or Forecast block, so the formulas that read them count them as 0 and their
+new figures are given to the check as specials, worked out from the model:
+`blank_cell_forecast` (ES Forecast Materials in 2026-03), `blank_run_budget`
+(DE Budget Marketing from 2026-04 to 2026-06) and `blank_month_budget` (every
+line of the DE Budget block in 2026-08). `unit_header_empty` empties the DE
+Budget block's Unit header, `stray_line_item` types Line item in A4 of
+Plan_ES, `header_only_block` writes a header row (Line item, Unit, 2026-01)
+in row 60 of Plan_ES with nothing above or under it, and
+`actual_account_displaced` overwrites the AT Actual Packaging label with
+Materials. `landed_block_short` adds a block labelled Scenario one blank row
+below the ES Forecast block, with one month and five typed lines, and
+`version_label_padded` is the `extra_version_block` layout under the label
+" Plan B ", a space each side, which LibreOffice kept. The one made from the
+small base is `block_short_wrong_ebit`: the Forecast_ES name ends at the EBIT
+row and the March EBIT formula leaves out IT and software, so that EBIT, its
+FY2026 total and the Control tab's Forecast EBIT are given as specials. The
+partial build of the twelve took 144.8 seconds, 119.1 seconds of it in
+LibreOffice.
+
 ## Finding LibreOffice
 
 The build looks in this order: the `SOFFICE` environment variable, then

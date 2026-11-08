@@ -338,3 +338,37 @@ class TestFactsAboutTheFile:
         for fact in ("created", "modified", "application", "creator", "last_modified_by",
                      "external_links"):
             assert not re.search(rf"\b{fact}\b", body), fact
+
+
+# -- Part 2a2: what reconcile leaves out --------------------------------------------------
+# The reviewer's ruling of 8 November, item 3: an entity whose Actual block is not built or
+# not read is left out of the tie-out; and (the optional account-level case, F19) so is an
+# account a built Actual block lacks. The structure break that explains it says so
+# (tests/test_controls.py).
+
+class TestWhatIsLeftOut:
+    def test_an_entity_left_out_gives_no_break_of_its_own(self, reconcile, clean, lines):
+        # ES's whole Actual block emptied in memory: six missing entity-months, or none.
+        cells = tuple(dataclasses.replace(c, kind="empty", formula=None, cached=None,
+                                          value_type="none", value_text=None, amount=None)
+                      if c.block == "Actual_ES" else c for c in clean.cells)
+        assert len(compare(reconcile, clean, lines, cells=cells)) == 6
+        pair = reconcile.Pair(clean.batch.batch_id, lines.batch.batch_id)
+        assert reconcile.compare(pair, cells, lines.lines, clean.lists, left_out=("ES",)) == ()
+
+    def test_an_account_left_out_is_not_compared_and_the_rest_is(self, reconcile, sample,
+                                                                  lines):
+        # The sample's T2 (ES, 2026-04, 6200 and 6300): leaving 6300 out of ES turns the
+        # reclassification into one amount difference on 6200; T1 and T3 stand.
+        pair = reconcile.Pair(sample.batch.batch_id, lines.batch.batch_id)
+        found = reconcile.compare(pair, sample.cells, lines.lines, sample.lists,
+                                  accounts_left_out=(("ES", "6300"),))
+        assert [(b.kind, b.entity, b.account, b.period) for b in found] == [
+            ("missing_entity_month", "AT", None, "2026-05"),
+            ("amount_difference", "DE", "6100", "2026-06"),
+            ("amount_difference", "ES", "6200", "2026-04")]
+
+    def test_reconcile_reads_what_to_leave_out_from_the_plan_batch(self, reconcile):
+        import inspect
+        source = inspect.getsource(reconcile.reconcile)
+        assert "actual_left_out(" in source

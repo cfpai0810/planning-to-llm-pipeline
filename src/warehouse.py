@@ -6,7 +6,9 @@ Lands what the readers return in raw tables (brief 5.4):
 
 - raw_batch: one row per file, its batch record;
 - raw_plan_cell: one row per plan cell (a workbook's block cells, or a
-  long-format file's lines), in the order the reader returned them;
+  long-format file's lines), in the order the reader returned them; a cell of
+  a block that shares a cell with another block lands with overlap set, and
+  the star schema never builds it (part 2a2);
 - raw_ledger_line: one row per line of a ledger extract;
 - raw_control_total: per batch, version and period, the row count and the
   sum of the amounts, as the reader computed them in Python before landing;
@@ -110,7 +112,7 @@ COLUMNS = {
         ("value_type", "VARCHAR", "NOT NULL"), ("value_text", "VARCHAR", ""),
         ("amount", MONEY, ""), ("row_error", "VARCHAR", ""), ("duplicate", "BOOLEAN", "NOT NULL"),
         ("unknown_entity", "BOOLEAN", "NOT NULL"), ("unknown_account", "BOOLEAN", "NOT NULL"),
-        ("name_allowed", "BOOLEAN", "NOT NULL")),
+        ("name_allowed", "BOOLEAN", "NOT NULL"), ("overlap", "BOOLEAN", "NOT NULL")),
     "raw_ledger_line": (
         ("batch_id", "VARCHAR", "NOT NULL"), ("line_number", "INTEGER", "NOT NULL"),
         ("entity", "VARCHAR", ""), ("period", "VARCHAR", ""), ("account", "VARCHAR", ""),

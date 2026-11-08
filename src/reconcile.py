@@ -36,7 +36,14 @@ The rules for the second comparison:
   read); neither the line nor its key is compared;
 - a workbook cell that holds something but no figure (no cached value, an
   error value, text), or a key the workbook holds twice, is not compared: the
-  calculation-state and structure controls report those.
+  calculation-state and structure controls report those;
+- an entity whose Actual block is not built or not read (its plan tab or its
+  Actual block not found, a block that cannot be read, a block that shares a
+  cell with another) is left out whole, and an account a built Actual block
+  lacks, or holds on two lines, is left out for that entity (part 2a2: the
+  reviewer's ruling of 8 November, and F19). The structure break that explains
+  it says so (controls.actual_left_out); a built block with an empty month is
+  compared as before.
 
 Facts about the file (its times, the application that saved it, its creator
 and its links to other workbooks) are never compared with anything here.
@@ -54,7 +61,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from src.batch import Pair
-from src.controls import HIGH, MEDIUM, RUN, Break, ControlResult, _figure, _member, _plain
+from src.controls import (HIGH, MEDIUM, RUN, Break, ControlResult, _figure, _member, _plain,
+                          actual_left_out)
 from src.extract import Account, Entity, Lists, PlanCell
 from src.ledger import LedgerExtraction, LedgerLine
 
@@ -247,24 +255,31 @@ def _ledger_breaks(lines, entities: set, signs: dict, ledger_batch: str):
     return breaks, usable, skipped
 
 
-def compare(pair: Pair, cells, lines, lists: Lists) -> tuple:
+def compare(pair: Pair, cells, lines, lists: Lists, left_out=(), accounts_left_out=()) -> tuple:
     """The workbook's Actual block against the ledger, for one pair, as typed breaks.
 
     cells are the plan batch's rows (PlanCell), lines the ledger batch's
     (LedgerLine), lists the plan batch's Lists. Nothing is read from a file or
     the warehouse here, so the rules can be shown on rows changed in memory.
+    left_out names entities, and accounts_left_out (entity, account) pairs,
+    whose figures are compared on neither side (part 2a2).
     """
     signs = {a.code: TO_PRESENTATION[a.ledger_sign] for a in lists.accounts
              if a.code and a.ledger_sign in TO_PRESENTATION}
     names = {a.code: a.name for a in lists.accounts if a.code}
     entities = set(lists.entity_codes())
     breaks, usable, skipped = _ledger_breaks(lines, entities, signs, pair.ledger_batch_id)
+    left_out, accounts_left_out = set(left_out), set(accounts_left_out)
+
+    def kept(entity, account) -> bool:
+        return entity not in left_out and (entity, account) not in accounts_left_out
+    usable = [line for line in usable if kept(line.entity, line.account)]
 
     workbook: dict = {}
     twice = set()
     for c in cells:
         if (c.version == ACTUAL and c.column_kind == MONTH and c.account in signs
-                and c.entity in entities):
+                and c.entity in entities and kept(c.entity, c.account)):
             key = (c.entity, c.period, c.account)
             if key in workbook or c.duplicate:
                 twice.add(key)
@@ -410,12 +425,14 @@ def reconcile(con, plan, ledger: LedgerExtraction) -> ControlResult:
 
     plan and ledger are what the readers returned, already landed in con; the
     comparison reads the plan batch's Actual cells, its Lists and the
-    ledger's lines back from the warehouse.
+    ledger's lines back from the warehouse. What it leaves out is read from the
+    plan batch's extraction, as the structure control reads it (part 2a2).
     """
     pair = Pair(plan.batch.batch_id, ledger.batch.batch_id)
+    left_out, accounts_left_out = actual_left_out(plan)
     found = source_against_raw(con, plan) + source_against_raw(con, ledger) + compare(
         pair, _cells(con, pair.plan_batch_id), _ledger_lines(con, pair.ledger_batch_id),
-        _lists(con, pair.plan_batch_id))
+        _lists(con, pair.plan_batch_id), left_out, accounts_left_out)
     order = {kind: i for i, kind in enumerate(KINDS)}
     return ControlResult(RECONCILE, RUN, None,
                          tuple(sorted(found, key=lambda b: order[b.kind])), ())

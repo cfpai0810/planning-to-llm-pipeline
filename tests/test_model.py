@@ -105,6 +105,13 @@ class TestTheBuild:
             assert word not in body, word
         assert "('Actual', 1)" in body and "('Budget', 2)" in body and "('Forecast', 3)" in body
 
+    def test_fact_plan_leaves_out_every_cell_of_blocks_that_overlap(self):
+        # Part 2a2: a cell that belongs to two blocks is landed raw and never built; the
+        # extractor flags every cell of each block in such a group (raw_plan_cell.overlap).
+        text = (SQL / "05_fact_plan.sql").read_text(encoding="utf-8")
+        body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
+        assert "AND NOT c.overlap" in body
+
     def test_the_star_tables_declare_no_key_and_the_indexes_come_last(self):
         texts = {p.name: p.read_text(encoding="utf-8") for p in sorted(SQL.glob("*.sql"))}
         for name, text in texts.items():

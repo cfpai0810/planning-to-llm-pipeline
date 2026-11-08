@@ -2,8 +2,10 @@
 -- per version, entity, account and period. Left out: the FY total column (a
 -- total, not a month), empty cells, cells with no figure to read, rows the
 -- reader flagged (a duplicate key, an unknown entity or account, a row
--- error), members whose names fail the allow-list, and any key not in its
--- dimension. The cell's sheet and address are kept, so a figure can be traced.
+-- error), every cell of a block that shares a cell with another block (part
+-- 2a2: no cell belongs to two blocks, so none of them is built), members
+-- whose names fail the allow-list, and any key not in its dimension. The
+-- cell's sheet and address are kept, so a figure can be traced.
 CREATE OR REPLACE TABLE fact_plan AS
 WITH promoted AS (
     SELECT plan_batch_id FROM gate_promotion ORDER BY number DESC LIMIT 1
@@ -29,5 +31,6 @@ WHERE c.column_kind = 'month'
   AND NOT c.duplicate
   AND NOT c.unknown_entity
   AND NOT c.unknown_account
+  AND NOT c.overlap
   AND c.row_error IS NULL
 ORDER BY v.version_order, e.list_order, a.list_order, c.period;

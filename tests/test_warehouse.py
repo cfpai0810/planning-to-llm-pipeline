@@ -67,7 +67,9 @@ COLUMNS = {
         ("unit", "VARCHAR"), ("kind", "VARCHAR"), ("formula", "VARCHAR"), ("cached", "BOOLEAN"),
         ("value_type", "VARCHAR"), ("value_text", "VARCHAR"), ("amount", MONEY),
         ("row_error", "VARCHAR"), ("duplicate", "BOOLEAN"), ("unknown_entity", "BOOLEAN"),
-        ("unknown_account", "BOOLEAN"), ("name_allowed", "BOOLEAN")],
+        ("unknown_account", "BOOLEAN"), ("name_allowed", "BOOLEAN"),
+        # Part 2a2: the cell's block shares a cell with another block: landed, never built.
+        ("overlap", "BOOLEAN")],
     "raw_ledger_line": [
         ("batch_id", "VARCHAR"), ("line_number", "INTEGER"), ("entity", "VARCHAR"),
         ("period", "VARCHAR"), ("account", "VARCHAR"), ("amount", MONEY),

@@ -30,6 +30,16 @@ the block still lands. No cell is read twice: a block found by its labels
 whose range overlaps a block read through a defined name is not read, and is
 recorded in blocks_not_read.
 
+Part 2a2. Blocks that are read and still land a cell in common (two defined
+names on one range, or two blocks found by their labels, one over the other)
+are recorded as an overlap (overlaps), judged on the cells each lands, so a
+block that lands none overlaps nothing; every cell of every block in such a
+group is flagged (overlap), lands raw and is never built. Every "Line item"
+cell on a plan tab that is not in the header row of a block read is recorded
+with why it heads no block (headers_not_read). And each block column records
+whether every cell below its header holds text alone (text_only), which tells
+an emptied Unit header from any other empty one.
+
 The workbook is read twice, once for formulas and once for the cached values
 the file holds, and the two are joined cell by cell. The pipeline never
 recalculates a file: a formula with no cached value is recorded as such.
@@ -79,7 +89,8 @@ from typing import Optional
 from xml.etree import ElementTree
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.utils import column_index_from_string, get_column_letter, range_boundaries
+from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.formula import ArrayFormula
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -90,8 +101,8 @@ from src.batch import (AS_RECEIVED, CALCULATED_BY_BUILD, DEFAULT_MANIFEST, NO_FO
 from src.hashing import file_sha256
 
 __all__ = ["AS_RECEIVED", "CALCULATED_BY_BUILD", "NO_FORMULAS", "VERSIONS", "BlockNotRead",
-           "ExtractError", "Extraction", "Heading", "PlanCell", "BatchRecord", "ControlTotal",
-           "admitted_version", "extract_workbook", "to_decimal"]
+           "BlockOverlap", "ExtractError", "Extraction", "HeaderNotRead", "Heading", "PlanCell",
+           "BatchRecord", "ControlTotal", "admitted_version", "extract_workbook", "to_decimal"]
 
 ExtractError = SourceError
 
@@ -108,6 +119,9 @@ HEADING_LABELS = ("Entity", "Currency")
 BY_NAME, BY_LABELS = "defined name", "header labels"
 # The versions the star schema admits (part 2a), in their order.
 VERSIONS = ("Actual", "Budget", "Forecast")
+# Why a "Line item" cell heads no block (part 2a2).
+FIRST_ROW, NO_LABEL = "first row", "no label"
+VERSION_READ, OVERLAPS_A_NAME = "version read", "overlaps a named block"
 
 MAX_PART_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -148,6 +162,7 @@ class PlanCell:
     unknown_entity: bool            # the entity is not on Lists
     unknown_account: bool           # the label is not on Lists
     name_allowed: bool              # every member name of the row passes the allow-list
+    overlap: bool = False           # its block shares a cell with another block (2a2): never built
 
 
 @dataclass(frozen=True)
@@ -191,6 +206,7 @@ class Column:
     header: Optional[str]
     role: str                       # label, unit, month, total, other or missing
     cells: int                      # cells below the header, in the block, that hold something
+    text_only: bool = False         # every one of them holds text: no number, no formula (2a2)
 
 
 @dataclass(frozen=True)
@@ -313,6 +329,32 @@ class BlockNotRead:
 
 
 @dataclass(frozen=True)
+class HeaderNotRead:
+    """A "Line item" cell on a plan tab that is not in the header row of any block read (2a2)."""
+    sheet: str
+    address: str
+    reason: str                     # first row, no label, version read, overlaps a named block
+    label: Optional[str] = None     # the cell above it, which would give the block's version
+    version: Optional[str] = None   # that label as a version
+    block: Optional[str] = None     # version read: the block that already reads that version
+    read_by: Optional[str] = None   # version read: defined name or header labels
+    ref: Optional[str] = None       # overlaps a named block: the range it would head
+    overlaps: tuple = ()            # overlaps a named block: the blocks it overlaps
+
+
+@dataclass(frozen=True)
+class BlockOverlap:
+    """Blocks of one plan tab that are read and land at least one cell in common (part 2a2)."""
+    sheet: str
+    blocks: tuple                   # their names, sorted
+    refs: tuple                     # each one's range, in the same order
+    cells: int                      # the cells landed by more than one of them
+    first: str                      # the first and the last such cell, in reading order
+    last: str
+    box: str                        # the range from the topmost, leftmost to the lowest, rightmost
+
+
+@dataclass(frozen=True)
 class Extraction:
     batch: BatchRecord
     cells: tuple
@@ -327,6 +369,8 @@ class Extraction:
     control_totals: tuple
     headings: tuple = ()            # two Heading per plan tab, Entity then Currency
     blocks_not_read: tuple = ()     # BlockNotRead, for each block left unread (part 2a)
+    overlaps: tuple = ()            # BlockOverlap, for each group of blocks sharing a cell (2a2)
+    headers_not_read: tuple = ()    # HeaderNotRead, for each "Line item" cell heading none (2a2)
 
 
 # == Values ============================================================================
@@ -683,14 +727,17 @@ def _bounds_overlap(a: tuple, b: tuple) -> bool:
     return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
 
 
-def _block_ranges(sheet: _Sheet, entity: str, names: list) -> tuple[list, list]:
-    """The blocks of a plan sheet, and the blocks found by their labels that are not read.
+def _block_ranges(sheet: _Sheet, entity: str, names: list) -> tuple[list, list, list]:
+    """The blocks of a plan sheet, the blocks found by their labels that are not read, and
+    every "Line item" cell that heads no block.
 
     The blocks are (version, found by, (first, top, last, bottom)), in sheet order. A
     version that is Actual, Budget or Forecast after trimming and ignoring case takes
     that name. A block found by its labels is read only when its version is not one
     already read and its range overlaps no block read through a defined name, so no
-    cell is read twice (part 2a); one that overlaps is listed as a BlockNotRead.
+    cell is read twice (part 2a); one that overlaps is listed as a BlockNotRead. Every
+    "Line item" cell that does not head a block found here is a HeaderNotRead, with
+    why (part 2a2); extract_workbook drops those in the header row of a block read.
     """
     title = sheet.ws.title
     pattern = re.compile(rf"^(?P<version>.+)_{re.escape(entity)}$")
@@ -700,17 +747,24 @@ def _block_ranges(sheet: _Sheet, entity: str, names: list) -> tuple[list, list]:
         if match and reads_block(name, title):
             version = admitted_version(match["version"]) or match["version"]
             blocks.append((version, BY_NAME, _bounds(name.destinations[0])[1]))
-    named = {version for version, _, _ in blocks}
+    read = {version: BY_NAME for version, _, _ in blocks}
     by_name = [(f"{version}_{entity}", bounds) for version, _, bounds in blocks]
-    not_read = []
+    not_read, skipped = [], []
     for (row, column), cell in sorted(sheet.cells.items()):
-        if _text(cell.value) != LABEL_HEADER or row == 1:
+        if _text(cell.value) != LABEL_HEADER:
+            continue
+        address = f"{get_column_letter(column)}{row}"
+        if row == 1:
+            skipped.append(HeaderNotRead(title, address, FIRST_ROW))
             continue
         label = sheet.text(row - 1, column)
         if label is None:
+            skipped.append(HeaderNotRead(title, address, NO_LABEL))
             continue
         version = admitted_version(label) or label
-        if version in named:
+        if version in read:
+            skipped.append(HeaderNotRead(title, address, VERSION_READ, label, version,
+                                         f"{version}_{entity}", read[version]))
             continue
         headers = [c for (r, c) in sheet.cells if r == row and c >= column]
         last = max(headers)
@@ -721,10 +775,56 @@ def _block_ranges(sheet: _Sheet, entity: str, names: list) -> tuple[list, list]:
         overlaps = tuple(name for name, other in by_name if _bounds_overlap(bounds, other))
         if overlaps:
             not_read.append(BlockNotRead(title, version, _ref(bounds), overlaps))
+            skipped.append(HeaderNotRead(title, address, OVERLAPS_A_NAME, label, version,
+                                         ref=_ref(bounds), overlaps=overlaps))
             continue
         blocks.append((version, BY_LABELS, bounds))
-        named.add(version)
-    return sorted(blocks, key=lambda b: (b[2][1], b[2][0])), not_read
+        read[version] = BY_LABELS
+    return sorted(blocks, key=lambda b: (b[2][1], b[2][0])), not_read, skipped
+
+
+def _place(address: str) -> tuple:
+    """(row, column) of a cell address, for reading order."""
+    letters, row = coordinate_from_string(address)
+    return row, column_index_from_string(letters)
+
+
+def _block_overlaps(title: str, blocks: list, rows: list) -> list:
+    """The groups of blocks on one tab that land a cell in common (part 2a2).
+
+    Judged on the cells each block lands as rows, so a block that lands none (one
+    that cannot be read) overlaps nothing. Blocks that share a cell, directly or
+    through another block of the group, are one group.
+    """
+    landed = [{r["address"] for r in block_rows} for block_rows in rows]
+    group = list(range(len(blocks)))
+
+    def root(i):
+        while group[i] != i:
+            i = group[i]
+        return i
+    for i in range(len(blocks)):
+        for j in range(i + 1, len(blocks)):
+            if landed[i] & landed[j]:
+                group[root(j)] = root(i)
+    members: dict = {}
+    for i in range(len(blocks)):
+        members.setdefault(root(i), []).append(i)
+    found = []
+    for group_members in members.values():
+        if len(group_members) < 2:
+            continue
+        counts = Counter(a for i in group_members for a in landed[i])
+        shared = sorted((a for a, n in counts.items() if n > 1), key=_place)
+        places = [_place(a) for a in shared]
+        top, bottom = min(r for r, _ in places), max(r for r, _ in places)
+        left, right = min(c for _, c in places), max(c for _, c in places)
+        order = sorted(group_members, key=lambda i: blocks[i].name)
+        found.append(BlockOverlap(
+            title, tuple(blocks[i].name for i in order), tuple(blocks[i].ref for i in order),
+            len(shared), shared[0], shared[-1],
+            f"{get_column_letter(left)}{top}:{get_column_letter(right)}{bottom}"))
+    return sorted(found, key=lambda o: o.blocks)
 
 
 def _overlaps(merged: str, bounds: tuple) -> bool:
@@ -759,7 +859,8 @@ def _block(sheet: _Sheet, entity: str, version: str, found_by: str, bounds: tupl
                          "column_kind": roles[column], "unit": unit,
                          **_read(sheet, row, column)})
     columns = tuple(Column(get_column_letter(c), headers[c], roles[c],
-                           sum(1 for r in range(top + 1, bottom + 1) if (r, c) in sheet.cells))
+                           sum(1 for r in range(top + 1, bottom + 1) if (r, c) in sheet.cells),
+                           _text_only(sheet, c, top, bottom))
                     for c in range(first, last + 1))
     problems = [HeaderProblem("missing", None, (col.letter,)) for col in columns
                 if col.role == "missing"]
@@ -776,6 +877,15 @@ def _block(sheet: _Sheet, entity: str, version: str, found_by: str, bounds: tupl
                   tuple(problems), tuple(m for m in merged if _overlaps(m, bounds)),
                   header_row, label_address, label)
     return block, rows
+
+
+def _text_only(sheet: _Sheet, column: int, top: int, bottom: int) -> bool:
+    """True when every cell below the header, in the block, that holds something holds text."""
+    for row in range(top + 1, bottom + 1):
+        cell = sheet.cells.get((row, column))
+        if cell is not None and (cell.data_type == "f" or not isinstance(cell.value, str)):
+            return False
+    return True
 
 
 def _version_label(sheet: _Sheet, bounds: tuple) -> tuple:
@@ -889,6 +999,7 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
     entities_on_lists = set(lists.entity_codes())
 
     plan_sheets, blocks, raw_rows, headings, not_read = [], [], [], [], []
+    overlaps, headers_not_read = [], []
     merged_of = {title: tuple(str(m) for m in sorted(s.ws.merged_cells.ranges,
                                                      key=lambda m: (m.min_row, m.min_col)))
                  for title, s in sheets.items()}
@@ -899,12 +1010,23 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
         entity = match["entity"]
         plan_sheets.append((title, entity))
         headings += _headings(sheet)
-        ranges, unread = _block_ranges(sheet, entity, names)
+        ranges, unread, skipped = _block_ranges(sheet, entity, names)
         not_read += unread
-        for version, found_by, bounds in ranges:
-            block, rows = _block(sheet, entity, version, found_by, bounds, lists, merged_of[title])
+        built = [_block(sheet, entity, version, found_by, bounds, lists, merged_of[title])
+                 for version, found_by, bounds in ranges]
+        on_sheet = _block_overlaps(title, [b for b, _ in built], [r for _, r in built])
+        overlaps += on_sheet
+        overlapping = {name for o in on_sheet for name in o.blocks}
+        header_rows = set()
+        for block, rows in built:
+            for r in rows:
+                r["overlap"] = block.name in overlapping
             blocks.append(block)
             raw_rows += rows
+            if block.header_row is not None:
+                first, _, last, _ = range_boundaries(block.ref)
+                header_rows |= {(block.header_row, c) for c in range(first, last + 1)}
+        headers_not_read += [h for h in skipped if _place(h.address) not in header_rows]
 
     keys = Counter((r["version"], r["entity"], r["line"], r["period"]) for r in raw_rows)
     cells = tuple(PlanCell(
@@ -959,4 +1081,5 @@ def extract_workbook(path: Path | str, manifest: Path | str | None = DEFAULT_MAN
         defined_names=tuple(names), labels_not_on_lists=labels,
         rejected_names=_rejected(lists, blocks, labels),
         control_totals=control_totals(batch_id, cells), headings=tuple(headings),
-        blocks_not_read=tuple(not_read))
+        blocks_not_read=tuple(not_read), overlaps=tuple(overlaps),
+        headers_not_read=tuple(headers_not_read))

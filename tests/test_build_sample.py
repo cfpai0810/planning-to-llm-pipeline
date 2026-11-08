@@ -515,7 +515,9 @@ class TestThe2aFixtures:
     def test_the_full_build_makes_them_after_the_1e_fixtures(self, build):
         assert [book.dest.stem for book in build.FIXTURE_BOOKS_2A] == list(FIXTURES_2A)
         assert build.STEP_2[-1] is build.BASE
-        assert build.STEP_2[-1 - len(FIXTURES_2A):-1] == build.FIXTURE_BOOKS_2A
+        # Part 2a2's books come after them, just before the shared-formula base.
+        later = len(build.FIXTURE_BOOKS_2A2)
+        assert build.STEP_2[-1 - later - len(FIXTURES_2A):-1 - later] == build.FIXTURE_BOOKS_2A
         for name in FIXTURES_2A:
             book = build.BOOKS[name]
             assert book.shape == build.Shape() and book.base == build.CLEAN_BASE, name
@@ -558,3 +560,111 @@ class TestThe2aFixtures:
             entry = next(f for f in manifest["fixtures"]
                          if f["file"] == f"tests/fixtures/{name}.xlsx")
             assert entry["base"] == build.CLEAN_BASE and entry["purpose"] and entry["expected_in_1d"]
+
+
+# -- Part 2a2: twelve fixtures, built with --only --------------------------------------------------
+# All but block_short_wrong_ebit are made from the full clean workbook; that one from the small
+# base, as block_short is. None of these tests runs LibreOffice.
+
+FIXTURES_2A2 = ("names_same_range", "names_partly_overlap", "blank_cell_forecast",
+                "blank_run_budget", "blank_month_budget", "unit_header_empty", "stray_line_item",
+                "header_only_block", "block_short_wrong_ebit", "actual_account_displaced",
+                "landed_block_short", "version_label_padded")
+
+
+class TestThe2a2Fixtures:
+    def test_the_full_build_makes_them_after_the_2a_fixtures(self, build):
+        assert [book.dest.stem for book in build.FIXTURE_BOOKS_2A2] == list(FIXTURES_2A2)
+        assert build.STEP_2[-1 - len(FIXTURES_2A2):-1] == build.FIXTURE_BOOKS_2A2
+        for name in FIXTURES_2A2:
+            book = build.BOOKS[name]
+            small = name == "block_short_wrong_ebit"
+            assert book.shape == (build.SMALL if small else build.Shape()), name
+            assert book.base == (build.SMALL_BASE if small else build.CLEAN_BASE), name
+            assert book.purpose and book.expected, name
+
+    @pytest.mark.parametrize("name, changed", [
+        ("unit_header_empty", {("Plan_DE", "B22"): None}),
+        ("stray_line_item", {("Plan_ES", "A4"): "Line item"}),
+        ("header_only_block", {("Plan_ES", "A60"): "Line item", ("Plan_ES", "B60"): "Unit",
+                               ("Plan_ES", "C60"): "2026-01"}),
+        ("actual_account_displaced", {("Plan_AT", "A10"): "Materials"}),
+        ("blank_cell_forecast", {("Plan_ES", "E41"): None}),
+        ("blank_run_budget", {("Plan_DE", f"{c}30"): None for c in "FGH"}),
+        ("blank_month_budget", {("Plan_DE", f"J{r}"): None for r in range(23, 36)}),
+    ])
+    def test_each_changes_the_clean_workbook_in_its_own_cells(self, build, name, changed):
+        wb, _ = build.BOOKS[name].make()
+        mine, clean = _cells(wb), _cells(build.write_workbook())
+        assert {k for k in set(mine) | set(clean) if mine.get(k) != clean.get(k)} == set(changed)
+        assert {k: mine.get(k) for k in changed} == changed
+
+    @pytest.mark.parametrize("name, refers_to", [
+        ("names_same_range", "Plan_ES!$A$22:$O$35"), ("names_partly_overlap", "Plan_ES!$A$30:$O$51")])
+    def test_the_two_names_fixtures_move_forecast_es_alone(self, build, name, refers_to):
+        wb, specials = build.BOOKS[name].make()
+        clean = build.write_workbook()
+        assert specials == {} and _cells(wb) == _cells(clean)
+        names = {n: d.attr_text for n, d in wb.defined_names.items()}
+        before = {n: d.attr_text for n, d in clean.defined_names.items()}
+        assert {n for n in names if names[n] != before[n]} == {"Forecast_ES"}
+        assert names["Forecast_ES"] == refers_to
+
+    def test_the_blank_fixtures_give_what_reads_the_blanks_as_specials(self, build):
+        from src import sample_model as model
+        es, de = model.block("ES", "Forecast"), model.block("DE", "Budget")
+        _, specials = build.BOOKS["blank_cell_forecast"].make()
+        m = es["Materials"]["2026-03"]
+        assert specials == {
+            ("Plan_ES", "E44"): es["Gross profit"]["2026-03"] + m,
+            ("Plan_ES", "E49"): es["EBIT"]["2026-03"] + m,
+            ("Plan_ES", "O41"): es["Materials"]["FY2026"] - m,
+            ("Plan_ES", "O44"): es["Gross profit"]["FY2026"] + m,
+            ("Plan_ES", "O49"): es["EBIT"]["FY2026"] + m,
+            ("Control", "E15"): model.group_summary(("ES", "AT", "DE"))[("Gross profit",
+                                                                          "Forecast")] + m,
+            ("Control", "E16"): model.group_summary(("ES", "AT", "DE"))[("EBIT", "Forecast")] + m}
+        _, specials = build.BOOKS["blank_run_budget"].make()
+        months = ("2026-04", "2026-05", "2026-06")
+        assert set(specials) == {("Plan_DE", f"{c}33") for c in "FGH"} | {
+            ("Plan_DE", "O30"), ("Plan_DE", "O33"), ("Control", "D16")}
+        assert specials[("Plan_DE", "O30")] == de["Marketing"]["FY2026"] - sum(
+            de["Marketing"][p] for p in months)
+        _, specials = build.BOOKS["blank_month_budget"].make()
+        assert len(specials) == 12 + 3 and ("Plan_DE", "O35") not in specials
+        assert specials[("Plan_DE", "O34")] == de["Volume"]["FY2026"] - de["Volume"]["2026-08"]
+
+    def test_block_short_wrong_ebit(self, build):
+        from src import sample_model as model
+        wb, specials = build.BOOKS["block_short_wrong_ebit"].make()
+        assert {n: d.attr_text for n, d in wb.defined_names.items()}["Forecast_ES"] == \
+            "Plan_ES!$A$38:$O$49"
+        assert wb["Plan_ES"]["E49"].value == "=E44-SUM(E45:E47)"
+        figures = model.block("ES", "Forecast")
+        it = figures["IT and software"]["2026-03"]
+        assert specials == {("Plan_ES", "E49"): figures["EBIT"]["2026-03"] + it,
+                            ("Plan_ES", "O49"): figures["EBIT"]["FY2026"] + it,
+                            ("Control", "E16"): model.group_summary(("ES",))[("EBIT", "Forecast")]
+                            + it}
+
+    def test_landed_block_short_and_version_label_padded(self, build):
+        wb, specials = build.BOOKS["landed_block_short"].make()
+        assert specials == {} and wb["Plan_ES"]["A53"].value == "Scenario"
+        assert [wb["Plan_ES"].cell(54, c).value for c in range(1, 4)] == ["Line item", "Unit",
+                                                                          "2026-01"]
+        wb, specials = build.BOOKS["version_label_padded"].make()
+        other, _ = build.BOOKS["extra_version_block"].make()
+        assert wb["Plan_ES"]["A53"].value == " Plan B "
+        assert {k for k in _cells(wb) if _cells(wb)[k] != _cells(other).get(k)} == {
+            ("Plan_ES", "A53")}
+        assert len(specials) == 13 * 13 and set(specials.values()) == {0}
+
+    def test_a_partial_build_never_rebuilds_them(self, build):
+        import json
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for name in FIXTURES_2A2:
+            with pytest.raises(build.BuildError, match=name):
+                build.check_partial(manifest, build.select_books([name]), APPROVED_VERSION)
+            entry = next(f for f in manifest["fixtures"]
+                         if f["file"] == f"tests/fixtures/{name}.xlsx")
+            assert entry["base"] == build.BOOKS[name].base and entry["expected_in_1d"]

@@ -987,11 +987,16 @@ def fixture_extra_version_block():
     # formulas written for the new block's own rows. They fetch their drivers
     # by the block's label, Plan B, which Assumptions does not hold, so every
     # cell computes 0.
+    return _extra_version_block(EXTRA_VERSION)
+
+
+def _extra_version_block(label: str):
+    """The extra_version_block layout, its title cell holding label (part 2a2 adds a padded one)."""
     shape = Shape()
     wb = write_workbook(shape)
     ws = wb["Plan_ES"]
     version = EXTRA_VERSION
-    _put(ws, shape, title_row(shape, version), 0, version, bold=True)
+    _put(ws, shape, title_row(shape, version), 0, label, bold=True)
     for i, text in enumerate(["Line item", "Unit", *model.PERIODS, model.FY]):
         _put(ws, shape, header_row(shape, version), i, text, bold=True)
     specials = {}
@@ -1029,6 +1034,192 @@ def fixture_version_label_lowercase():
     wb = write_workbook(shape)
     wb["Plan_ES"][f"{col(shape, 0)}{title_row(shape, 'Budget')}"] = "budget"
     return wb, {}
+
+
+# -- Part 2a2: the reviewer's Stop 1 verdict, section 5 ----------------------------------------
+# Each is made from the full clean workbook, but block_short_wrong_ebit, made from the small
+# base as block_short is. Where a change moves a figure a formula computes (a blank cell read
+# by a subtotal, a formula that leaves a line out), the new figures are given as specials,
+# worked out here from the model: a blank cell counts as 0 in every formula that reads it.
+
+SCENARIO = "Scenario"
+PADDED_VERSION = " Plan B "
+SCENARIO_LINES = ("Product sales", "Co-packing income", "Materials", "Packaging", "Freight out")
+GROSS_PROFIT_PARTS = (("Product sales", 1), ("Co-packing income", 1), ("Materials", -1),
+                      ("Packaging", -1), ("Freight out", -1))
+EBIT_PARTS = (("Gross profit", 1), ("Salaries", -1), ("Marketing", -1),
+              ("Rent and facilities", -1), ("IT and software", -1))
+
+
+def _blanked(shape: Shape, entity: str, version: str, blanks) -> dict:
+    """The specials of a block with the cells (line, period) emptied: each formula figure that
+    moves, the block's and the Control tab's group summary's, and no emptied cell."""
+    old = model.block(entity, version)
+    new = {line: dict(periods) for line, periods in old.items()}
+    blanks = set(blanks)
+    for line, period in blanks:
+        new[line][period] = model.ZERO
+    for period in {period for _, period in blanks}:
+        for subtotal, parts in (("Gross profit", GROSS_PROFIT_PARTS), ("EBIT", EBIT_PARTS)):
+            if (subtotal, period) not in blanks:
+                new[subtotal][period] = sum((sign * new[line][period] for line, sign in parts),
+                                            model.ZERO)
+    for line in model.LINES:
+        if line.name == "Headcount":
+            new[line.name][model.FY] = new[line.name][model.PERIODS[-1]]
+        else:
+            new[line.name][model.FY] = sum((new[line.name][p] for p in model.PERIODS), model.ZERO)
+    sheet, specials = f"Plan_{entity}", {}
+    for line in model.LINES:
+        for key in model.PERIODS + (model.FY,):
+            if (line.name, key) not in blanks and new[line.name][key] != old[line.name][key]:
+                specials[(sheet, coordinate(shape, version, line.name, key))] = new[line.name][key]
+    summary = model.group_summary(shape.sheets)
+    moved = {"Revenue": sum((new[n][model.FY] - old[n][model.FY] for n in model.REVENUE),
+                            model.ZERO),
+             "Gross profit": new["Gross profit"][model.FY] - old["Gross profit"][model.FY],
+             "EBIT": new["EBIT"][model.FY] - old["EBIT"][model.FY]}
+    for line, amount in moved.items():
+        if amount:
+            specials[_summary_cell(shape, line, version)] = summary[(line, version)] + amount
+    return specials
+
+
+def _summary_cell(shape: Shape, line: str, version: str) -> tuple:
+    """The Control tab's group summary cell of one line (Revenue, Gross profit, EBIT) and version."""
+    top = shape.row0 + CONTROL_SUMMARY
+    row = top + 2 + ("Revenue", "Gross profit", "EBIT").index(line)
+    return ("Control", f"{col(shape, 2 + model.VERSIONS.index(version))}{row}")
+
+
+def _blank(blanks: tuple):
+    def make():
+        # The cells named are emptied (no value, no formula); a formula that
+        # reads one counts it as 0, so the subtotals and totals above it move.
+        shape = Shape()
+        wb = write_workbook(shape)
+        specials = {}
+        for entity, version, cells in blanks:
+            ws = wb[f"Plan_{entity}"]
+            for line, period in cells:
+                ws[coordinate(shape, version, line, period)] = None
+            specials.update(_blanked(shape, entity, version, cells))
+        return wb, specials
+    return make
+
+
+BLANK_CELL_FORECAST = (("ES", "Forecast", (("Materials", "2026-03"),)),)
+BLANK_RUN_BUDGET = (("DE", "Budget", tuple(("Marketing", p) for p in
+                                           ("2026-04", "2026-05", "2026-06"))),)
+BLANK_MONTH_BUDGET = (("DE", "Budget", tuple((line.name, "2026-08") for line in model.LINES)),)
+
+
+def fixture_names_same_range():
+    # The ES Forecast name placed on the ES Budget rows, where the Budget name
+    # also points. Every cell is the clean workbook's.
+    shape = Shape()
+    wb = write_workbook(shape)
+    _rename_block(wb, shape, "Forecast_ES", header_row(shape, "Budget"),
+                  line_row(shape, "Budget", "Headcount"))
+    return wb, {}
+
+
+def fixture_names_partly_overlap():
+    # The ES Forecast name from the Budget Marketing row (30) to the end of the
+    # Forecast block (51). Every cell is the clean workbook's.
+    shape = Shape()
+    wb = write_workbook(shape)
+    _rename_block(wb, shape, "Forecast_ES", line_row(shape, "Budget", "Marketing"),
+                  line_row(shape, "Forecast", "Headcount"))
+    return wb, {}
+
+
+def fixture_unit_header_empty():
+    # The Unit header of the DE Budget block (B22) emptied; every unit below it stays.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_DE"][f"{col(shape, 1)}{header_row(shape, 'Budget')}"] = None
+    return wb, {}
+
+
+def fixture_stray_line_item():
+    # "Line item" typed in A4 of Plan_ES, below the Currency cell and above the
+    # Actual block's title. No formula reads it.
+    shape = Shape()
+    wb = write_workbook(shape)
+    _put(wb["Plan_ES"], shape, shape.row0 + 3, 0, "Line item")
+    return wb, {}
+
+
+def fixture_header_only_block():
+    # A header row on Plan_ES, row 60, far below the last block: Line item, Unit
+    # and one month, with nothing above it and nothing under it.
+    shape = Shape()
+    wb = write_workbook(shape)
+    for i, text in enumerate(("Line item", "Unit", model.PERIODS[0])):
+        _put(wb["Plan_ES"], shape, shape.row0 + 59, i, text, bold=True)
+    return wb, {}
+
+
+def fixture_block_short_wrong_ebit():
+    # The small base with the ES Forecast name ending at the EBIT row, so the
+    # block lacks Volume and Headcount, and the March EBIT formula leaving out
+    # IT and software. EBIT for March, its FY2026 total and the Control tab's
+    # Forecast EBIT move up by the March IT and software figure.
+    shape = SMALL
+    wb = write_workbook(shape)
+    _rename_block(wb, shape, "Forecast_ES", header_row(shape, "Forecast"),
+                  line_row(shape, "Forecast", "EBIT"))
+    x = key_col(shape, "2026-03")
+
+    def at(name):
+        return f"{x}{line_row(shape, 'Forecast', name)}"
+    wb["Plan_ES"][at("EBIT")] = f"={at('Gross profit')}-SUM({at('Salaries')}:{at('Rent and facilities')})"
+    figures = model.block("ES", "Forecast")
+    moved = figures["IT and software"]["2026-03"]
+    summary = model.group_summary(shape.sheets)
+    specials = {("Plan_ES", at("EBIT")): figures["EBIT"]["2026-03"] + moved,
+                ("Plan_ES", coordinate(shape, "Forecast", "EBIT", model.FY)):
+                    figures["EBIT"][model.FY] + moved,
+                _summary_cell(shape, "EBIT", "Forecast"): summary[("EBIT", "Forecast")] + moved}
+    return wb, specials
+
+
+def fixture_actual_account_displaced():
+    # The AT Actual Packaging label overwritten by Materials, so the block holds
+    # Materials twice and no Packaging. No formula reads a label.
+    shape = Shape()
+    wb = write_workbook(shape)
+    wb["Plan_AT"][_label_cell(shape, "Actual", "Packaging")] = "Materials"
+    return wb, {}
+
+
+def fixture_landed_block_short():
+    # A block labelled Scenario one blank row below the ES Forecast block, with
+    # no defined name: one month (2026-01) and the first five lines, their
+    # figures typed as the ES Forecast block's January figures. No formula.
+    shape = Shape()
+    wb = write_workbook(shape)
+    ws = wb["Plan_ES"]
+    title = shape.row0 + EXTRA_TITLE
+    _put(ws, shape, title, 0, SCENARIO, bold=True)
+    for i, text in enumerate(("Line item", "Unit", model.PERIODS[0])):
+        _put(ws, shape, title + 1, i, text, bold=True)
+    figures = model.block("ES", "Forecast")
+    units = {line.name: line.unit for line in model.LINES}
+    for j, name in enumerate(SCENARIO_LINES):
+        _put(ws, shape, title + 2 + j, 0, name)
+        _put(ws, shape, title + 2 + j, 1, units[name])
+        _put(ws, shape, title + 2 + j, 2, _number(figures[name][model.PERIODS[0]]),
+             number_format=MONEY)
+    return wb, {}
+
+
+def fixture_version_label_padded():
+    # The extra_version_block layout with the label " Plan B ", a space each
+    # side. Its formulas fetch their drivers by that label, which Assumptions
+    # does not hold, so every cell of the block computes 0.
+    return _extra_version_block(PADDED_VERSION)
 
 
 SHIFTED =Shape(row0=4, col0=3, banner="Calder Foods Group: draft for review, not for issue")
@@ -1347,6 +1538,98 @@ FIXTURE_BOOKS_2A = [
          expected="No break: the version label is compared with the defined name's version "
                   "after trimming and ignoring case, and its rows are read once."),
 ]
+# Part 2a2: the reviewer's Stop 1 verdict, section 5. Each records its base.
+NOTHING_ELSE = "against the committed ledger, nothing else"
+FIXTURE_BOOKS_2A2 = [
+    Book(FIXTURES / "names_same_range.xlsx", fixture_names_same_range, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the defined name Forecast_ES pointing at the ES Budget "
+                 "rows, Plan_ES!$A$22:$O$35, where Budget_ES also points. Every cell is the "
+                 "clean workbook's.",
+         expected="Structure: one high break, blocks overlap, naming Budget_ES and Forecast_ES "
+                  "and their range, saying neither is built, carrying the name against the label "
+                  "(Forecast_ES over the label Budget) and naming the Forecast header in A38 "
+                  f"that is left unread; {NOTHING_ELSE}."),
+    Book(FIXTURES / "names_partly_overlap.xlsx", fixture_names_partly_overlap, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the defined name Forecast_ES pointing at "
+                 "Plan_ES!$A$30:$O$51, from the Budget Marketing row to the end of the Forecast "
+                 "block. Every cell is the clean workbook's.",
+         expected="Structure: one high break, the Forecast_ES block cannot be read (the first row "
+                  "of its range, A30:O30, has no Line item header and no month header); it lands "
+                  "no cell, so it overlaps nothing, the ES Budget block is built, and nothing is "
+                  f"built for ES Forecast; {NOTHING_ELSE}."),
+    Book(FIXTURES / "blank_cell_forecast.xlsx", _blank(BLANK_CELL_FORECAST), base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the ES Forecast Materials cell for 2026-03 (E41) emptied. "
+                 "The Gross profit and EBIT formulas of that month count it as 0, so they, the "
+                 "three FY2026 totals and the Control tab's Forecast Gross profit and EBIT move "
+                 "(given as specials).",
+         expected="Structure: one medium break, a blank figure, Materials in the ES Forecast "
+                  f"block in 2026-03 (E41), with nothing built for it; {NOTHING_ELSE}."),
+    Book(FIXTURES / "blank_run_budget.xlsx", _blank(BLANK_RUN_BUDGET), base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the DE Budget Marketing cells for 2026-04 to 2026-06 "
+                 "(F30:H30) emptied. The EBIT formulas of those months count them as 0, so they, "
+                 "the two FY2026 totals and the Control tab's Budget EBIT move (given as "
+                 "specials).",
+         expected="Structure: one medium break, a blank figure, Marketing in the DE Budget block "
+                  f"from 2026-04 to 2026-06 (F30:H30); {NOTHING_ELSE}."),
+    Book(FIXTURES / "blank_month_budget.xlsx", _blank(BLANK_MONTH_BUDGET), base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with every line of the DE Budget block emptied in 2026-08 "
+                 "(J23:J35), the two subtotals included. The FY2026 totals and the Control tab's "
+                 "Budget figures move (given as specials).",
+         expected="Structure: one medium break, a blank month, the DE Budget block in 2026-08, "
+                  f"one break for all its lines; {NOTHING_ELSE}."),
+    Book(FIXTURES / "unit_header_empty.xlsx", fixture_unit_header_empty, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the Unit header of the DE Budget block (B22) emptied; every "
+                 "unit below it stays. Every figure is the clean workbook's.",
+         expected="Structure: one medium break, the block without units, naming the empty header "
+                  f"cell, and no header-not-found break; {NOTHING_ELSE}."),
+    Book(FIXTURES / "stray_line_item.xlsx", fixture_stray_line_item, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the text Line item typed in A4 of Plan_ES, below the "
+                 "Currency cell. Every figure is the clean workbook's.",
+         expected="Structure: one low break, a Line item header not read, naming A4; the star "
+                  f"schema is the clean workbook's; {NOTHING_ELSE}."),
+    Book(FIXTURES / "header_only_block.xlsx", fixture_header_only_block, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with a header row on Plan_ES, row 60, far below the last block: "
+                 "Line item, Unit and 2026-01, with nothing above it and nothing under it. Every "
+                 "figure is the clean workbook's.",
+         expected="Structure: one low break, a Line item header not read, naming A60; the star "
+                  f"schema is the clean workbook's; {NOTHING_ELSE}."),
+    Book(FIXTURES / "block_short_wrong_ebit.xlsx", fixture_block_short_wrong_ebit, SMALL,
+         base=SMALL_BASE,
+         purpose=f"{SMALL_NOTE}, with the defined name Forecast_ES ending at the EBIT row, so the "
+                 "block lacks Volume and Headcount, and the March EBIT formula (E49) leaving out "
+                 "IT and software. EBIT for March, its FY2026 total and the Control tab's "
+                 "Forecast EBIT move (given as specials).",
+         expected="Three breaks, as the reviewer's ruling of 8 November expects: structure, the "
+                  "accounts not in the block (Volume and Headcount feed no subtotal, so the "
+                  "block's subtotals are still checked); totals, a subtotal break on the March "
+                  "EBIT, E49; formula integrity, a low pattern break on the same cell; none on "
+                  "Gross profit. Against the committed ledger, the two unknown-entity breaks every "
+                  "small-base fixture gives."),
+    Book(FIXTURES / "actual_account_displaced.xlsx", fixture_actual_account_displaced,
+         base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, with the AT Actual Packaging label (A10) overwritten by "
+                 "Materials, so the block holds Materials twice and no Packaging. Every figure is "
+                 "the clean workbook's.",
+         expected="Structure: one medium break, the account twice in the block, naming rows 9 and "
+                  "10 and Packaging, the account the second takes the place of, and saying that "
+                  "reconcile leaves Materials and Packaging of AT out of the ledger tie-out; "
+                  f"{NOTHING_ELSE}."),
+    Book(FIXTURES / "landed_block_short.xlsx", fixture_landed_block_short, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, plus a block labelled {SCENARIO} on Plan_ES one blank row below "
+                 "the Forecast block, with no defined name: one month (2026-01) and the first five "
+                 "lines, typed. Every other figure is the clean workbook's.",
+         expected="Structure: one medium break, the block's version is not one of Actual, Budget, "
+                  "Forecast, so it is landed and not built; no period-gap or accounts-not-in-block "
+                  f"break; {NOTHING_ELSE}."),
+    Book(FIXTURES / "version_label_padded.xlsx", fixture_version_label_padded, base=CLEAN_BASE,
+         purpose=f"{CLEAN_NOTE}, plus the extra_version_block layout under the label "
+                 f"{json.dumps(PADDED_VERSION)}, a space each side. Its formulas fetch their "
+                 "drivers by that label, which Assumptions does not hold, so every cell of the "
+                 "block computes 0. Every other figure is the clean workbook's.",
+         expected="Structure: one medium break, the version not admitted, its message giving the "
+                  "allow-list's reason and its evidence the value encoded; no rejected-name break; "
+                  f"{NOTHING_ELSE}."),
+]
 BASE = Book(FIXTURES / "shared_formula.xlsx", _simple(lambda: write_workbook(SMALL)), SMALL,
             purpose=f"{SMALL_NOTE}, recalculated, then the ES Budget Product sales months and "
                     "the ES Budget FY2026 column from Product sales to Volume stored as shared "
@@ -1357,7 +1640,7 @@ NO_CACHE = Book(FIXTURES / "no_cache.xlsx", _simple(lambda: write_workbook(SMALL
                 purpose=f"{SMALL_NOTE}, as openpyxl wrote it and never recalculated: no "
                         "formula cell has a cached value.",
                 expected="Calculation state: one break for every formula cell.")
-STEP_2 = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, *FIXTURE_BOOKS_2A, BASE]
+STEP_2 = [SAMPLE, *MUTATION_BOOKS, *FIXTURE_BOOKS, *FIXTURE_BOOKS_2A, *FIXTURE_BOOKS_2A2, BASE]
 BOOKS = {book.dest.stem: book for book in (CLEAN, *STEP_2, NO_CACHE)}
 
 
