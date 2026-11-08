@@ -121,8 +121,12 @@ class TestCheck:
         assert list(temp.iterdir()) == []
 
     def test_it_never_promotes(self):
-        text = MAIN.read_text(encoding="utf-8")
-        assert "promote(" not in text and "acknowledge(" not in text
+        # Part 2e: query may promote, as the person named; check never does.
+        import inspect
+
+        import main
+        text = inspect.getsource(main.check) + inspect.getsource(main.report_lines)
+        assert "promote(" not in text and "acknowledge" not in text
 
 
 class TestFilesItCannotRead:
@@ -158,7 +162,8 @@ class TestTheCommandLine:
         assert main.main([]) == 0
         out = capsys.readouterr().out
         assert "python main.py check <workbook> <ledger>" in out
-        assert "Nothing answers a question yet." in out
+        # Part 2e: a question can be answered from a specification; no model is called.
+        assert "No model is called yet." in out and "Nothing answers a question yet." not in out
 
     def test_an_unknown_command_is_a_usage_error(self, capsys):
         import main
@@ -280,3 +285,199 @@ class TestABadFileInPlainWords:
         assert out.strip().splitlines() == [
             "check: the check could not finish: a file could not be read or written."]
         assert no_class_name(out)
+
+
+# -- Part 2e: python main.py query ------------------------------------------------------------------
+# The command builds the template in a temporary folder, opens a session, may acknowledge every
+# break and promote the pair as named people, asks the specification and prints the outcome
+# sentence or the answer, and removes the folder, the read-only template file included (Trap
+# 11). Every refusal is one plain line with a non-zero exit, and nothing names a Python class.
+
+QUESTION = {"metric": "revenue", "version": "Budget", "dimensions": [], "filters": [],
+            "period": {"kind": "fy", "value": "FY2026"}, "comparison": "none", "sort": None,
+            "limit": 10}
+AT_QUESTION = {"metric": "ebit", "version": "Actual", "dimensions": ["entity"], "filters": [],
+               "period": {"kind": "ytd", "value": "2026-06"}, "comparison": "budget",
+               "sort": None, "limit": 10}
+
+
+def spec_file(folder, data=QUESTION, name="question.json"):
+    path = folder / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def said(done) -> list:
+    return (done.stdout + done.stderr).strip().splitlines()
+
+
+class TestQueryRefusesInOnePlainLine:
+    def test_a_missing_spec_file(self, tmp_path):
+        done = run("query", tmp_path / "absent.json", "--pair", "clean", "--role",
+                   "group_controller", temp=tmp_path)
+        assert done.returncode == 1
+        assert said(done) == ["query: absent.json: there is no such file."]
+
+    @pytest.mark.parametrize("text", ["{not json", "[1, 2]", json.dumps({**QUESTION, "x": 1}),
+                                      json.dumps({k: v for k, v in QUESTION.items()
+                                                  if k != "limit"})])
+    def test_a_malformed_spec_file(self, tmp_path, text):
+        bad = tmp_path / "bad.json"
+        bad.write_text(text, encoding="utf-8")
+        done = run("query", bad, "--pair", "clean", "--role", "group_controller", temp=tmp_path)
+        assert done.returncode == 1
+        assert said(done) == ["query: bad.json: The question could not be read: it is not a "
+                              "specification of the expected form."]
+        assert no_class_name(done.stdout + done.stderr)
+
+    def test_a_spec_file_that_is_not_text(self, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_bytes(b"\xff\xfe\x00{")
+        done = run("query", bad, "--pair", "clean", "--role", "group_controller", temp=tmp_path)
+        assert done.returncode == 1 and len(said(done)) == 1
+        assert "Traceback" not in done.stderr
+
+    def test_an_unknown_pair(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "other", "--role",
+                   "group_controller", temp=tmp_path)
+        assert done.returncode == 2
+        assert said(done) == ["query: the pair must be clean or sample."]
+
+    def test_an_unknown_role(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "clean", "--role", "auditor",
+                   temp=tmp_path)
+        assert done.returncode == 2
+        assert said(done) == ["query: the role must be group_controller or entity_controller."]
+
+    def test_an_entity_controller_with_no_entity(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "clean", "--role",
+                   "entity_controller", temp=tmp_path)
+        assert done.returncode == 2
+        assert said(done) == ["query: an entity controller needs --entity."]
+
+    def test_promote_as_on_the_sample_without_acknowledge_all_as(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "sample", "--role",
+                   "group_controller", "--promote-as", "P. Promoter", temp=tmp_path)
+        assert done.returncode == 1
+        assert said(done) == ["query: the sample pair has 8 breaks, so --promote-as needs "
+                              "--acknowledge-all-as as well; nothing was promoted."]
+        assert [p.name for p in tmp_path.iterdir()] == ["question.json"]
+
+    def test_with_nothing_promoted_it_says_so(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "clean", "--role",
+                   "group_controller", temp=tmp_path)
+        assert done.returncode == 1
+        assert said(done) == ["query: Nothing has been promoted yet. Review a batch first."]
+
+    def test_a_refused_question_is_its_fixed_sentence_and_names_nothing(self, tmp_path):
+        other = {**QUESTION, "filters": [{"dimension": "entity", "values": ["DE"]}]}
+        done = run("query", spec_file(tmp_path, other), "--pair", "clean", "--role",
+                   "entity_controller", "--entity", "AT", "--promote-as", "P. Promoter",
+                   temp=tmp_path)
+        assert done.returncode == 1
+        assert said(done) == ["query: That entity is not available to your role."]
+
+    def test_an_unknown_option_is_a_usage_error(self, tmp_path):
+        done = run("query", spec_file(tmp_path), "--pair", "clean", "--role",
+                   "group_controller", "--verbose", temp=tmp_path)
+        assert done.returncode == 2 and "Traceback" not in done.stderr
+        assert said(done)[0].startswith("query: ")
+
+
+@pytest.fixture(scope="module")
+def group_run(tmp_path_factory):
+    temp = tmp_path_factory.mktemp("query_group")
+    done = run("query", spec_file(temp), "--pair", "clean", "--role", "group_controller",
+               "--promote-as", "P. Promoter", temp=temp)
+    return done, temp
+
+
+@pytest.fixture(scope="module")
+def entity_run(tmp_path_factory):
+    temp = tmp_path_factory.mktemp("query_entity")
+    done = run("query", spec_file(temp, AT_QUESTION), "--pair", "sample", "--role",
+               "entity_controller", "--entity", "AT", "--acknowledge-all-as", "A. Reviewer",
+               "--promote-as", "P. Promoter", temp=temp)
+    return done, temp
+
+
+class TestQueryAnswers:
+    def test_a_group_controller_on_the_clean_pair(self, group_run):
+        done, _ = group_run
+        assert done.returncode == 0, done.stderr
+        lines = done.stdout.splitlines()
+        assert "Question: revenue, Budget, FY2026, no comparison; group view" in lines
+        assert any(l.startswith("SQL (SHA-256 ") for l in lines)
+        assert any(l.startswith("WITH plan AS (SELECT version, entity, account, period, "
+                                "amount FROM fact_plan WHERE entity IN ('ES', 'AT', 'DE')")
+                   for l in lines)
+        # The oracle's FY2026 Budget revenue for the clean pair: 65,899,660.
+        assert "  value 65,899,660 EUR" in lines
+        assert "Months asked: 2026-01..2026-12; months held: 2026-01..2026-12" in lines
+        assert "Gaps: none" in lines
+        assert "  plan: planning_model_clean.xlsx" in "\n".join(lines)
+        assert "  promotion 1, promoted by P. Promoter at " in "\n".join(lines)
+        assert done.stderr == ""
+
+    def test_an_entity_controller_on_the_sample_pair(self, entity_run):
+        done, _ = entity_run
+        assert done.returncode == 0, done.stderr
+        text = done.stdout
+        lines = text.splitlines()
+        assert "Question: ebit, Actual, YTD 2026-06, against Budget; entity view: AT" in lines
+        # The oracle's AT figures: 370,759 against 335,679, a variance of 35,080 (10.5%),
+        # favourable; AT's May Actual is a gap and left out of both sides.
+        assert ("  entity AT: value 370,759 EUR; comparator 335,679 EUR; variance 35,080 EUR; "
+                "variance % 10.5%; favourable") in lines
+        assert "Months asked: 2026-01..2026-06; months held: 2026-01..2026-04 2026-06; " \
+               "compared with Budget" in lines
+        assert "Gaps: AT 2026-05" in lines
+        for other in ("'ES'", "'DE'", "Calder Foods Spain", "Calder Foods Germany",
+                      "Southern Europe"):
+            assert other not in text, other
+
+    def test_nothing_is_left_behind(self, group_run, entity_run):
+        for done, temp in (group_run, entity_run):
+            assert sorted(p.name for p in temp.iterdir()) == ["question.json"], done.stdout
+
+    def test_the_temporary_folder_is_removed_though_the_template_is_read_only(self, tmp_path):
+        import os
+        import stat
+
+        import main
+        folder = tmp_path / "work"
+        (folder / "inner").mkdir(parents=True)
+        locked = folder / "inner" / "template.duckdb"
+        locked.write_bytes(b"x")
+        os.chmod(locked, stat.S_IREAD)
+        main.remove_folder(folder)
+        assert not folder.exists()
+
+    def test_the_usage_names_the_query_command(self, capsys):
+        import main
+        assert main.main([]) == 0
+        out = capsys.readouterr().out
+        assert ("python main.py query <spec.json> --pair clean|sample --role "
+                "group_controller|entity_controller") in out
+
+
+class TestFiguresAreRoundedOnceWhereShown:
+    """src/answer.py's shown(): an exact figure as a person reads it, by its unit (rule 8)."""
+
+    @pytest.mark.parametrize("text, unit, expected", [
+        ("65899660.000000000000", "EUR", "65,899,660 EUR"),
+        ("-1234.500000000000", "EUR", "-1,235 EUR"),
+        ("0.320000000000", "%", "32.0%"),
+        ("0.123450000000", "%", "12.3%"),
+        ("0.123500000000", "%", "12.4%"),
+        ("-0.123500000000", "%", "-12.4%"),
+        ("0.699727239000", "pp", "0.7 pp"),
+        ("-1.250000000000", "pp", "-1.3 pp"),
+        ("3.455000000000", "EUR per unit", "3.46 EUR per unit"),
+        ("201.500000000000", "FTE", "201.5 FTE"),
+        ("1000.000000000000", "units", "1,000 units"),
+        ("not meaningful", "%", "not meaningful"),
+    ])
+    def test_each_unit(self, text, unit, expected):
+        from src import answer
+        assert answer.shown(text, unit) == expected

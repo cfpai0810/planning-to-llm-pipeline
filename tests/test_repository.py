@@ -186,13 +186,17 @@ class TestDocs:
         readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
         assert paragraph in readme
 
-    def test_the_readme_says_what_exists_and_that_nothing_answers_yet(self):
+    def test_the_readme_says_what_exists_and_that_no_model_is_called_yet(self):
+        # Part 2e: the status line says what exists, and that no model is called yet.
         readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
-        assert "Phase 0" not in readme
-        assert ("**Phase 1, not yet usable.** What exists: the sample workbook and its ledger "
-                "extract, the extractor, the spreadsheet controls, reconcile and promotion. "
-                "Nothing answers a question yet.") in readme
-        assert "python main.py check" in readme
+        assert "Phase 0" not in readme and "Phase 1, not yet usable" not in readme
+        assert ("**Phase 2, not yet usable.** What exists: the sample workbook and its ledger "
+                "extract, the extractor, the spreadsheet controls, reconcile and promotion, "
+                "the metric registry, and the governed layer that answers a structured "
+                "question: sessions, roles, validation, the compiler and the guard. No model "
+                "is called yet.") in readme
+        assert "python main.py check" in readme and "python main.py query" in readme
+        assert "docs/registry.md" in readme and "docs/governed_layer.md" in readme
 
     def test_the_reboot_rule_is_stated(self):
         for path in (ROOT / "README.md", RELEASING):

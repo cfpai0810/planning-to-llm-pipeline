@@ -1,8 +1,10 @@
 # Planning-to-Warehouse-to-LLM Pipeline
 
-**Phase 1, not yet usable.** What exists: the sample workbook and its ledger
-extract, the extractor, the spreadsheet controls, reconcile and promotion.
-Nothing answers a question yet.
+**Phase 2, not yet usable.** What exists: the sample workbook and its ledger
+extract, the extractor, the spreadsheet controls, reconcile and promotion,
+the metric registry, and the governed layer that answers a structured
+question: sessions, roles, validation, the compiler and the guard. No model
+is called yet.
 
 To check a planning workbook against a ledger extract:
 
@@ -17,6 +19,19 @@ warehouse; it never promotes. The rules are in
 can be given in is in [docs/export_contract.md](docs/export_contract.md), and
 the project's terms are in [docs/glossary.md](docs/glossary.md).
 
+To ask a question written as a specification (a JSON file of eight fields):
+
+```bash
+python main.py query question.json --pair sample --role entity_controller --entity AT --acknowledge-all-as "A. Reviewer" --promote-as "P. Promoter"
+```
+
+It builds the warehouse of both pairs in a temporary folder, acknowledges
+and promotes the pair as the people named, and prints the outcome or the
+answer: the SQL, the figures, the coverage and gaps, and the provenance. The
+metric definitions and the finance rules are in
+[docs/registry.md](docs/registry.md); the session, the roles, the compiler
+and the guard are in [docs/governed_layer.md](docs/governed_layer.md).
+
 ## What it will be
 
 A governed question-and-answer pipeline over planning data. A planning model built in a spreadsheet will be extracted, checked, landed in a warehouse, tied out against a second source, and then queried in plain English. The model will never write SQL and never calculate: it will turn a question into a structured query specification, and Python will validate that specification against finance-owned metric definitions, compile the query, run it under the user’s access role and return the figures with their provenance. The aim is to show that the path from a planning model to a language model can be governed.
@@ -24,7 +39,7 @@ A governed question-and-answer pipeline over planning data. A planning model bui
 ## Test suite
 
 <!-- test-count: written by tests/conftest.py after a full, passing run, from generated/test_counts.json; never typed -->
-The suite has **1841 tests**, counted by its last full, passing run (`generated/test_counts.json`).
+The suite has **1885 tests**, counted by its last full, passing run (`generated/test_counts.json`).
 <!-- /test-count -->
 
 The suite blocks every connection that leaves this machine, including during

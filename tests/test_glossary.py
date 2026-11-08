@@ -6,6 +6,13 @@ line, the code's comments, docstrings and strings, the SQL files, and the
 comments and docstrings of the tests) and fails if a retired variant comes
 back. It follows the P6 glossary test: a string that is a single identifier
 (a dictionary key, a column name) is not prose and is not read.
+
+Part 2e adds the governed layer's terms, seeded by the Phase 2 brief, and
+retires two variants: KPI for metric, and scenario for version. A retired
+variant may be kept in a named place, with its reason: the export contract's
+table of generic terms maps an export's "scenario" to the version, and the
+pages' theme kit, carried from P6 and left as it is while the pages stay
+stubs, names a widget the "KPI tile".
 """
 
 import io
@@ -16,37 +23,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GLOSSARY = ROOT / "docs" / "glossary.md"
 
-# The agreed terms, as docs/glossary.md writes them.
+# The agreed terms, as docs/glossary.md writes them. Part 2e adds the governed layer's terms
+# (proposals for the reviewer, seeded by the Phase 2 brief, section 7).
 TERMS = ("batch", "batch record", "break", "control", "check", "reconcile", "acknowledge",
          "acknowledgement", "pair", "promote", "promotion", "plan", "Actual", "Budget",
          "Forecast", "version", "entity", "account", "line item", "period", "ledger",
-         "ledger sign", "presentation sign", "star schema")
+         "ledger sign", "presentation sign", "star schema",
+         "metric", "registry", "specification", "validate", "compile", "guard", "role",
+         "session", "template", "held", "coverage", "gap", "matched months", "closing value",
+         "ratio of sums", "outcome", "provenance")
 
-# The retired variants: (the term to say instead, the variants as the glossary
-# lists them, a pattern that finds them in prose).
+# The retired variants: (the term to say instead, the variants as the glossary lists them, a
+# pattern that finds them in prose, and the places not read for them).
+PAGES = ("streamlit_app/", "scripts/shoot.py", "tests/test_theme.py")
 RETIRED = (
     ("batch", ("dataset", "data set", "data load"),
-     r"(?i)\bdata ?sets?\b|\bdata loads?\b"),
+     r"(?i)\bdata ?sets?\b|\bdata loads?\b", ()),
     ("break", ("discrepancy", "mismatch", "reconciling item", "exception item"),
-     r"(?i)\bdiscrepanc(y|ies)\b|\bmismatch(es)?\b|\breconciling items?\b|\bexception items?\b"),
+     r"(?i)\bdiscrepanc(y|ies)\b|\bmismatch(es)?\b|\breconciling items?\b|\bexception items?\b",
+     ()),
     ("acknowledge", ("sign off", "sign-off", "approve a break"),
-     r"(?i)\bsign(ed|s)?[ -]?off\b|\bsignoffs?\b|\bapprov(e|es|ed|ing) (a|the|each|every) break"),
+     r"(?i)\bsign(ed|s)?[ -]?off\b|\bsignoffs?\b|\bapprov(e|es|ed|ing) (a|the|each|every) break",
+     ()),
     ("promote", ("go live", "make live", "publish a batch", "release a batch"),
-     r"(?i)\b(go|goes|went|make|made) live\b|\b(publish|release)(es|ed|ing|s)? (a|the) batch"),
-    ("plan", ("plan file", "planning file"), r"(?i)\bplan(ning)? files?\b"),
+     r"(?i)\b(go|goes|went|make|made) live\b|\b(publish|release)(es|ed|ing|s)? (a|the) batch",
+     ()),
+    ("plan", ("plan file", "planning file"), r"(?i)\bplan(ning)? files?\b", ()),
+    ("version", ("scenario",), r"\bscenarios?\b", ("docs/export_contract.md", "streamlit_app/")),
     ("ledger", ("ERP actuals", "ERP extract", "ERP file", "general ledger", "trial balance"),
-     r"\bERP (actuals|extract|file)s?\b|(?i:\bgeneral ledger\b|\btrial balances?\b)"),
-    ("Budget", ("AOP", "annual operating plan"), r"\bAOP\b|(?i:\bannual operating plan\b)"),
-    ("Forecast", ("outlook", "latest estimate"), r"(?i)\boutlooks?\b|\blatest estimates?\b"),
+     r"\bERP (actuals|extract|file)s?\b|(?i:\bgeneral ledger\b|\btrial balances?\b)", ()),
+    ("Budget", ("AOP", "annual operating plan"), r"\bAOP\b|(?i:\bannual operating plan\b)", ()),
+    ("Forecast", ("outlook", "latest estimate"), r"(?i)\boutlooks?\b|\blatest estimates?\b", ()),
     ("entity", ("business unit", "subsidiary", "legal entity", "company code"),
-     r"(?i)\bbusiness units?\b|\bsubsidiar(y|ies)\b|\blegal entit(y|ies)\b|\bcompany codes?\b"),
+     r"(?i)\bbusiness units?\b|\bsubsidiar(y|ies)\b|\blegal entit(y|ies)\b|\bcompany codes?\b",
+     ()),
     ("account", ("GL account", "GL code", "nominal code", "nominal account"),
-     r"\bGL (accounts?|codes?)\b|(?i:\bnominal (codes?|accounts?)\b)"),
+     r"\bGL (accounts?|codes?)\b|(?i:\bnominal (codes?|accounts?)\b)", ()),
     ("period", ("time period", "fiscal period", "posting period"),
-     r"(?i)\b(time|fiscal|posting) periods?\b"),
+     r"(?i)\b(time|fiscal|posting) periods?\b", ()),
     ("presentation sign", ("reporting sign", "display sign", "natural sign"),
-     r"(?i)\b(reporting|display|natural) signs?\b"),
-    ("star schema", ("data mart",), r"(?i)\bdata marts?\b"),
+     r"(?i)\b(reporting|display|natural) signs?\b", ()),
+    ("star schema", ("data mart",), r"(?i)\bdata marts?\b", ()),
+    ("metric", ("KPI", "key performance indicator"),
+     r"\bKPIs?\b|(?i:\bkey performance indicators?\b)", PAGES),
 )
 
 
@@ -75,9 +94,14 @@ def _reader_files() -> list:
     return [p for p in files if p != GLOSSARY]      # the glossary lists them on purpose
 
 
-def _retired(text: str) -> list:
+def _kept(relative: str, places: tuple) -> bool:
+    return any(relative == p or (p.endswith("/") and relative.startswith(p)) for p in places)
+
+
+def _retired(text: str, relative: str = "") -> list:
     return [f"{', '.join(variants)} (say {term}): {m.group(0)!r}"
-            for term, variants, pattern in RETIRED for m in re.finditer(pattern, text)]
+            for term, variants, pattern, kept in RETIRED if not _kept(relative, kept)
+            for m in re.finditer(pattern, text)]
 
 
 def _rows() -> dict:
@@ -111,40 +135,59 @@ def _meanings() -> dict:
 class TestGlossary:
     def test_the_glossary_names_every_agreed_term(self):
         rows = _rows()
-        assert tuple(rows) == TERMS and len(TERMS) == 24
+        assert tuple(rows) == TERMS and len(TERMS) == 41
         for seed in ("batch", "break", "acknowledge", "promote", "plan", "Actual", "Budget",
                      "Forecast", "entity", "account", "period", "ledger"):
             assert seed in rows, seed
 
+    def test_the_governed_layers_seed_terms_are_named(self):
+        # The Phase 2 brief's seeds (section 7), with held and outcome beside them.
+        rows = _rows()
+        for seed in ("metric", "registry", "specification", "validate", "compile", "guard",
+                     "role", "session", "template", "coverage", "gap", "matched months",
+                     "closing value", "ratio of sums", "provenance"):
+            assert seed in rows, seed
+
     def test_each_term_lists_the_variants_it_retires(self):
         rows = _rows()
-        for term, variants, _ in RETIRED:
+        for term, variants, _, _ in RETIRED:
             listed = [v.strip() for v in rows[term].split(",") if v.strip()]
             assert listed == list(variants), term
-        assert {t for t, row in rows.items() if row.strip()} == {t for t, _, _ in RETIRED}
+        assert {t for t, row in rows.items() if row.strip()} == {t for t, _, _, _ in RETIRED}
 
     def test_no_retired_variant_in_text_a_reader_sees(self):
         found = [f"{path.relative_to(ROOT).as_posix()}:{line}: {hit}"
                  for path in _reader_files() for line, text in _reader_text(path)
-                 for hit in _retired(text)]
+                 for hit in _retired(text, path.relative_to(ROOT).as_posix())]
         found += [f"{path.relative_to(ROOT).as_posix()}:{line}: {hit}"
                   for path in sorted(ROOT.glob("tests/*.py")) if path.name != Path(__file__).name
                   for line, text in _reader_text(path, docs_only=True)
-                  for hit in _retired(text)]
+                  for hit in _retired(text, path.relative_to(ROOT).as_posix())]
         assert found == []
+
+    def test_the_places_that_keep_a_retired_variant_are_named_and_still_hold_it(self):
+        # Each kept place must still need its exception, or the exception goes.
+        kept = {p for _, _, _, places in RETIRED for p in places}
+        assert kept == {"docs/export_contract.md", "streamlit_app/", "scripts/shoot.py",
+                        "tests/test_theme.py"}
+        assert "| scenario | `version` |" in (ROOT / "docs" / "export_contract.md").read_text(
+            encoding="utf-8")
+        assert "KPI tile" in (ROOT / "streamlit_app" / "lib" / "theme.py").read_text(
+            encoding="utf-8")
 
     def test_each_pattern_fires_on_its_variant_and_not_on_the_term(self):
         for text in ("a new dataset", "the ERP extract", "a GL account", "the AOP",
                      "the latest estimate", "a business unit", "the fiscal period",
                      "the reporting sign", "a discrepancy", "she signed off the break",
                      "the batch goes live", "publish the batch", "the plan file", "a data mart",
-                     "a trial balance"):
+                     "a trial balance", "the scenario", "a KPI", "key performance indicators"):
             assert _retired(text), text
         for text in ("a batch", "the ledger extract", "an account", "the Budget",
                      "the Forecast", "an entity", "the period", "the presentation sign",
                      "a break", "she acknowledged the break", "the pair is promoted",
                      "the planning workbook", "the star schema", "the published figures",
-                     "the ledger sign", "file metadata", "a release of the app"):
+                     "the ledger sign", "file metadata", "a release of the app", "the version",
+                     "a metric", "a block labelled Scenario"):
             assert not _retired(text), text
 
     def test_the_four_entries_the_reviewer_worded(self):

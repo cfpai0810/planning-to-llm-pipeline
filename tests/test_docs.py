@@ -53,9 +53,10 @@ class TestTheExportContract:
 
     def test_no_page_for_any_one_tool(self):
         assert not (ROOT / "docs" / "mappings").exists()
+        # Part 2e adds the registry's rules and the governed layer.
         assert sorted(p.name for p in (ROOT / "docs").glob("*.md")) == [
-            "controls.md", "export_contract.md", "glossary.md", "rebuilding_the_sample.md",
-            "releasing.md"]
+            "controls.md", "export_contract.md", "glossary.md", "governed_layer.md",
+            "rebuilding_the_sample.md", "registry.md", "releasing.md"]
 
 
 class TestControlsAddsReconcileAndPromotion:
@@ -105,3 +106,121 @@ class TestThe1eDocs:
         assert len(quirks) == 2
         assert "260" in quirks[0] and "DuckDB" in quirks[0]
         assert "rm -rf" in quirks[1] and "Remove-Item" in quirks[1] and "uv" in quirks[1]
+
+
+# -- Part 2e: docs/registry.md and docs/governed_layer.md ------------------------------------------
+
+REGISTRY_DOC = ROOT / "docs" / "registry.md"
+GOVERNED = ROOT / "docs" / "governed_layer.md"
+
+
+class TestTheRegistryDoc:
+    def test_the_rules_of_4_2_are_stated_in_words(self):
+        text = flat(REGISTRY_DOC)
+        for phrase in ("Every question names one version: Actual, Budget or Forecast",
+                       "the ledger is not queried",
+                       "A period is a month (2026-06), a quarter (Q1 to Q4), the year to date "
+                       "through a month, or the fiscal year, FY2026",
+                       "Flows sum over the months of the window",
+                       "never summed across months",
+                       "the ratio of the sums, never an average of ratios",
+                       "32.0%, not 40%",
+                       "not meaningful",
+                       "no_data, never a zero",
+                       "prior_year_not_available",
+                       "Variance is the base less the comparator",
+                       "percentage points",
+                       "rounded half away from zero, in Python, once, where it is shown",
+                       "Revenue per unit is shown to two decimal places"):
+            assert phrase in text, phrase
+
+    def test_the_rulings_of_8_november_are_stated(self):
+        text = flat(REGISTRY_DOC)
+        # Q4: held per metric; Q5: matched by entity-month; Q7: the closing rule.
+        for phrase in ("held for a metric in a version when the entity has a figure for every "
+                       "account the metric reads: a zero is a figure, an empty cell is not",
+                       "from the first to the last month in which any entity in scope has any "
+                       "figure for the version",
+                       "matched by entity-month and per metric",
+                       "left out of the sum and listed as a gap; it never falls back to an "
+                       "earlier month",
+                       "each month or quarter has its own closing month"):
+            assert phrase in text, phrase
+
+    def test_the_approver_double_rounding_and_revenue_per_unit_sentences(self):
+        text = flat(REGISTRY_DOC)
+        assert ("The approver in the changelog, E. Marsh, Group Financial Controller, Calder "
+                "Foods Group, is a fictional holder of a role in the sample company.") in text
+        assert ("A displayed ratio is the twelve-place value rounded once more, to one place; "
+                "it can differ from rounding the exact quotient only when that quotient lies "
+                "within 5 times 10 to the minus 13 of a display tie.") in text
+        assert ("A variance percentage for revenue per unit would be a change of definition, "
+                "made only with a new registry version.") in text
+
+    def test_a_ratio_with_a_stock_operand_is_refused(self):
+        assert "a ratio with a stock operand" in flat(REGISTRY_DOC)
+
+    def test_the_metric_table_is_the_one_the_script_generates(self):
+        from scripts import registry_table
+        from src import registry
+        assert registry_table.block_of(REGISTRY_DOC.read_text(encoding="utf-8")) == \
+            registry_table.table(registry.load())
+
+    def test_the_table_names_every_metric_once(self):
+        from scripts import registry_table
+        from src import registry
+        loaded = registry.load()
+        table = registry_table.table(loaded)
+        rows = [line for line in table.splitlines() if line.startswith("| `")]
+        assert [r.split("`")[1] for r in rows] == list(loaded.ids())
+
+    def test_a_changed_registry_changes_the_table(self):
+        import copy
+        import tomllib
+
+        from scripts import registry_table
+        from src import registry
+        data = tomllib.loads((ROOT / "registry" / "metrics.toml").read_text(encoding="utf-8"))
+        changed = copy.deepcopy(data)
+        changed["metric"][0]["label"] = "Sales"
+        assert registry_table.table(registry.from_data(changed, sha256="0" * 64)) != \
+            registry_table.table(registry.from_data(data, sha256="0" * 64))
+
+
+class TestTheGovernedLayerDoc:
+    def test_the_control_and_the_second_line_are_said_plainly(self):
+        text = flat(GOVERNED)
+        for phrase in ("the read-only connection with external access off is the control; "
+                       "the guard is a second line; the allow-list of names narrows the "
+                       "injection route and does not close it",
+                       "v1 does not query the ledger",
+                       "does not answer prior-year questions"):
+            assert phrase in text, phrase
+
+    def test_the_session_roles_compiler_and_guard_are_described(self):
+        text = flat(GOVERNED)
+        for phrase in ("## Sessions and promotion", "## Roles", "## The compiler",
+                       "## The guard", "## Outcomes"):
+            assert phrase in GOVERNED.read_text(encoding="utf-8"), phrase
+        for phrase in ("one cursor per request", "entity view: AT",
+                       "That entity is not available to your role.", "fact_plan",
+                       "dim_entity", "exactly once", "byte for byte", "integer_route",
+                       "tests/guard_corpus.txt"):
+            assert phrase in text, phrase
+
+    def test_a_temp_object_on_one_cursor_is_explained(self):
+        text = flat(GOVERNED)
+        assert ("The read-only connection stops every change to the file, but not an object "
+                "in memory that lives as long as one cursor") in text
+        assert "CREATE TEMP TABLE" in text
+
+    def test_regions_under_an_entity_controller_are_explained(self):
+        text = flat(GOVERNED)
+        assert "Central Europe" in text and "Southern Europe" in text
+        assert "entity_not_permitted" in text
+
+    def test_every_outcome_is_listed_with_its_sentence(self):
+        from src import outcomes
+        text = flat(GOVERNED)
+        for code, sentence in outcomes.SENTENCES.items():
+            assert f"`{code}`" in text and sentence in text, code

@@ -17,8 +17,10 @@ the provenance of the session (src/session.py).
 
 build() makes an Answer from a compiled query and the rows the engine
 returned: the query's columns, then whether a row was found, the months held
-and the gaps (src/compiler.py). Nothing here rounds: a figure is rounded
-once, where it is shown.
+and the gaps (src/compiler.py). Nothing in an Answer is rounded: a figure is
+rounded once, in Python, where it is shown (part 2e, shown()), half away from
+zero: money in whole euros, a percentage to one place, percentage points to
+one place, revenue per unit to two places, a count of units or FTE as it is.
 
 This module imports neither the engine nor the query parser
 (tests/test_boundaries.py).
@@ -29,13 +31,13 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from src import outcomes
 from src.outcomes import Outcome
 
-__all__ = ["NOT_MEANINGFUL", "Answer", "Coverage", "build", "result_sha256"]
+__all__ = ["NOT_MEANINGFUL", "Answer", "Coverage", "build", "result_sha256", "shown"]
 
 NOT_MEANINGFUL = "not meaningful"
 COMPARED = {"budget": "Budget", "forecast": "Forecast"}
@@ -96,3 +98,28 @@ def build(compiled, validated, fetched: list, provenance: dict) -> Answer:
                   truncated=len(found) > limit, coverage=coverage, gaps=gaps,
                   outcome=None if found else outcomes.NO_DATA,
                   result_sha256=result_sha256(rows), provenance=provenance)
+
+
+# == Showing a figure (part 2e) ===================================================================
+
+def _rounded(value: Decimal, places: str) -> Decimal:
+    return value.quantize(Decimal(places), rounding=ROUND_HALF_UP)   # half away from zero
+
+
+def shown(text: str, unit: Optional[str]) -> str:
+    """A figure of an Answer's rows as a person reads it, rounded once, here: money in whole
+    euros, a percentage (a ratio held as a fraction) to one place, percentage points to one
+    place, euros per unit to two places, and a count (units, FTE) exact, with its unit."""
+    if text == NOT_MEANINGFUL:
+        return text
+    value = Decimal(text)
+    if unit == "EUR":
+        return f"{_rounded(value, '1'):,} EUR"
+    if unit == "%":
+        return f"{_rounded(value * 100, '0.1')}%"
+    if unit == "pp":
+        return f"{_rounded(value, '0.1')} pp"
+    if unit == "EUR per unit":
+        return f"{_rounded(value, '0.01')} EUR per unit"
+    exact = value.normalize() if value != value.to_integral_value() else _rounded(value, "1")
+    return f"{exact:,f}" + (f" {unit}" if unit else "")
