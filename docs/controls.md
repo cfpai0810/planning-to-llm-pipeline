@@ -758,6 +758,21 @@ in the warehouse (`gate_review`, `gate_break`, `gate_acknowledgement`,
 them. Acknowledgements are lost when the app restarts, because the warehouse
 is rebuilt at start. The audit trail of Phase 3 is the lasting record.
 
+**One visitor's session (part 2c).** The start-up build of Phase 2 is a template
+warehouse (`startup.build_template`): both pairs the Review page will offer, the
+sample workbook and the clean control workbook, each with the one committed
+ledger, landed once, each pair's breaks stored apart, nothing promoted, and the
+file left read-only on disk. A session (`src/session.py`) is one visitor's copy
+of it, opened read-only; acknowledging and promoting run as a write cycle (the
+read-only connection closed, a read-write one opened, the work done, closed,
+the read-only one reopened) under a lock no query runs through. So the
+acknowledgements, the promotion and the facts are the session's own: one
+visitor's promotion never changes another's answers, and a session with
+nothing promoted answers that nothing has been promoted yet. At most 20
+sessions are open in a process; one more closes the least recently used, and
+a session's folder is removed when it closes, when the process exits, and,
+for a folder a crashed process left, at the next start once it is a day old.
+
 ## The Control tab
 
 The workbook's own check cells are not read: the controls compute what they

@@ -185,14 +185,28 @@ def subprocess_env(**extra: str) -> dict:
 # controls and reconcile, the sample pair's breaks stored, the star schema
 # built with nothing promoted. Tests that only read open it; a test that
 # writes takes warehouse_copy (a copy of its file in the test's own folder) or
-# builds a small warehouse from small or in-memory sources. No other test
-# builds from the committed sources (tests/test_boundaries.py checks it).
+# builds a small warehouse from small or in-memory sources. Part 2c adds the
+# template warehouse, both pairs, built the same way once per session. No other
+# test builds from the committed sources (tests/test_boundaries.py checks it).
 
 @pytest.fixture(scope="session")
 def built_warehouse(tmp_path_factory):
     """The committed sample and ledger, built once per session; never written to."""
     from src import startup
     return startup.build_warehouse(tmp_path_factory.mktemp("session_warehouse"))
+
+
+@pytest.fixture(scope="session")
+def template(tmp_path_factory):
+    """The template warehouse of part 2c: both pairs from the committed sources, nothing
+    promoted, read-only on disk; built once per session and never written to. Its write bit
+    is given back at the end, so the folder can be removed."""
+    import stat
+
+    from src import startup
+    built = startup.build_template(tmp_path_factory.mktemp("template"))
+    yield built
+    os.chmod(built.path, stat.S_IWRITE | stat.S_IREAD)
 
 
 @pytest.fixture

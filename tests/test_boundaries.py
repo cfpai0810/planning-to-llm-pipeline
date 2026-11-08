@@ -104,7 +104,9 @@ class TestTheBoundaries:
 # Names on the duckdb module that open nothing: exception classes and types.
 DUCKDB_HARMLESS = re.compile(r"^duckdb\.(\w*(Error|Exception)|DuckDBPyConnection|__version__)$")
 PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "controls",
-            "reconcile", "promotion", "model", "startup")
+            "reconcile", "promotion", "model", "startup",
+            # Part 2c: the session, the roles and the outcomes stay out of the pages too.
+            "session", "roles", "outcomes")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -200,7 +202,8 @@ class TestTheWarehouseBoundary:
 
 # The functions that build a warehouse; a call that leaves the workbooks or the
 # ledger at their defaults builds from the committed sources.
-BUILDS = {"build_warehouse": ("workbook", "ledger")}
+BUILDS = {"build_warehouse": ("workbook", "ledger"),
+          "build_template": ("sample", "clean", "ledger")}
 
 
 def committed_builds(source: str) -> list[int]:
@@ -223,16 +226,19 @@ class TestTheSuitesWarehouse:
     def test_the_walker_finds_a_build_from_the_committed_sources(self):
         source = ("built = startup.build_warehouse(tmp_path)\n"
                   "small = startup.build_warehouse(tmp_path, workbook=a, ledger=b)\n"
-                  "half = build_warehouse(tmp_path, workbook=a)\n")
-        assert committed_builds(source) == [1, 3]
+                  "half = build_warehouse(tmp_path, workbook=a)\n"
+                  "template = startup.build_template(tmp_path)\n"
+                  "mine = startup.build_template(tmp_path, sample=a, clean=b, ledger=c)\n")
+        assert committed_builds(source) == [1, 3, 4]
 
     def test_only_the_session_fixture_builds_from_the_committed_sources(self):
-        # One session-scoped warehouse (tests/conftest.py); every other test
-        # reads it, copies its file, or builds a small warehouse of its own.
+        # One session-scoped warehouse and, since part 2c, one session-scoped template
+        # (tests/conftest.py); every other test reads them, copies their files, or builds
+        # a small warehouse of its own.
         found = {p.relative_to(ROOT).as_posix(): lines
                  for p in sorted((ROOT / "tests").glob("*.py"))
                  if (lines := committed_builds(p.read_text(encoding="utf-8")))}
-        assert list(found) == ["tests/conftest.py"] and len(found["tests/conftest.py"]) == 1
+        assert list(found) == ["tests/conftest.py"] and len(found["tests/conftest.py"]) == 2
 
 
 # -- Part 2b: pandas is a test tool, and the oracle stands apart ----------------------------------
@@ -294,3 +300,19 @@ class TestThePandasBoundary:
     def test_the_registry_imports_no_engine_and_no_data_library(self):
         names = imports_of((ROOT / "src" / "registry.py").read_text(encoding="utf-8"))
         assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot", "pandas")]
+
+
+
+# -- Part 2c: the session, the roles and the outcomes ----------------------------------------------
+
+class TestTheGovernedLayersBoundaries:
+    def test_roles_and_outcomes_import_neither_the_engine_nor_the_parser(self):
+        for name in ("roles", "outcomes"):
+            names = imports_of((ROOT / "src" / f"{name}.py").read_text(encoding="utf-8"))
+            assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot")], name
+
+    def test_the_session_reaches_duckdb_only_through_the_warehouse(self):
+        source = (ROOT / "src" / "session.py").read_text(encoding="utf-8")
+        assert duckdb_uses(source) == []
+        assert not [n for n in imports_of(source) if n.split(".")[0] in ("duckdb", "sqlglot")]
+        assert "warehouse.connect(" in source

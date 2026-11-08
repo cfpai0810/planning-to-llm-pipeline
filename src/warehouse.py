@@ -45,8 +45,12 @@ extension autoinstall and autoload off, community and unsigned extensions
 refused, external access off (no file but the database itself, so no
 read_csv, COPY or ATTACH) and the configuration locked, so that no SQL can
 switch any of it back on. tests/test_warehouse.py reads those settings back
-from DuckDB itself. The read-only connection factory of Phase 2 will sit
-beside connect().
+from DuckDB itself. Part 2c: connect() takes read_only, and a read-only
+connection can change nothing in the database (DuckDB refuses every statement
+that would), on top of those settings; a session queries through one
+(src/session.py). DuckDB refuses a read-write and a read-only connection to
+one file in one process, so a session that writes closes the one, opens the
+other, and opens the first again.
 
 The start-up build (src/startup.py) lands the committed sample workbook and
 the ledger, and nothing else: the clean workbook and the fixtures are landed
@@ -77,8 +81,12 @@ from src.long_format import LongFormatExtraction
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_WORKBOOK = ROOT / "data" / "planning_model.xlsx"
+CLEAN_WORKBOOK = ROOT / "data" / "planning_model_clean.xlsx"
 COMMITTED_LEDGER = ROOT / "data" / "erp_trial_balance.csv"
 DATABASE_NAME = "warehouse.duckdb"
+
+# The engine and its version, for an answer's provenance (part 2c).
+ENGINE, ENGINE_VERSION = "DuckDB", duckdb.__version__
 
 MONEY_DIGITS, MONEY_SCALE = 38, 12
 MONEY = f"DECIMAL({MONEY_DIGITS},{MONEY_SCALE})"
@@ -169,9 +177,12 @@ class AlreadyLanded:
     file_name: str
 
 
-def connect(path: Path | str) -> duckdb.DuckDBPyConnection:
-    """The one place DuckDB is opened: no extension downloads, no file but the database itself."""
-    return duckdb.connect(str(path), config=dict(SETTINGS))
+def connect(path: Path | str, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+    """The one place DuckDB is opened: no extension downloads, no file but the database itself.
+
+    read_only gives a connection that can change nothing in the database (part 2c).
+    """
+    return duckdb.connect(str(path), read_only=read_only, config=dict(SETTINGS))
 
 
 def create_tables(con: duckdb.DuckDBPyConnection) -> None:

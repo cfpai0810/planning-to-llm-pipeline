@@ -1951,9 +1951,9 @@ class TestNoCellInTwoBlocks:
     def test_names_same_range_is_one_break_naming_both_blocks(self):
         path = FIXTURES / "names_same_range.xlsx"
         (b,) = breaks(path)
-        assert located(b) == ("structure", "blocks_overlap", ("blocks_overlap", "anchor_disagreement"),
-                              "high", "Plan_ES", "Budget_ES", "ES", None, None, "C23:O35",
-                              OVERLAP_ES)
+        assert located(b) == (
+            "structure", "blocks_overlap", ("blocks_overlap", "anchor_disagreement"), "high",
+            "Plan_ES", "Budget_ES", "ES", None, None, "C23:O35", OVERLAP_ES)
         assert b.break_id == the_id("overlap", "Plan_ES", ["Budget_ES", "Forecast_ES"])
         assert dict(b.evidence) == {
             "blocks": "Budget_ES A22:O35; Forecast_ES A22:O35",
@@ -2254,9 +2254,9 @@ class TestAnEmptyUnitHeader:
             if b.name != "Budget_DE":
                 return b
             return dataclasses.replace(
-                b, header_problems=(HeaderProblem("missing", None, ("B",)),), columns=tuple(dataclasses.replace(c, header=None, role="missing",
-                                                     text_only=False)
-                                 if c.role == "unit" else c for c in b.columns),
+                b, header_problems=(HeaderProblem("missing", None, ("B",)),),
+                columns=tuple(dataclasses.replace(c, header=None, role="missing", text_only=False)
+                              if c.role == "unit" else c for c in b.columns),
                 lines=tuple(dataclasses.replace(l, unit=None) for l in b.lines))
         found = controls.structure(with_blocks(base, no_unit)).breaks
         assert [(b.kind, b.address) for b in found] == [("header_not_found", "B22"),

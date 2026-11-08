@@ -14,6 +14,10 @@ DATA_DIR = ROOT / "data"
 GENERATED_DIR = ROOT / "generated"
 
 APP_TITLE = "Planning-to-Warehouse-to-LLM Pipeline"
+
+# The most sessions (src/session.py) a process keeps open; one more closes the
+# least recently used (part 2c).
+MAX_SESSIONS = 20
 REPO_URL = "https://github.com/cfpai0810/planning-to-llm-pipeline"
 
 # -- The model ----------------------------------------------------------------

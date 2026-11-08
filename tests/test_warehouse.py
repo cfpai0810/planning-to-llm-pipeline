@@ -529,3 +529,91 @@ class TestAppendOnly:
         for statement in ("INSERT INTO raw_batch VALUES (?)", "SELECT * FROM raw_plan_cell",
                           "UPDATE dim_account SET x = 1", "no row of a raw table is updated"):
             assert not CHANGES_A_RAW_ROW.search(statement), statement
+
+
+# -- Part 2c: one connection function, read-only when asked (the reviewer's brief 5.1) ----------
+# connect(path, *, read_only=False) is still the one place DuckDB is opened
+# (tests/test_boundaries.py). On a read-only connection the settings read back from DuckDB are
+# the project's, and each statement below fails for the reason it tests: a change to the
+# database because the database is read-only, a change to the configuration because it is
+# locked, and any file outside the database because external access is off. Each error is
+# asserted by its class and its text, so a missing file can never pass for a refusal: the CSV
+# read is a committed file that exists, and the COPY aims inside the test's own folder.
+
+READ_ONLY_REFUSALS = {
+    "INSERT": ("INSERT INTO gate_review VALUES ('x', 'y', 0)", "InvalidInputException",
+               'Cannot execute statement of type "INSERT"', "read-only mode"),
+    "CREATE": ("CREATE TABLE note (a INTEGER)", "InvalidInputException",
+               'Cannot execute statement of type "CREATE"', "read-only mode"),
+    "DROP": ("DROP TABLE dim_time", "InvalidInputException",
+             'Cannot execute statement of type "DROP"', "read-only mode"),
+    "SET": ("SET enable_external_access = true", "InvalidInputException",
+            'Cannot change configuration option "enable_external_access"',
+            "the configuration has been locked"),
+    "ATTACH": ("ATTACH '{folder}/other.duckdb' AS other", "PermissionException",
+               "Cannot access file", "file system operations are disabled by configuration"),
+    "read_csv": ("SELECT * FROM read_csv('{ledger}')", "PermissionException",
+                 "Cannot access file", "file system operations are disabled by configuration"),
+    "COPY TO": ("COPY dim_time TO '{folder}/out.csv'", "PermissionException",
+                "Cannot access file", "file system operations are disabled by configuration"),
+    "INSTALL": ("INSTALL httpfs", "PermissionException", "Cannot access directory",
+                "file system operations are disabled by configuration"),
+}
+
+
+@pytest.fixture
+def read_only(built_warehouse, tmp_path, warehouse):
+    """A read-only connection to a copy of the session warehouse, in this test's folder."""
+    import shutil
+    copy = tmp_path / "copy.duckdb"
+    shutil.copyfile(built_warehouse.path, copy)
+    con = warehouse.connect(copy, read_only=True)
+    yield con
+    con.close()
+
+
+class TestTheReadOnlyConnection:
+    def test_the_settings_read_back_from_duckdb(self, read_only, warehouse):
+        for name, value in warehouse.SETTINGS.items():
+            assert read_only.execute(f"SELECT current_setting('{name}')").fetchone() == (value,), \
+                name
+        assert read_only.execute("SELECT current_setting('access_mode')").fetchone() == (
+            "read_only",)
+
+    def test_the_default_is_read_write(self, tmp_path, warehouse):
+        with warehouse.connect(tmp_path / "w.duckdb") as con:
+            assert con.execute("SELECT current_setting('access_mode')").fetchone() == (
+                "automatic",)
+
+    @pytest.mark.parametrize("what", list(READ_ONLY_REFUSALS))
+    def test_each_statement_fails_for_the_reason_it_tests(self, read_only, tmp_path, what):
+        sql, kind, first, reason = READ_ONLY_REFUSALS[what]
+        assert LEDGER.is_file()                      # it exists: only the setting can refuse
+        sql = sql.format(folder=tmp_path.as_posix(), ledger=LEDGER.as_posix())
+        with pytest.raises(Exception) as caught:
+            read_only.execute(sql)
+        assert type(caught.value).__name__ == kind
+        text = str(caught.value)
+        assert first in text and reason in text, text
+        assert not (tmp_path / "out.csv").exists() and not (tmp_path / "other.duckdb").exists()
+
+    @pytest.mark.parametrize("what", ["INSERT", "CREATE", "DROP"])
+    def test_the_same_change_runs_on_a_read_write_connection(self, built_warehouse, tmp_path,
+                                                              warehouse, what):
+        # So the read-only mode, and nothing in the statement itself, is what refused it.
+        import shutil
+        copy = tmp_path / "rw.duckdb"
+        shutil.copyfile(built_warehouse.path, copy)
+        with warehouse.connect(copy) as con:
+            con.execute(READ_ONLY_REFUSALS[what][0])
+
+    def test_a_second_connection_in_another_mode_is_refused(self, built_warehouse, tmp_path,
+                                                             warehouse):
+        import shutil
+
+        import duckdb
+        copy = tmp_path / "two.duckdb"
+        shutil.copyfile(built_warehouse.path, copy)
+        with warehouse.connect(copy):
+            with pytest.raises(duckdb.ConnectionException, match="different configuration"):
+                warehouse.connect(copy, read_only=True)
