@@ -29,6 +29,18 @@ That every parent or account named is on the committed Lists, and that a
 sum's units, kinds and polarity agree with the accounts it sums, are checked
 by tests against the sample, never here.
 
+A ratio's operands (part 2d1, the reviewer's verdict of 8 November, Q1 and
+F18). A ratio with a stock operand is refused in v1, as average is: a sum
+over the months against a closing value has no agreed meaning. A metric
+operand is judged by its registry kind, at every load; a ratio of a ratio is
+refused too. An inline sum is judged by the kind on Lists of the accounts it
+sums, which the loader takes from the accounts it is given: plain data, each
+account code with its parent and its kind (load(accounts=...)). Given them,
+the loader refuses an inline sum that names no account or accounts of more
+than one kind, and gives the inline Sum its kind (flow or stock). This module
+still reads no workbook and opens no database: the tests pass the committed
+Lists, and a session passes its promoted pair's dim_account.
+
 The version lock. registry/registry.lock.json holds the registry version and
 a SHA-256 of each metric's canonical definition: the JSON of its table with
 sorted keys, separators "," and ":", ensure_ascii off, encoded in UTF-8.
@@ -44,7 +56,8 @@ import hashlib
 import json
 import re
 import tomllib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -84,9 +97,14 @@ class RegistryError(Exception):
 
 @dataclass(frozen=True)
 class Sum:
-    """The accounts on Lists with this parent, or the one account with this code."""
+    """The accounts on Lists with this parent, or the one account with this code.
+
+    kind is a ratio's inline operand's kind on Lists (flow or stock), set when the loader
+    is given the accounts; None otherwise, and always None for a metric's own formula.
+    """
     parent: Optional[str] = None
     account: Optional[str] = None
+    kind: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -147,18 +165,23 @@ class Registry:
 
 # == Reading ===========================================================================
 
-def load(path: Path | str = REGISTRY) -> Registry:
-    """The registry file, read and validated."""
-    return parse(Path(path).read_bytes())
+def load(path: Path | str = REGISTRY, *, accounts: Optional[Mapping] = None) -> Registry:
+    """The registry file, read and validated.
+
+    accounts, when given, is plain data: {account code: (parent, kind)}, the kind Flow or
+    Stock as Lists gives it (any case), the parent None for a line with none. The loader
+    then checks each inline sum of a ratio against them and takes its kind from them.
+    """
+    return parse(Path(path).read_bytes(), accounts=accounts)
 
 
-def parse(data: bytes) -> Registry:
+def parse(data: bytes, *, accounts: Optional[Mapping] = None) -> Registry:
     """A registry from the bytes of its file; its hash is the SHA-256 of those bytes."""
     try:
         tables = tomllib.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise RegistryError(f"the registry is not valid TOML: {error}") from None
-    return from_data(tables, sha256=hashlib.sha256(data).hexdigest())
+    return from_data(tables, sha256=hashlib.sha256(data).hexdigest(), accounts=accounts)
 
 
 def _fields(table, allowed: tuple, required: tuple, what: str) -> None:
@@ -317,6 +340,60 @@ def _check_graph(metrics: tuple) -> None:
                 raise RegistryError(f"metric {m.id!r}: a difference of metrics of another kind")
 
 
+NO_STOCK = ("a ratio with a stock operand is not in v1 (a sum over the months against a "
+            "closing value has no agreed meaning)")
+
+
+def _inline(operand: Sum) -> str:
+    return (f"an inline sum of account {operand.account}" if operand.account is not None
+            else f"an inline sum of parent {operand.parent}")
+
+
+def _operand_kind(metric_id: str, side: str, operand: Sum, accounts: Mapping) -> Sum:
+    """The inline sum with its kind on Lists; refused when it names no account, accounts of
+    more than one kind, or a stock."""
+    if operand.account is not None:
+        kinds = [accounts[operand.account][1]] if operand.account in accounts else []
+    else:
+        kinds = [kind for code, (parent, kind) in accounts.items() if parent == operand.parent]
+    what = f"metric {metric_id!r}: the {side}, {_inline(operand)},"
+    if not kinds:
+        raise RegistryError(f"{what} names no account on Lists")
+    found = sorted({str(kind).strip().lower() for kind in kinds})
+    if len(found) != 1:
+        raise RegistryError(f"{what} sums accounts of more than one kind on Lists")
+    if found[0] == "stock":
+        raise RegistryError(f"{what} is a stock on Lists; {NO_STOCK}")
+    return Sum(operand.parent, operand.account, found[0])
+
+
+def _check_ratios(metrics: tuple, accounts: Optional[Mapping]) -> tuple:
+    """Refuses a stock operand (F18) and a ratio of a ratio; with accounts, gives each inline
+    sum its kind on Lists. The metrics, with their inline operands' kinds."""
+    by_id = {m.id: m for m in metrics}
+    checked = []
+    for m in metrics:
+        if not isinstance(m.formula, Ratio):
+            checked.append(m)
+            continue
+        operands = []
+        for side, operand in (("numerator", m.formula.numerator),
+                              ("denominator", m.formula.denominator)):
+            if isinstance(operand, str):
+                kind = by_id[operand].kind
+                if kind == "stock":
+                    raise RegistryError(f"metric {m.id!r}: the {side} {operand!r} is a stock; "
+                                        f"{NO_STOCK}")
+                if kind == "ratio":
+                    raise RegistryError(f"metric {m.id!r}: the {side} {operand!r} is a ratio; "
+                                        "a ratio of a ratio is not in v1")
+            elif accounts is not None:
+                operand = _operand_kind(m.id, side, operand, accounts)
+            operands.append(operand)
+        checked.append(replace(m, formula=Ratio(*operands)))
+    return tuple(checked)
+
+
 def _change(table, number: int) -> Change:
     what = f"changelog entry {number}"
     _fields(table, CHANGE_FIELDS, CHANGE_FIELDS, what)
@@ -329,8 +406,9 @@ def _change(table, number: int) -> Change:
     return Change(version, when, _text(table, "change", what), _text(table, "approved_by", what))
 
 
-def from_data(data: dict, sha256: str) -> Registry:
-    """A registry from its parsed tables, validated; sha256 is the file's hash."""
+def from_data(data: dict, sha256: str, *, accounts: Optional[Mapping] = None) -> Registry:
+    """A registry from its parsed tables, validated; sha256 is the file's hash; accounts as
+    load() takes them."""
     _fields(data, TOP_FIELDS, TOP_FIELDS, "the registry")
     version = _text(data, "version", "the registry")
     if not VERSION.match(version):
@@ -343,6 +421,7 @@ def from_data(data: dict, sha256: str) -> Registry:
     if not metrics:
         raise RegistryError("the registry: it defines no metric")
     _check_graph(metrics)
+    metrics = _check_ratios(metrics, accounts)
     return Registry(version, _text(data, "owner", "the registry"),
                     _text(data, "unit_system", "the registry"), changes, metrics, sha256)
 

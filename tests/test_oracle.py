@@ -359,3 +359,159 @@ class TestTheGrid:
         assert oracle.percent(Decimal("-0.12350")) == "-12.4%"
         assert oracle.euros(Decimal("1234567")) == "1,234,567"
         assert oracle.per_unit(Decimal("3.455000000000")) == "3.46"
+
+
+# -- Part 2d1: held per metric, the closing rule, and the committed file unchanged -------------
+# The reviewer's verdict of 8 November, Q4 and Q7. An entity-month is held for a metric in a
+# version when the entity has a figure for every account the metric reads (a zero is a
+# figure, an empty cell is not); the version's held range is as built (any figure, on lines
+# that are not subtotals). A stock's closing month is the last month of the window (or of a
+# month or quarter bucket) in which any permitted entity holds it; an entity that does not
+# hold that month is left out of the sum and listed as a gap, never filled from an earlier
+# month. Every expected figure below is written by hand, never computed by the oracle.
+
+# Two entities, three months; each line the same in every month but headcount.
+FIGURES = {"4000": 100, "4100": 10, "5000": 30, "5100": 5, "5200": 5, "6000": 20, "6100": 4,
+           "6200": 3, "6300": 2, "VOL": 50}
+PARENTS = {"4000": "Revenue", "4100": "Revenue", "5000": "Cost of sales",
+           "5100": "Cost of sales", "5200": "Cost of sales", "6000": "Operating expenses",
+           "6100": "Operating expenses", "6200": "Operating expenses",
+           "6300": "Operating expenses", "VOL": "", "HC": ""}
+Q1 = ("2026-01", "2026-02", "2026-03")
+HEADCOUNT = {"A": (10, 11, 12), "B": (20, 21, 22)}
+# The Forecast differs from the Budget in Product sales alone: A 120, B 210.
+FORECAST_4000 = {"A": 120, "B": 210}
+
+
+def partial_rows(version: str, blank=(), zero=()) -> list:
+    """(version, entity, region, account, parent, period, amount) for A (North) and B (South,
+    every figure doubled); blank and zero hold (entity, account, period) to leave out or
+    set to 0."""
+    rows = []
+    for entity, region, factor in (("A", "North", 1), ("B", "South", 2)):
+        for i, period in enumerate(Q1):
+            figures = {code: amount * factor for code, amount in FIGURES.items()}
+            if version == "Forecast":
+                figures["4000"] = FORECAST_4000[entity]
+            figures["HC"] = HEADCOUNT[entity][i]
+            for code, amount in figures.items():
+                if (entity, code, period) in blank:
+                    continue
+                if (entity, code, period) in zero:
+                    amount = 0
+                rows.append((version, entity, region, code, PARENTS[code], period, str(amount)))
+    return rows
+
+
+def answer(oracle, rows, metric, version="Budget", entities="group", group_by="none",
+           comparison="none", period=("quarter", "Q1")):
+    return oracle.ask(oracle.prepare(oracle.frame_from(rows)), metric, version, entities,
+                      period, group_by, comparison)
+
+
+D = Decimal
+
+
+class TestThePartialMonthFrame:
+    def test_a_blank_materials_is_a_gap_for_what_reads_it_and_nothing_else(self, oracle):
+        rows = partial_rows("Budget", blank={("A", "5000", "2026-02")})
+        gap = (("A", "2026-02"),)
+        expected = {
+            # metric: (value, gaps)
+            "revenue": (D(990), ()),
+            "cost_of_sales": (D(320), gap),
+            "gross_profit": (D(560), gap),
+            "operating_expenses": (D(261), ()),
+            "ebit": (D(328), gap),
+            "gross_margin_pct": (D("0.636363636364"), gap),
+            "ebit_margin_pct": (D("0.372727272727"), gap),
+            "marketing_pct_of_revenue": (D("0.036363636364"), ()),
+            "volume": (D(450), ()),
+            "revenue_per_unit": (D("2.200000000000"), ()),
+            "headcount": (D(34), ()),
+        }
+        for metric, (value, gaps) in expected.items():
+            a = answer(oracle, rows, metric)
+            assert (a.outcome, [r.value for r in a.rows], a.gaps) == ("ok", [value], gaps), metric
+            assert a.months_held == Q1, metric
+
+    def test_a_zero_materials_is_a_figure_held_with_no_gap(self, oracle):
+        rows = partial_rows("Budget", zero={("A", "5000", "2026-02")})
+        for metric, value in (("cost_of_sales", D(330)), ("gross_profit", D(660)),
+                              ("gross_margin_pct", D("0.666666666667"))):
+            a = answer(oracle, rows, metric)
+            assert ([r.value for r in a.rows], a.gaps) == ([value], ()), metric
+
+    def test_a_blank_headcount_in_the_closing_month_is_left_out_and_listed(self, oracle):
+        rows = partial_rows("Budget", blank={("B", "HC", "2026-03")})
+        gap = (("B", "2026-03"),)
+        group = answer(oracle, rows, "headcount")
+        # A's 12 alone: B is left out, never filled from its February 21.
+        assert ([r.value for r in group.rows], group.gaps, group.closing) == (
+            [D(12)], gap, "2026-03")
+        by_entity = answer(oracle, rows, "headcount", group_by="entity")
+        assert ([(r.group, r.value) for r in by_entity.rows], by_entity.gaps) == (
+            [("A", D(12))], gap)
+        by_region = answer(oracle, rows, "headcount", group_by="region")
+        assert [(r.group, r.value) for r in by_region.rows] == [("North", D(12))]
+        by_month = answer(oracle, rows, "headcount", group_by="month")
+        assert [(r.group, r.value) for r in by_month.rows] == [
+            ("2026-01", D(30)), ("2026-02", D(32)), ("2026-03", D(12))]
+        by_quarter = answer(oracle, rows, "headcount", group_by="quarter")
+        assert [(r.group, r.value) for r in by_quarter.rows] == [("Q1", D(12))]
+        # B asked alone closes on its own last held month; March is its gap.
+        alone = answer(oracle, rows, "headcount", entities="B")
+        assert ([r.value for r in alone.rows], alone.gaps, alone.closing) == (
+            [D(21)], gap, "2026-02")
+        # The other metrics read no HC: B's March is held for them.
+        for metric in ("revenue", "volume", "ebit"):
+            assert answer(oracle, rows, metric).gaps == (), metric
+
+    def test_a_comparison_where_only_one_version_holds_an_entity_month(self, oracle):
+        march = {("A", code, "2026-03") for code in PARENTS}
+        rows = partial_rows("Budget") + partial_rows("Forecast", blank=march)
+        a = answer(oracle, rows, "revenue", comparison="forecast")
+        (row,) = a.rows
+        assert (row.value, row.comparator, row.variance, row.variance_pct, row.label) == (
+            D(880), D(950), D(-70), D("-0.073684210526"), "adverse")
+        assert (a.months_held, a.gaps) == (Q1, (("A", "2026-03"),))
+
+    def test_a_month_the_comparator_does_not_hold_at_all_is_not_a_gap(self, oracle):
+        march = {(e, code, "2026-03") for e in ("A", "B") for code in PARENTS}
+        rows = partial_rows("Budget") + partial_rows("Forecast", blank=march)
+        a = answer(oracle, rows, "revenue", comparison="forecast")
+        (row,) = a.rows
+        assert (row.value, row.comparator, row.variance, row.variance_pct) == (
+            D(660), D(720), D(-60), D("-0.083333333333"))
+        assert (a.months_held, a.gaps) == (("2026-01", "2026-02"), ())
+
+    def test_months_are_matched_per_metric(self, oracle):
+        rows = partial_rows("Budget") + partial_rows("Forecast",
+                                                     blank={("A", "5000", "2026-02")})
+        cost = answer(oracle, rows, "cost_of_sales", comparison="forecast")
+        (row,) = cost.rows
+        assert (row.value, row.comparator, row.variance, row.variance_pct, row.label) == (
+            D(320), D(320), D(0), D(0), "no variance")
+        assert cost.gaps == (("A", "2026-02"),)
+        revenue = answer(oracle, rows, "revenue", comparison="forecast")
+        (row,) = revenue.rows
+        assert (row.value, row.comparator, row.variance, row.variance_pct) == (
+            D(990), D(1080), D(-90), D("-0.083333333333"))
+        assert revenue.gaps == ()
+
+
+# The committed file as part 2b wrote it and the reviewer recomputed it (verdict, section 2).
+CSV_SHA256 = "915930c45abdc8824515ba18c035b9447599c5b15e27745b8f457c3b4290c18e"
+
+
+class TestTheCommittedFileUnchanged:
+    def test_the_committed_csv_is_byte_for_byte_the_reviewed_file(self):
+        import hashlib
+        assert hashlib.sha256(EXPECTED.read_bytes()).hexdigest() == CSV_SHA256
+
+    def test_the_stricter_rules_render_the_same_bytes(self, oracle):
+        # The clean pair has no blank, and the sample's one empty entity-month inside a held
+        # range (AT May Actual) has all eleven lines empty: the stricter held rule and the
+        # closing rule change no answer of the grid.
+        import hashlib
+        assert hashlib.sha256(oracle.render().encode("utf-8")).hexdigest() == CSV_SHA256

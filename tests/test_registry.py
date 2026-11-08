@@ -448,3 +448,104 @@ class TestTheLockScript:
         copies[1].write_text(json.dumps(lock), encoding="utf-8", newline="\n")
         status, out = self.run(script, copies, capsys)
         assert status == 1 and "refused" in out
+
+
+# -- Part 2d1: a ratio's operands (the reviewer's verdict of 8 November, Q1 and F18) ------------
+# A ratio operand is a metric id or an inline sum. The loader refuses a stock operand in any
+# ratio: a metric operand by its registry kind, at every load; an inline sum by the kind on
+# Lists of the accounts it sums, when the loader is given the accounts (plain data: each
+# code's parent and kind). The tests pass the committed Lists; the session passes the
+# promoted pair's dim_account. A ratio of a ratio is not in v1 either.
+
+def lists_accounts(lists) -> dict:
+    """The committed Lists as the loader takes them: code -> (parent, kind)."""
+    return {a.code: (a.parent, a.kind) for a in lists.accounts if a.code}
+
+
+class TestARatiosOperands:
+    def test_revenue_over_headcount_is_refused(self, registry):
+        data = copy.deepcopy(raw())
+        _m(data, "revenue_per_unit")["formula"].update(denominator="headcount")
+        with pytest.raises(registry.RegistryError) as refused:
+            registry.from_data(data, sha256="0" * 64)
+        assert str(refused.value) == (
+            "metric 'revenue_per_unit': the denominator 'headcount' is a stock; a ratio with "
+            "a stock operand is not in v1 (a sum over the months against a closing value has "
+            "no agreed meaning)")
+
+    def test_a_stock_numerator_is_refused_too(self, registry):
+        data = copy.deepcopy(raw())
+        _m(data, "ebit_margin_pct")["formula"].update(numerator="headcount")
+        with pytest.raises(registry.RegistryError, match="the numerator 'headcount' is a stock"):
+            registry.from_data(data, sha256="0" * 64)
+
+    def test_an_inline_sum_of_hc_in_a_ratio_is_refused(self, registry, lists):
+        data = copy.deepcopy(raw())
+        _m(data, "marketing_pct_of_revenue")["formula"].update(
+            numerator={"type": "sum", "account": "HC"})
+        with pytest.raises(registry.RegistryError) as refused:
+            registry.from_data(data, sha256="0" * 64, accounts=lists_accounts(lists))
+        assert str(refused.value) == (
+            "metric 'marketing_pct_of_revenue': the numerator, an inline sum of account HC, "
+            "is a stock on Lists; a ratio with a stock operand is not in v1 (a sum over the "
+            "months against a closing value has no agreed meaning)")
+
+    def test_marketing_pct_of_revenue_loads_with_its_6100_operand_a_flow(self, registry, lists):
+        loaded = registry.load(accounts=lists_accounts(lists))
+        formula = loaded.metric("marketing_pct_of_revenue").formula
+        assert formula == registry.Ratio(registry.Sum(account="6100", kind="flow"), "revenue")
+        assert formula.numerator.kind == "flow"
+
+    def test_the_committed_registry_loads_with_the_committed_lists(self, registry, lists):
+        with_lists = registry.load(accounts=lists_accounts(lists))
+        plain = registry.load()
+        assert with_lists.ids() == plain.ids() and with_lists.sha256 == plain.sha256
+        # Only the inline operand gains its kind; every other formula is the same.
+        assert [m for m in with_lists.metrics if m.id != "marketing_pct_of_revenue"] == [
+            m for m in plain.metrics if m.id != "marketing_pct_of_revenue"]
+        assert plain.metric("marketing_pct_of_revenue").formula.numerator.kind is None
+
+    def test_an_inline_sum_by_parent_takes_the_kind_of_its_accounts(self, registry, lists):
+        data = copy.deepcopy(raw())
+        _m(data, "marketing_pct_of_revenue")["formula"].update(
+            numerator={"type": "sum", "parent": "Operating expenses"})
+        loaded = registry.from_data(data, sha256="0" * 64, accounts=lists_accounts(lists))
+        assert loaded.metric("marketing_pct_of_revenue").formula.numerator == registry.Sum(
+            parent="Operating expenses", kind="flow")
+
+    def test_an_inline_sum_that_names_no_account_on_lists_is_refused(self, registry, lists):
+        data = copy.deepcopy(raw())
+        _m(data, "marketing_pct_of_revenue")["formula"].update(
+            numerator={"type": "sum", "account": "6150"})
+        with pytest.raises(registry.RegistryError) as refused:
+            registry.from_data(data, sha256="0" * 64, accounts=lists_accounts(lists))
+        assert str(refused.value) == ("metric 'marketing_pct_of_revenue': the numerator, an "
+                                      "inline sum of account 6150, names no account on Lists")
+
+    def test_an_inline_sum_of_accounts_of_two_kinds_is_refused(self, registry):
+        data = copy.deepcopy(raw())
+        _m(data, "marketing_pct_of_revenue")["formula"].update(
+            numerator={"type": "sum", "parent": "Mixed"})
+        accounts = {"4000": ("Revenue", "Flow"), "4100": ("Revenue", "Flow"),
+                    "6100": ("Mixed", "Flow"), "HC": ("Mixed", "Stock")}
+        with pytest.raises(registry.RegistryError, match="more than one kind"):
+            registry.from_data(data, sha256="0" * 64, accounts=accounts)
+
+    def test_a_ratio_of_a_ratio_is_refused(self, registry):
+        data = copy.deepcopy(raw())
+        _m(data, "ebit_margin_pct")["formula"].update(numerator="gross_margin_pct")
+        with pytest.raises(registry.RegistryError) as refused:
+            registry.from_data(data, sha256="0" * 64)
+        assert str(refused.value) == (
+            "metric 'ebit_margin_pct': the numerator 'gross_margin_pct' is a ratio; a ratio "
+            "of a ratio is not in v1")
+
+    def test_the_accounts_are_plain_data_and_the_loader_opens_nothing(self, registry, lists):
+        accounts = lists_accounts(lists)
+        # A line with no parent on Lists (a subtotal or a statistic) has None.
+        assert all(isinstance(code, str) and (parent is None or isinstance(parent, str))
+                   and isinstance(kind, str) for code, (parent, kind) in accounts.items())
+        assert accounts["GP"][0] is None and accounts["VOL"][0] is None
+        assert accounts["6100"] == ("Operating expenses", "Flow") and accounts["HC"][1] == "Stock"
+        source = (ROOT / "src" / "registry.py").read_text(encoding="utf-8")
+        assert "openpyxl" not in source and "connect(" not in source

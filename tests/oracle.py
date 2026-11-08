@@ -20,28 +20,35 @@ The ledger is not read: "Actual" is the workbook's Actual block (rule 1).
 
 The rules (brief 4.2), with the coordinator's leans where the brief left a choice:
 - Periods: a month, a quarter, the year to date through June, or FY2026.
-- Held. An entity-month is held for a version when the entity has at least one figure for
-  that version and month among the lines the registry reads: the leaf accounts, VOL and
-  HC (the subtotal rows are never read). The held range runs from the first to the last
-  month any permitted entity holds for the version. A gap is an entity-month inside the
-  held range that the entity does not hold; a month after the last held month is not held,
-  not a gap. A window with no held month is the outcome no_data, never a zero.
+- Held, per metric (the reviewer's verdict of 8 November, Q4). An entity-month is held for
+  a metric in a version when the entity has a figure for every account the metric reads:
+  a zero is a figure, an empty cell is not. Revenue reads 4000 and 4100, cost of sales
+  5000, 5100 and 5200, operating expenses 6000 to 6300, volume VOL, headcount HC; a
+  difference or a ratio reads the accounts of its parts, so gross profit reads five, EBIT
+  all nine, marketing % of revenue 6100, 4000 and 4100, revenue per unit 4000, 4100 and
+  VOL. The subtotal rows are never read. The version's held range is as built: from the
+  first to the last month in which any permitted entity has any figure for the version on
+  a line that is not a subtotal. A gap for a metric is an entity-month inside that range
+  and inside the window that is not held for the metric; a month after the last held
+  month is not held, not a gap. A window with no held month is the outcome no_data, never
+  a zero.
 - Flows sum over the held entity-months of the window. A difference is the first metric
   less the others. A ratio is the ratio of the sums, never an average of ratios: the
   exact quotient, quantised to 12 places with ROUND_HALF_UP (ties away from zero), held
   as a fraction (0.32 is 32.0%); a zero denominator gives "not meaningful".
-- A stock (headcount) takes its closing value: the last month of the window that the
-  version holds, across the permitted entities, summed across them; an entity with no
-  figure in that month is a gap and is never filled from an earlier month. Grouped by
-  month or quarter, each month or quarter closes on its own; grouped by entity or region,
-  the window's closing month is used for every row.
+- A stock (headcount) takes its closing value: the last month of the window in which any
+  permitted entity holds it (with a comparison, the last matched month), summed across
+  the entities that hold that month (Q7). An entity that does not hold the closing month
+  is left out of the sum and listed as a gap; it is never filled from an earlier month.
+  Grouped by month or quarter, each month or quarter closes on its own, by the same rule;
+  grouped by entity or region, the window's closing month is used for every row.
 - Grouping: a grouped row with no held month is left out of the rows (its gap is listed),
   and a missing row is never a zero. Rows come in list order for entities, regions and
   accounts, and in time order for months and quarters.
-- Comparisons match by entity-month (the lean, question 5): both sides sum only the
-  entity-months both versions hold, so a gap is left out of both, and months_held is the
-  months both hold. A stock compares closing values at the last matched month. With a
-  month or quarter grouping only matched months appear.
+- Comparisons match by entity-month (question 5) and per metric: both sides sum only the
+  entity-months both versions hold for the metric, so a gap is left out of both, and
+  months_held is the months both hold. A stock compares closing values at the last
+  matched month. With a month or quarter grouping only matched months appear.
 - Variance is base less comparator. The label follows the metric's polarity:
   favourable, adverse, or no variance at zero; headcount is ungraded and has no label.
   The variance percentage is the variance over the absolute comparator, quantised as a
@@ -207,9 +214,10 @@ class Data:
     entities: tuple                   # in list order
     region: dict                      # entity -> region
     accounts: dict                    # parent -> its accounts, in list order
-    held: dict                        # version -> the (entity, month) pairs it holds
+    held: dict                        # version -> the (entity, month) pairs with any figure
     figures: dict                     # (version, entity, month, key) -> Decimal
     coverage: dict                    # a cache of each question's coverage
+    present: dict                     # version -> {(entity, month): the accounts with a figure}
 
 
 def prepare(frame: pandas.DataFrame) -> Data:
@@ -223,9 +231,11 @@ def prepare(frame: pandas.DataFrame) -> Data:
         if parent:
             accounts.setdefault(parent, []).append(account)
     held = {v: set() for v in VERSIONS}
-    for version, entity, period in read[["version", "entity", "period"]].drop_duplicates(
-            ).itertuples(index=False):
+    present: dict = {v: {} for v in VERSIONS}
+    for version, entity, period, account in read[["version", "entity", "period",
+                                                  "account"]].itertuples(index=False):
         held[version].add((entity, period))
+        present[version].setdefault((entity, period), set()).add(account)
     figures = {}
     by_parent = read[read["parent"] != ""].groupby(["version", "entity", "period", "parent"],
                                                    sort=False)["amount"].sum()
@@ -236,7 +246,26 @@ def prepare(frame: pandas.DataFrame) -> Data:
     for (version, entity, period, account), amount in by_account.items():
         figures[(version, entity, period, ("account", account))] = amount
     return Data(entities, region, {p: tuple(a) for p, a in accounts.items()},
-                {v: frozenset(s) for v, s in held.items()}, figures, {})
+                {v: frozenset(s) for v, s in held.items()}, figures, {},
+                {v: {k: frozenset(a) for k, a in p.items()} for v, p in present.items()})
+
+
+def reads(data: Data, metric) -> frozenset:
+    """The accounts a metric (or ("account", code), a ratio's inline operand) reads: a sum's
+    own accounts; a difference's or a ratio's, the accounts of all its parts."""
+    if isinstance(metric, tuple):
+        return frozenset((metric[1],))
+    if metric in BY_PARENT:
+        return frozenset(data.accounts.get(BY_PARENT[metric], ()))
+    if metric in BY_ACCOUNT:
+        return frozenset((BY_ACCOUNT[metric],))
+    parts = DIFFERENCES[metric] if metric in DIFFERENCES else RATIOS[metric]
+    return frozenset().union(*(reads(data, part) for part in parts))
+
+
+def held_for(data: Data, version: str, need: frozenset) -> frozenset:
+    """The (entity, month) pairs that have a figure for every account in need."""
+    return frozenset(cell for cell, found in data.present[version].items() if need <= found)
 
 
 # == The arithmetic ==============================================================================
@@ -332,19 +361,26 @@ def months_of(period: tuple) -> tuple:
     return MONTHS
 
 
-def _coverage(data: Data, version: str, comparison: str, entities: str, period: tuple):
-    key = (version, comparison, entities, period)
+def _coverage(data: Data, metric: str, version: str, comparison: str, entities: str,
+              period: tuple):
+    need = reads(data, metric)
+    key = (version, comparison, entities, period, need)
     if key not in data.coverage:
         permitted = data.entities if entities == "group" else (entities,)
         window = months_of(period)
-        held = {(e, p) for e, p in data.held[version] if e in permitted}
         other = COMPARISONS[comparison]
+        # The held range, as built: any figure, matched by entity-month with a comparison.
+        any_held = {(e, p) for e, p in data.held[version] if e in permitted}
         if other is not None:
-            held &= data.held[other]
+            any_held &= data.held[other]
+        # Held for the metric: a figure for every account it reads, in both versions.
+        held = any_held & held_for(data, version, need)
+        if other is not None:
+            held &= held_for(data, other, need)
         cells = frozenset((e, p) for e, p in held if p in window)
         gaps = ()
-        if held:
-            first, last = min(p for _, p in held), max(p for _, p in held)
+        if any_held:
+            first, last = min(p for _, p in any_held), max(p for _, p in any_held)
             gaps = tuple((e, p) for p in window if first <= p <= last for e in permitted
                          if (e, p) not in held)
         data.coverage[key] = (permitted, window, cells,
@@ -372,10 +408,12 @@ def _groups(data: Data, metric: str, group_by: str, permitted: tuple, window: tu
 def ask(data: Data, metric: str, version: str, entities: str, period: tuple, group_by: str,
         comparison: str) -> Answer:
     """One question of the grid, answered by the rules above."""
-    permitted, window, cells, months_held, gaps = _coverage(data, version, comparison, entities,
-                                                            period)
+    permitted, window, cells, months_held, gaps = _coverage(data, metric, version, comparison,
+                                                            entities, period)
     if not cells:
         return Answer("no_data", (), window, (), gaps, None)
+    # A stock's closing month: the last month of the window held for it (matched with a
+    # comparison); an entity that does not hold it is left out and is already a gap.
     closing = max(months_held) if metric in STOCKS else None
     other = COMPARISONS[comparison]
     rows = []
