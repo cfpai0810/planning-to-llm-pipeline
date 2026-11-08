@@ -24,7 +24,7 @@ A governed question-and-answer pipeline over planning data. A planning model bui
 ## Test suite
 
 <!-- test-count: written by tests/conftest.py after a full, passing run, from generated/test_counts.json; never typed -->
-The suite has **1561 tests**, counted by its last full, passing run (`generated/test_counts.json`).
+The suite has **1841 tests**, counted by its last full, passing run (`generated/test_counts.json`).
 <!-- /test-count -->
 
 The suite blocks every connection that leaves this machine, including during

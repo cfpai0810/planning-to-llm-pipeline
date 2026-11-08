@@ -106,7 +106,9 @@ DUCKDB_HARMLESS = re.compile(r"^duckdb\.(\w*(Error|Exception)|DuckDBPyConnection
 PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "controls",
             "reconcile", "promotion", "model", "startup",
             # Part 2c: the session, the roles and the outcomes stay out of the pages too.
-            "session", "roles", "outcomes")
+            "session", "roles", "outcomes",
+            # Part 2d: the specification, the compiler, the guard and the answer as well.
+            "spec", "compiler", "guard", "answer")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -316,3 +318,36 @@ class TestTheGovernedLayersBoundaries:
         assert duckdb_uses(source) == []
         assert not [n for n in imports_of(source) if n.split(".")[0] in ("duckdb", "sqlglot")]
         assert "warehouse.connect(" in source
+
+
+# -- Part 2d: the parser lives in the guard; the governed modules import no engine --------------
+
+GOVERNED = ("spec", "registry", "roles", "outcomes", "answer")
+
+
+class TestThe2dBoundaries:
+    def test_sqlglot_is_imported_only_in_the_guard(self):
+        importers = {p.relative_to(ROOT).as_posix() for p in _sources(CODE)
+                     if any(n.split(".")[0] == "sqlglot"
+                            for n in imports_of(p.read_text(encoding="utf-8")))}
+        assert importers == {"src/guard.py"}
+
+    def test_the_governed_modules_import_neither_the_engine_nor_the_parser(self):
+        for name in GOVERNED:
+            names = imports_of((ROOT / "src" / f"{name}.py").read_text(encoding="utf-8"))
+            assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot")], name
+
+    def test_the_compiler_reaches_the_parser_through_the_guard_alone(self):
+        source = (ROOT / "src" / "compiler.py").read_text(encoding="utf-8")
+        names = imports_of(source)
+        assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot")]
+        assert "src.guard" in names and duckdb_uses(source) == []
+
+    def test_the_guard_imports_no_engine(self):
+        source = (ROOT / "src" / "guard.py").read_text(encoding="utf-8")
+        assert not [n for n in imports_of(source) if n.split(".")[0] == "duckdb"]
+        assert duckdb_uses(source) == []
+
+    def test_the_pages_import_none_of_the_new_modules(self):
+        for name in ("spec", "compiler", "guard", "answer"):
+            assert name in PIPELINE

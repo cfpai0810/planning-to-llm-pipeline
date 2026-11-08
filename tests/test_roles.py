@@ -109,9 +109,10 @@ class TestTheMemberLists:
 
 class TestTheOutcomes:
     def test_nothing_promoted_and_its_fixed_sentence(self):
+        # Part 2d adds the other outcomes (tests/test_spec.py); this one keeps its sentence.
         from src import outcomes
-        assert outcomes.SENTENCES == {
-            "nothing_promoted": "Nothing has been promoted yet. Review a batch first."}
+        assert outcomes.SENTENCES["nothing_promoted"] == (
+            "Nothing has been promoted yet. Review a batch first.")
         assert outcomes.NOTHING_PROMOTED == outcomes.outcome("nothing_promoted")
         with pytest.raises(KeyError):
             outcomes.outcome("something_else")

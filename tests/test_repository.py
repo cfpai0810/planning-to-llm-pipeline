@@ -19,7 +19,8 @@ SERIES = {"streamlit": "1.60.0", "starlette": "1.7.0", "python-dotenv": "1.2.2",
           "certifi": "2026.10.19", "anthropic": "0.116.0"}
 # Phase 1 adds the workbook library with the sample build (part 1b) and the
 # warehouse engine with the code that uses it (part 1c): 1.5.6, never 2.0.0.
-PHASE = SERIES | {"openpyxl": "3.1.5", "duckdb": "1.5.6"}
+# Phase 2 adds the query parser with the guard that uses it (part 2d): 30.24.0.
+PHASE = SERIES | {"openpyxl": "3.1.5", "duckdb": "1.5.6", "sqlglot": "30.24.0"}
 PIN = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[A-Za-z0-9.+!_-]+)"
                  r"(?:\s*;\s*\S.*)?$")
 REBOOT_RULE = "The owner reboots the app after every push to a deployed branch."
@@ -233,3 +234,22 @@ class TestTheTestOnlyDependency:
         block = text.split("\npandas==3.1.0", 1)[1].split("\n", 1)[1]
         sources = block.split("\n")[:4]
         assert any("-r requirements-dev.in" in s for s in sources), sources
+
+
+# -- Part 2d: the query parser, the one runtime package Phase 2 adds -------------------------------
+
+class TestTheQueryParser:
+    def test_sqlglot_is_pinned_with_its_reason_and_no_extra(self):
+        lines = DIRECT.read_text(encoding="utf-8").splitlines()
+        assert "sqlglot==30.24.0" in lines
+        reason = lines[lines.index("sqlglot==30.24.0") - 1]
+        assert reason.startswith("# ") and "guard" in reason and "no extra" in reason
+        assert not [l for l in lines if l.startswith("sqlglot[")]
+        assert _pins(LOCK)["sqlglot"] == _pins(DEV_LOCK)["sqlglot"] == "30.24.0"
+
+    def test_sqlglot_brings_no_other_package(self):
+        # In the lock, sqlglot is needed by requirements.in alone, and nothing is needed by it.
+        text = LOCK.read_text(encoding="utf-8")
+        block = text.split("\nsqlglot==30.24.0\n", 1)[1].split("\n", 1)[0]
+        assert block.strip() == "# via -r requirements.in"
+        assert "# via sqlglot" not in text and "#   sqlglot" not in text

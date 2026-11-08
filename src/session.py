@@ -20,6 +20,18 @@ never changes another's answers.
 - promoted() gives the promoted pair, or the outcome nothing_promoted.
 - provenance() gives what an answer card needs (5.5), reading only and
   naming no cell content.
+- answer(spec_or_json, role) (part 2d, brief 6.5) reads the specification,
+  validates it against the promoted pair's dimension tables and the
+  registry, compiles it (the compiler checks its own output with the
+  guard), and runs it with run(): the engine's own parser must see one
+  SELECT, and the query runs on a cursor of its own, closed after, all
+  under the read lock. It returns an Answer, or a typed outcome; any error
+  of the engine is engine_error, in fixed wording, with no SQL echoed.
+- dimensions() and registry() give what validation needs: the promoted
+  pair's members, and the registry loaded with its accounts (each code's
+  parent and kind), so an inline sum's kind is checked against the Lists
+  promoted. They and the provenance are kept until the next write cycle,
+  which can change them.
 
 The copy is made with shutil.copyfile, which does not carry the template's
 read-only bit (shutil.copy would, and the write cycle would then fail).
@@ -48,7 +60,8 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
 
 import config
-from src import outcomes, promotion, registry, warehouse
+from src import answer as answers
+from src import compiler, outcomes, promotion, registry, spec, warehouse
 from src.batch import Pair
 from src.controls import SEVERITIES
 from src.startup import Template
@@ -119,6 +132,7 @@ class Session:
         self.closed = False
         self._on_use, self._on_close = on_use, on_close
         self._lock = _ReadersAndWriter()
+        self._kept: dict = {}           # dimensions, registry, provenance: until a write cycle
         shutil.copyfile(template.path, self.path)
         self._con = warehouse.connect(self.path, read_only=True)
         _LIVE.add(self)
@@ -153,6 +167,7 @@ class Session:
             if self.closed:
                 raise SessionError("This session is closed.")
             self._con.close()
+            self._kept.clear()
             try:
                 con = warehouse.connect(self.path)
                 try:
@@ -217,6 +232,13 @@ class Session:
     # -- Provenance (5.5) -------------------------------------------------------------------------
 
     def provenance(self, role=None) -> dict:
+        """What an answer card needs (see _provenance), kept until the next write cycle."""
+        key = ("provenance", None if role is None else role.view())
+        if key not in self._kept:
+            self._kept[key] = self._provenance(role)
+        return dict(self._kept[key])
+
+    def _provenance(self, role=None) -> dict:
         """What an answer card needs, read and never written: no cell content.
 
         The promoted pair's plan batch (id, file name and hash) and ledger batch (id, file
@@ -258,6 +280,71 @@ class Session:
                 "acknowledged": len(ids & set(latest)),
                 **{action: actions.get(action, 0) for action in promotion.ACTIONS},
                 **view, **tail}
+
+    # -- Asking (part 2d) ------------------------------------------------------------------------
+
+    def dimensions(self) -> Union[spec.Dimensions, outcomes.Outcome]:
+        """The promoted pair's members from the dimension tables, or nothing_promoted."""
+        if "dimensions" not in self._kept:
+            with self.reading() as cursor:
+                if promotion.promoted_batch(cursor) is None:
+                    return outcomes.NOTHING_PROMOTED
+                found = spec.Dimensions(
+                    versions=tuple(r[0] for r in cursor.execute(
+                        "SELECT version FROM dim_version ORDER BY version_order").fetchall()),
+                    entities=tuple(cursor.execute(
+                        "SELECT entity, entity_name, region FROM dim_entity "
+                        "ORDER BY list_order").fetchall()),
+                    accounts=tuple(cursor.execute(
+                        "SELECT account, account_name, parent, section, line_kind FROM "
+                        "dim_account ORDER BY list_order").fetchall()),
+                    periods=tuple(cursor.execute(
+                        "SELECT period, quarter, fiscal_year FROM dim_time "
+                        "ORDER BY period").fetchall()))
+            self._kept["dimensions"] = found
+        return self._kept["dimensions"]
+
+    def registry(self) -> registry.Registry:
+        """The registry, loaded with the promoted pair's accounts (code: parent and kind), so
+        each inline sum's kind is checked against them; with nothing promoted, as it is."""
+        if "registry" not in self._kept:
+            dims = self.dimensions()
+            accounts = None if isinstance(dims, outcomes.Outcome) else {
+                code: (parent, kind) for code, _, parent, _, kind in dims.accounts}
+            self._kept["registry"] = registry.load(accounts=accounts)
+        return self._kept["registry"]
+
+    def answer(self, spec_or_json, role) -> Union[answers.Answer, outcomes.Outcome]:
+        """A question, as a Specification, a JSON text or a mapping, answered under the role:
+        an Answer, or a typed outcome. Validation, compiling and running happen under one hold
+        of the read lock, so no write cycle comes between them."""
+        if isinstance(spec_or_json, spec.Specification):
+            question = spec_or_json
+        else:
+            try:
+                question = spec.from_json(spec_or_json)
+            except spec.SpecificationError as refused:
+                return refused.outcome
+        self._open()
+        with self._lock.read():
+            loaded = self.registry()
+            validated = spec.validate(question, loaded, self, role)
+            if isinstance(validated, outcomes.Outcome):
+                return validated
+            compiled = compiler.compile(validated, loaded, role)
+            return self.run(compiled, validated, role)
+
+    def run(self, compiled, validated, role) -> Union[answers.Answer, outcomes.Outcome]:
+        """Runs a compiled query on a cursor of its own, closed after: only when the engine's own
+        parser reads it as one SELECT. An error of the engine is engine_error."""
+        with self.reading() as cursor:
+            try:
+                if warehouse.statement_types(cursor, compiled.sql) != ("SELECT",):
+                    return outcomes.ENGINE_ERROR
+                fetched = cursor.execute(compiled.sql).fetchall()
+            except warehouse.ENGINE_ERRORS:
+                return outcomes.ENGINE_ERROR
+        return answers.build(compiled, validated, fetched, self.provenance(role))
 
     # -- Closing ---------------------------------------------------------------------------------
 

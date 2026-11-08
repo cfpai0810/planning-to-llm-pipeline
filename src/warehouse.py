@@ -50,7 +50,11 @@ connection can change nothing in the database (DuckDB refuses every statement
 that would), on top of those settings; a session queries through one
 (src/session.py). DuckDB refuses a read-write and a read-only connection to
 one file in one process, so a session that writes closes the one, opens the
-other, and opens the first again.
+other, and opens the first again. Part 2d: statement_types() gives the kind
+of each statement in a text as DuckDB's own parser reads it, so a session
+runs a compiled query only when the engine, like the guard, sees one SELECT;
+ENGINE_ERRORS names what DuckDB raises, so a caller can turn it into the
+outcome engine_error without importing DuckDB.
 
 The start-up build (src/startup.py) lands the committed sample workbook and
 the ledger, and nothing else: the clean workbook and the fixtures are landed
@@ -183,6 +187,17 @@ def connect(path: Path | str, *, read_only: bool = False) -> duckdb.DuckDBPyConn
     read_only gives a connection that can change nothing in the database (part 2c).
     """
     return duckdb.connect(str(path), read_only=read_only, config=dict(SETTINGS))
+
+
+# Part 2d: what the engine raises, so a caller can catch it without naming the engine.
+ENGINE_ERRORS = (duckdb.Error,)
+
+
+def statement_types(con: duckdb.DuckDBPyConnection, sql: str) -> tuple:
+    """The kind of each statement in sql, as the engine's own parser reads it: ("SELECT",)
+    for one SELECT. The session runs a compiled query only when this says so (part 2d), so a
+    text the guard's parser and the engine read differently is never run."""
+    return tuple(statement.type.name for statement in con.extract_statements(sql))
 
 
 def create_tables(con: duckdb.DuckDBPyConnection) -> None:

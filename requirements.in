@@ -18,6 +18,8 @@ python-dotenv==1.2.2
 openpyxl==3.1.5
 # The warehouse the plan and the ledger land in: 1.5.6 is the release that was tested; 2.0.0 waits for its own spike
 duckdb==1.5.6
+# Parses every compiled query for the guard (src/guard.py) alone: 30.24.0 is the release that was tested, with no extra
+sqlglot==30.24.0
 
 # Pinned past GHSA-6q48-6c7w-9gw2: the bundle before 2026.10.18 trusts
 # compromised emSign intermediates
