@@ -14,6 +14,10 @@ refused with entity_not_permitted before anything is compiled.
 Every outcome is a code and one fixed sentence (src/outcomes.py). A sentence holds no
 placeholder that is not on the allow-list (the list is empty: no sentence is filled with
 anything), and no outcome ever echoes a name it was given.
+
+Commit 3a (the reviewer's verdict of 11 November) adds D3, an entity controller's entity and
+region values matched against its own alone, anything else entity_not_permitted, and F24, a
+hand-built Specification read first by the type rules from_json enforces.
 """
 
 import json
@@ -383,3 +387,166 @@ class TestTheOutcomes:
             assert not any(n in repr(outcomes.outcome(code)) for n in HOSTILE)
         assert set(seen) == set(CODES) - {"prior_year_not_available", "no_data", "engine_error",
                                           "specification_invalid"}
+
+
+# -- D3: an entity controller cannot tell what exists (the reviewer's verdict of 11 November) ----
+
+# For each entity controller: another entity's code, another entity's name, another entity's
+# code in lower case, and a region that only other entities hold.
+OTHERS = {"ES": ("AT", "Calder Foods Germany", "de", "Central Europe"),
+          "AT": ("DE", "Calder Foods Spain", "es", "Southern Europe"),
+          "DE": ("ES", "Calder Foods Austria", "at", "Southern Europe")}
+SHAPES = ("another entity's code", "another entity's name", "another entity's code in lower case",
+          "a made-up code", "a made-up name", "a region only other entities hold")
+# Each controller's own code, name and region, written in another case.
+OWN = {"ES": ("es", "CALDER FOODS SPAIN", "southern europe"),
+       "AT": ("at", "calder foods austria", "CENTRAL EUROPE"),
+       "DE": ("de", "Calder Foods Germany", "central europe")}
+
+
+class TestAnEntityControllerCannotTellWhatExists:
+    """D3 (verdict, section 5, item 1). For an entity controller every entity or region filter
+    value is matched against its own entity and its own regions alone, by code or name without
+    regard to case; anything else, real or made up, is entity_not_permitted. The answer is then
+    one and the same outcome whatever the value, so it does not tell whether a code exists. A
+    group controller is unchanged: a name that is no member is unknown_member. Accounts and
+    versions are not entities: an unknown one is unknown_member for every role."""
+
+    @pytest.mark.parametrize("dimension", ["entity", "region"])
+    @pytest.mark.parametrize("entity", ["ES", "AT", "DE"])
+    def test_every_value_not_its_own_gives_one_and_the_same_outcome(self, outcomes, promoted,
+                                                                    entity, dimension):
+        from src import roles
+        role = roles.entity_controller(entity)
+        code, name, lower, region = OTHERS[entity]
+        values = (code, name, lower, "XX", "Nowhere", region)
+        refused = outcomes.outcome("entity_not_permitted")
+        seen = {}
+        for shape, value in zip(SHAPES, values):
+            result = promoted.answer(spec_dict(filters=[{"dimension": dimension,
+                                                         "values": [value]}]), role)
+            seen[shape] = (type(result).__name__, result, repr(result))
+        assert set(seen.values()) == {("Outcome", refused, repr(refused))}, seen
+        assert refused.sentence == "That entity is not available to your role."
+        # Its own value beside another's is refused the same way.
+        both = promoted.answer(spec_dict(filters=[{"dimension": dimension,
+                                                   "values": [OWN[entity][0], "XX"]}]), role)
+        assert (type(both).__name__, both, repr(both)) == ("Outcome", refused, repr(refused))
+
+    @pytest.mark.parametrize("entity", ["ES", "AT", "DE"])
+    def test_its_own_entity_and_region_are_matched_in_any_case(self, promoted, entity):
+        from src import roles
+        role = roles.entity_controller(entity)
+        code, name, region = OWN[entity]
+        for dimension, value in (("entity", code), ("entity", name), ("region", region)):
+            result = promoted.answer(spec_dict(filters=[{"dimension": dimension,
+                                                         "values": [value]}]), role)
+            assert code_of(result) == "ok", (dimension, value)
+            assert result.provenance["view"] == f"entity view: {entity}"
+
+    def test_a_shared_region_is_its_own(self, promoted):
+        # AT and DE share Central Europe: for an AT controller it is AT's own region.
+        from src import roles
+        at = promoted.answer(spec_dict(filters=[{"dimension": "region",
+                                                 "values": ["Central Europe"]}]),
+                             roles.entity_controller("AT"))
+        alone = promoted.answer(spec_dict(), roles.entity_controller("AT"))
+        assert code_of(at) == "ok" and at.rows == alone.rows
+
+    def test_a_group_controller_is_unchanged(self, promoted):
+        from src import roles
+        group = roles.group_controller
+        for dimension, value in (("entity", "XX"), ("entity", "Nowhere"),
+                                 ("entity", "Central Europe"), ("region", "Nowhere"),
+                                 ("region", "AT"), ("region", "Calder Foods Spain")):
+            result = promoted.answer(spec_dict(filters=[{"dimension": dimension,
+                                                         "values": [value]}]), group)
+            assert code_of(result) == "unknown_member", (dimension, value)
+        for dimension, value in (("entity", "de"), ("entity", "Calder Foods Spain"),
+                                 ("region", "southern europe")):
+            result = promoted.answer(spec_dict(filters=[{"dimension": dimension,
+                                                         "values": [value]}]), group)
+            assert code_of(result) == "ok", (dimension, value)
+
+    @pytest.mark.parametrize("entity", [None, "ES", "AT", "DE"])
+    def test_an_unknown_account_or_version_is_still_unknown_member(self, promoted, entity):
+        from src import roles
+        role = roles.group_controller if entity is None else roles.entity_controller(entity)
+        for changes in ({"version": "Plan B"},
+                        {"filters": [{"dimension": "account", "values": ["9999"]}]},
+                        {"filters": [{"dimension": "account", "values": ["Nowhere"]}]}):
+            assert code_of(promoted.answer(spec_dict(**changes), role)) == "unknown_member"
+
+
+# -- F24: a hand-built specification is read by the same type rules (verdict, section 5) ----------
+
+def hand_built(**changes):
+    """A Specification built by hand, as a page's own code might: valid but for the changes."""
+    from dataclasses import replace
+
+    from src import spec
+    good = spec.Specification(metric="revenue", version="Budget", dimensions=(), filters=(),
+                              period=spec.Period("fy", "FY2026"), comparison="none", sort=None,
+                              limit=10)
+    return replace(good, **changes)
+
+
+def filters_of(*pairs) -> tuple:
+    from src import spec
+    return tuple(spec.Filter(dimension, values) for dimension, values in pairs)
+
+
+def period_of(kind, value):
+    from src import spec
+    return spec.Period(kind, value)
+
+
+WRONG_TYPES = [
+    # The reviewer's four shapes.
+    ("a number among filter values", lambda: {"filters": filters_of(("entity", ("ES", 7)))}),
+    ("a None metric", lambda: {"metric": None}),
+    ("a limit that is text", lambda: {"limit": "10"}),
+    ("a limit that is True", lambda: {"limit": True}),
+    # Others the type rules cover, one line each.
+    ("a limit that is a fraction", lambda: {"limit": 10.0}),
+    ("a None version", lambda: {"version": None}),
+    ("dimensions that are text", lambda: {"dimensions": "entity"}),
+    ("a dimension that is not text", lambda: {"dimensions": (None,)}),
+    ("filters that are None", lambda: {"filters": None}),
+    ("filter values that are text", lambda: {"filters": filters_of(("entity", "ES"))}),
+    ("a filter with no values", lambda: {"filters": filters_of(("entity", ()))}),
+    ("a period kind that is a number", lambda: {"period": period_of(6, "FY2026")}),
+    ("a sort that is text", lambda: {"sort": "value"}),
+    ("a None comparison", lambda: {"comparison": None}),
+]
+
+
+class TestAHandBuiltSpecificationIsReadByTheSameTypeRules:
+    """F24 (verdict, section 5, item 5). validate first reads a hand-built Specification by the
+    type rules from_json enforces, so a field of the wrong type is the outcome
+    specification_invalid, through session.answer as through the JSON door: never an
+    exception, and never a guess (a limit of True is not a limit of 1)."""
+
+    @pytest.mark.parametrize("what, changes", WRONG_TYPES, ids=[w for w, _ in WRONG_TYPES])
+    def test_a_field_of_the_wrong_type_is_specification_invalid(self, spec, outcomes, loaded,
+                                                                promoted, what, changes):
+        from src import roles
+        bad = hand_built(**changes())
+        invalid = outcomes.outcome("specification_invalid")
+        assert promoted.answer(bad, roles.group_controller) == invalid, what
+        assert spec.validate(bad, loaded, promoted, roles.group_controller) == invalid, what
+
+    def test_the_types_are_read_before_anything_else_as_at_the_json_door(self, outcomes,
+                                                                         unpromoted):
+        from src import roles
+        invalid = outcomes.outcome("specification_invalid")
+        assert unpromoted.answer(hand_built(limit=True), roles.group_controller) == invalid
+        assert unpromoted.answer(json.dumps(spec_dict(limit=True)),
+                                 roles.group_controller) == invalid
+
+    def test_a_well_typed_hand_built_specification_is_answered_as_its_json(self, promoted):
+        from src import roles
+        by_hand = promoted.answer(hand_built(dimensions=("entity",)), roles.group_controller)
+        by_json = promoted.answer(spec_dict(dimensions=["entity"]), roles.group_controller)
+        assert code_of(by_hand) == "ok" and by_hand.rows == by_json.rows
+        assert by_hand.spec == by_json.spec and by_hand.sql == by_json.sql

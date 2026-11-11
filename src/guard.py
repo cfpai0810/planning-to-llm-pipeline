@@ -3,7 +3,10 @@
 # =============================================================================
 """
 The guard (the reviewer's Phase 2 brief, 6.4): a second line behind the
-read-only connection with external access off, which is the control. It
+compiler's fixed templates. The read-only connection, with external access
+off, stops writes, files and settings; it does not stop reads; for reads the
+controls are the compiler, which writes only fixed templates with canonical
+members, and the guard (the reviewer's verdict of 11 November, F23). It
 parses a query with sqlglot's DuckDB dialect, the one module that imports
 sqlglot (tests/test_boundaries.py), and returns "ok" or one reason code,
 checked in this order:

@@ -7,6 +7,10 @@ and left read-only on disk. A session is one visitor's copy of it, opened read-o
 runs as a cycle (close, open read-write, work, close, reopen read-only) under a lock no query
 runs through. The figures of the two-session test are read from the oracle's committed
 expected figures (tests/generated/oracle_expected.csv), never summed here.
+
+Commit 3a (the reviewer's verdict of 11 November, F25): what only a user other than root can
+show, that no one may write to the template, is a test of its own, skipped when the suite
+runs as root.
 """
 
 import csv
@@ -41,6 +45,8 @@ SAMPLE_IDS = {"FI-64e07c883fff", "FI-facc450f1682", "HC-b04c76a19ed4", "HC-d7268
 # group's FY2026 revenue in one version, from fact_plan, accounts 4000 and 4100.
 QUESTION = ("SELECT sum(amount) FROM fact_plan WHERE version = ? AND account IN ('4000', '4100') "
             "AND period LIKE '2026-%'")
+# A run as root (a container, say): root may write to any file whatever its mode (F25).
+RUN_AS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def oracle(pair: str, metric: str, version: str, period: str = "FY2026") -> Decimal:
@@ -116,6 +122,18 @@ class TestTheTemplate:
             assert con.execute("SELECT count(*) FROM dim_version").fetchone() == (3,)
 
     def test_the_file_is_closed_and_read_only_on_disk(self, template):
+        # Its mode has no write bit for anyone, and the folder holds the file alone (closed:
+        # no write-ahead log beside it). Both hold whoever runs the suite.
+        assert not stat.S_IMODE(os.stat(template.path).st_mode) & (
+            stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        assert sorted(p.name for p in template.path.parent.iterdir()) == [template.path.name]
+
+    @pytest.mark.skipif(RUN_AS_ROOT, reason="the effective user is root, and root may write to "
+                                            "any file whatever its mode: os.access and a "
+                                            "read-write open say nothing about the file there")
+    def test_no_one_but_root_can_write_to_it(self, template):
+        # F25 (the reviewer's verdict of 11 November): split from the test above, so that a
+        # run as root skips only what root changes.
         import duckdb
 
         from src import warehouse

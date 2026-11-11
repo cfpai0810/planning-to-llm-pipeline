@@ -197,3 +197,16 @@ class TestGlossary:
         assert meanings["check"].startswith("What `main.py check` does:")
         assert "check" not in meanings["control"]
         assert _rows()["check"].strip() == ""
+
+    def test_the_guard_entry_as_the_reviewer_worded_it_on_11_november(self):
+        # D4 approved the seventeen terms with one edit, after F23: the guard is a second line
+        # behind the compiler's fixed templates, not behind the read-only connection.
+        meaning = _meanings()["guard"]
+        assert meaning == ("The check every compiled query passes before it runs: one SELECT "
+                           "of the allowed tables, with the role's filter in place. A second "
+                           "line behind the compiler's fixed templates.")
+        assert "read-only connection" not in meaning
+        notes = " ".join(GLOSSARY.read_text(encoding="utf-8").split("\n## Notes\n", 1)[1].split())
+        assert ("The governed layer's terms (metric to provenance) were added in part 2e and "
+                "approved by the reviewer on 11 November (D4), with the guard's entry "
+                "reworded.") in notes

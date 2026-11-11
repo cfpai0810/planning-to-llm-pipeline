@@ -7,11 +7,14 @@ the roles, and the session that holds one visitor's warehouse. No model is
 called yet: in Phase 3 a model will write the specification, and nothing
 else. A model never writes SQL and never calculates.
 
-Said plainly: the read-only connection with external access off is the
-control; the guard is a second line; the allow-list of names narrows the
-injection route and does not close it. v1 does not query the ledger: Actual
-is the workbook's Actual block, and the ledger serves the tie-out. v1 does
-not answer prior-year questions: the plan holds one fiscal year.
+Said plainly: the read-only connection, with external access off, stops
+writes, files and settings; it does not stop reads; for reads the controls
+are the compiler, which writes only fixed templates with canonical members,
+and the guard, a second line behind the compiler's fixed templates. The
+allow-list of names narrows the injection route and does not close it. v1
+does not query the ledger: Actual is the workbook's Actual block, and the
+ledger serves the tie-out. v1 does not answer prior-year questions: the plan
+holds one fiscal year.
 
 ## Sessions and promotion
 
@@ -33,6 +36,13 @@ facts rebuilt in one transaction) each take one cycle. At most 20 sessions
 are open in a process; one more closes the least recently used, and the
 folders are removed on close, at exit, and, for a crashed process's, at the
 next start.
+
+A limit: a folder left behind is judged by its age alone. A pool removes
+every folder under its root that has the session prefix and is older than a
+day, whether or not another process still holds it, so two processes that
+share one temporary folder could remove an idle session of the other's, and
+that session's next write cycle would fail. Until that is changed, give each
+deployment its own root (the `root` of `Sessions`).
 
 A question runs on one cursor per request, taken from the session's
 read-only connection and closed after. With nothing promoted, every question
@@ -56,6 +66,19 @@ ledger's facts, or of all of `fact_plan` runs on it. For reads the compiler
 (which writes only the queries below) and the guard (which refuses any other
 relation and any unfiltered `fact_plan`) are the controls.
 
+That is accepted for v1 (the reviewer's verdict of 11 November, D2): the
+model never writes SQL, a person's words reach the engine only as canonical
+members through the one quoting function, after validation, every compiled
+query is guarded with the role's filter, and the data in the file is a
+fictional sample. The condition: a star-only file, one per session, becomes
+a requirement, not an option, before any of these: real company data in the
+template; any feature in which text written by a person or a model reaches
+the engine as SQL; any setting in which a visitor can reach the file other
+than through `session.answer`. A star-only file holds the star schema alone,
+so a read on it reaches nothing else. `PRAGMA database_list` on the
+connection shows the path of the session's folder; that is harmless here,
+and one reason the condition is written.
+
 ## Roles
 
 `src/roles.py` has two roles. A group controller sees every entity of the
@@ -78,10 +101,24 @@ see: the compiler injects them.
 - The member lists a prompt may use (`members_for`) hold the role's own
   entity, its region, every account and every metric, and nothing of another
   entity.
-- A limit, kept as the brief designed it: a name that is no member at all is
-  `unknown_member`, and another entity's code is `entity_not_permitted`, so an
-  entity controller can tell that a code exists without seeing anything of
-  it.
+- An entity controller's entity and region filter values are matched
+  against its own entity and its own regions alone, by code or name without
+  regard to case. Any other value, real or made up (another entity's code
+  or name, a region only other entities hold, a name that is no member at
+  all), is `entity_not_permitted`: one and the same outcome, so an entity
+  controller cannot tell whether a code exists. A group controller sees
+  every entity, and a name that is no member is `unknown_member`. Accounts
+  and versions are not entities: an unknown one is `unknown_member` for
+  every role. (The brief kept the two outcomes apart; the reviewer's verdict
+  of 11 November, D3, closed that limit.)
+- A role has one of two shapes, the group controller with no entity or an
+  entity controller with one entity code that passes the member-name
+  allow-list, and `Role` refuses any other when it is made. A role is built
+  by the page's own code, never from a visitor's words, so a wrong one is a
+  programming fault: it raises `RoleError` and is never answered. A role
+  made without its constructor, or an object that only looks like one, is
+  refused by the same rule in `validate`, `compile`, `session.answer`,
+  `session.run`, `members_for` and `provenance` (the verdict's F21).
 
 ## The specification and its validation
 
@@ -89,8 +126,12 @@ A specification (`src/spec.py`) has eight fields, every one required:
 metric, version, dimensions, filters, period, comparison, sort and limit.
 `from_json` takes exactly those keys; anything else is
 `specification_invalid`, which never echoes what it was given. Validation
-checks, in this order: something is promoted; the role's entity is in the
-pair; the metric is in the registry; the version is a member; each dimension
+checks, in this order: the role, which must be a `Role` of the two shapes
+(else `RoleError`); the types, since a specification built by hand is first
+read by the same type rules as `from_json`: a field of the wrong type is
+`specification_invalid`, never an exception, and a limit of `true` is not a
+limit of 1 (the verdict's F24); something is promoted; the role's entity is
+in the pair; the metric is in the registry; the version is a member; each dimension
 is one the metric may be grouped by; each filter is one it may be filtered
 by, and each value a member the role may see; the comparison; the period;
 the limit (1 to 100); the sort (by the value or a grouped dimension). Members
@@ -118,6 +159,12 @@ fixed templates and the registry's structured formulas. Its guarantees:
   gaps; matched months; the closing value; the ratio of sums; variance, its
   percentage and its label. The coverage (months held, gaps) comes from the
   same query.
+- **An account filter chooses what is summed, nothing else.** Held, the
+  held range, the gaps and the months held are judged on every account the
+  metric reads, whatever the filter: the CTE `leaves` holds them all, and a
+  filter makes a second CTE, `chosen`, that only the sums read. So the
+  slices of a metric by account add up to its total, and a gap is a gap with
+  or without the filter (the reviewer's verdict of 11 November, F22).
 - **One helper divides.** `integer_route` gives the only fragment that
   divides, so every ratio and variance percentage is the exact quotient
   rounded once to twelve places. Nothing else in a compiled query divides.
@@ -131,7 +178,11 @@ SELECT, runs it on its own cursor, and returns an answer: the rows as exact
 decimals, the coverage and gaps, the result hash and the provenance. Any
 error of the engine is `engine_error`, with no SQL echoed. Every metric of
 the grid of `tests/oracle.py` (29,232 questions on each pair) equals the
-independent oracle's figures exactly.
+independent oracle's figures exactly. The whole grid runs, unsampled, in the
+default suite and in CI (the reviewer's verdict of 11 November, D1). When a
+grid job takes more than 15 minutes, or CI minutes become a cost, the grid
+becomes its own CI job per Python, and the rest of the suite its own; until
+then the grid is not shrunk.
 
 ## The guard
 

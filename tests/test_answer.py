@@ -16,6 +16,10 @@ Role leakage: an entity controller's answers hold that entity's figures alone, e
 oracle's for that entity, and no SQL, row, coverage, outcome or provenance holds another
 entity's code, name or region (searched as text). A TEMP table named fact_plan made on one
 cursor never reaches an answer (Trap 2).
+
+Commit 3a (the reviewer's verdict of 11 November, F22): on the clean pair with one Budget cell
+deleted in each metric that sums several accounts, a filter on accounts chooses what is
+summed and nothing else, so the slices add up to the total and the gaps do not move.
 """
 
 import csv
@@ -447,6 +451,89 @@ class TestRoleLeakage:
             result = sample.answer(ask(filters=filters), at)
             assert result.code == "entity_not_permitted"
             assert not [p for p in other_names("AT") if re.search(p, text_of(result))]
+
+
+# -- F22: an account filter chooses what is summed, nothing else (verdict of 11 November) -----------
+
+# One blank Budget cell in each metric that sums several accounts, deleted in a write cycle
+# after the clean pair is promoted: AT's Salaries for March (the reviewer's own case), ES's
+# 4100 for July and DE's 5100 for November.
+BLANKS = (("AT", "6000", "2026-03"), ("ES", "4100", "2026-07"), ("DE", "5100", "2026-11"))
+SUMMING = {"revenue": ("4000", "4100"), "cost_of_sales": ("5000", "5100", "5200"),
+           "operating_expenses": ("6000", "6100", "6200", "6300")}
+
+
+@pytest.fixture(scope="module")
+def blanked(pool):
+    """The clean pair promoted, then the three cells of BLANKS deleted from the star."""
+    s = pool.open()
+    s.promote("clean", "P. Promoter", clock=lambda: NOON)
+    with s.writing() as con:
+        for entity, account, period in BLANKS:
+            gone = con.execute("DELETE FROM fact_plan WHERE version = 'Budget' AND entity = ? "
+                               "AND account = ? AND period = ? RETURNING amount",
+                               [entity, account, period]).fetchall()
+            assert len(gone) == 1
+    return s
+
+
+def filtered(session, metric, accounts, **changes):
+    return session.answer(ask(metric=metric, filters=(("account", tuple(accounts)),),
+                              **changes), group_role())
+
+
+class TestAnAccountFilterChoosesWhatIsSummed:
+    """F22 (verdict, section 5, item 3): held is judged on every account the metric reads,
+    whatever the filter; a filter on accounts chooses which of them are summed, nothing else.
+    So the slices add up to the total, and a gap is a gap with or without the filter."""
+
+    def test_the_reviewers_case_a_filter_on_6100_keeps_the_gap(self, blanked):
+        # Operating expenses for FY2026 in Budget, with AT's Salaries for March deleted. Before
+        # the ruling a filter on 6100 gave 2,790,870 and no gap: it summed AT's March
+        # Marketing, in a month the metric itself calls a gap.
+        total = blanked.answer(ask(metric="operating_expenses"), group_role())
+        assert (figures(total), total.gaps) == ([("", Decimal(17393631))], (("AT", "2026-03"),))
+        by_account = blanked.answer(ask(metric="operating_expenses", dimensions=("account",)),
+                                    group_role())
+        assert ("6100", Decimal(2750771)) in figures(by_account)
+        alone = filtered(blanked, "operating_expenses", ("6100",))
+        assert (figures(alone), alone.gaps) == ([("", Decimal(2750771))], (("AT", "2026-03"),))
+        assert alone.coverage == total.coverage
+
+    @pytest.mark.parametrize("comparison", ["none", "forecast"])
+    @pytest.mark.parametrize("metric", list(SUMMING))
+    def test_the_slices_add_up_and_the_gaps_are_the_same(self, blanked, metric, comparison):
+        accounts = SUMMING[metric]
+        total = blanked.answer(ask(metric=metric, comparison=comparison), group_role())
+        grouped = blanked.answer(ask(metric=metric, comparison=comparison,
+                                     dimensions=("account",)), group_role())
+        singles = {a: filtered(blanked, metric, (a,), comparison=comparison) for a in accounts}
+        assert total.outcome is None and len(total.gaps) == 1        # the blank is a gap
+        # The gaps and the months held are identical in all three.
+        for answered in (grouped, *singles.values()):
+            assert (answered.gaps, answered.coverage) == (total.gaps, total.coverage)
+        # A grouping by account has the same rows as the single filters.
+        assert [row[0] for row in grouped.rows] == list(accounts)
+        assert [row[1:] for row in grouped.rows] == [singles[a].rows[0] for a in accounts]
+        # The single filters add up to the unfiltered total (value, comparator, variance).
+        names = [name for name, _, _ in total.columns]
+        for i, name in enumerate(names):
+            if name in ("value", "comparator", "variance"):
+                assert sum(Decimal(singles[a].rows[0][i]) for a in accounts) == Decimal(
+                    total.rows[0][i]), name
+        # A filter that names every account the metric reads is the unfiltered answer.
+        every = filtered(blanked, metric, accounts, comparison=comparison)
+        assert (every.rows, every.gaps, every.coverage) == (total.rows, total.gaps,
+                                                            total.coverage)
+
+    def test_a_grouping_and_a_filter_together_give_the_filtered_accounts_alone(self, blanked):
+        both = blanked.answer(ask(metric="operating_expenses", dimensions=("account",),
+                                  filters=(("account", ("6300", "6100")),)), group_role())
+        total = blanked.answer(ask(metric="operating_expenses"), group_role())
+        assert [row[0] for row in both.rows] == ["6100", "6300"]
+        assert [row[1:] for row in both.rows] == [
+            filtered(blanked, "operating_expenses", (a,)).rows[0] for a in ("6100", "6300")]
+        assert (both.gaps, both.coverage) == (total.gaps, total.coverage)
 
 
 # -- Trap 2: a TEMP object lives on one cursor -------------------------------------------------------

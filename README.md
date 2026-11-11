@@ -39,7 +39,7 @@ A governed question-and-answer pipeline over planning data. A planning model bui
 ## Test suite
 
 <!-- test-count: written by tests/conftest.py after a full, passing run, from generated/test_counts.json; never typed -->
-The suite has **1886 tests**, counted by its last full, passing run (`generated/test_counts.json`).
+The suite has **1955 tests**, counted by its last full, passing run (`generated/test_counts.json`).
 <!-- /test-count -->
 
 The suite blocks every connection that leaves this machine, including during
@@ -50,6 +50,8 @@ servers.
 pip install -r requirements.txt -r requirements-dev.txt
 python -m pytest
 ```
+
+The inner loop is `python -m pytest --ignore=tests/test_grid.py`; a phase gate runs the full suite.
 
 Running it locally on Windows, two things to know:
 

@@ -22,10 +22,20 @@ same entities (a region grouping, the gaps and the coverage need entity
 names and regions, and an unfiltered dim_entity would show another entity's).
 Every later step reads plan and permitted, never the tables.
 
+The role is checked first: anything that is not a Role of the two shapes
+raises RoleError (roles.checked), however it was made.
+
 The finance rules (brief 4.2, with the reviewer's rulings of 8 November):
 - the accounts a metric reads are resolved in the SQL from dim_account, by
   parent or by code, never a subtotal (so another Lists still works); a
-  difference or a ratio reads the accounts of all its parts;
+  difference or a ratio reads the accounts of all its parts. The CTE leaves
+  holds them all, whatever the filter;
+- an account filter chooses which of those accounts are summed, and nothing
+  else (the reviewer's verdict of 11 November, F22): it makes a second CTE,
+  chosen, the leaves it names, and only the sums read it. Held, the held
+  range, the gaps and the months held are judged on leaves, so the slices of
+  a metric by account add up to its total and a gap is a gap with or
+  without the filter. A query with no account filter has no chosen CTE;
 - held: an entity-month is held for the metric in a version when it has a
   figure for every account the metric reads; the held range is the first to
   the last month in which any entity in scope has any figure on a line that
@@ -60,7 +70,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from src import guard
+from src import guard, roles
 from src.registry import Difference, Ratio, Sum
 
 __all__ = ["ALLOWED_RELATIONS", "PERMITTED", "PLAN", "CompileError", "CompiledQuery", "compile",
@@ -168,11 +178,10 @@ def _expression(terms: list, side: str) -> str:
     return text
 
 
-def _leaf_sql(number: int, key: tuple, accounts: tuple) -> str:
+def _leaf_sql(number: int, key: tuple) -> str:
+    """Every account of one leaf of the formula, whatever the filter."""
     parent, account = key
     where = f"parent = {quote(parent)}" if parent is not None else f"account = {quote(account)}"
-    if accounts:
-        where += f" AND account IN ({_names(accounts)})"
     return f"SELECT {number} AS leaf, account, list_order FROM lines WHERE {where}"
 
 
@@ -180,6 +189,7 @@ def _leaf_sql(number: int, key: tuple, accounts: tuple) -> str:
 
 def compile(validated, registry, role) -> CompiledQuery:
     """One SELECT for the validated specification under the role, checked by the guard."""
+    role = roles.checked(role)
     spec = validated.spec
     entities = tuple(validated.entities)
     if not entities or (role.entity is not None and entities != (role.entity,)):
@@ -210,7 +220,13 @@ def compile(validated, registry, role) -> CompiledQuery:
     ctes.append(("lines", "SELECT account, parent, list_order FROM dim_account WHERE "
                           "coalesce(section, '') <> 'Subtotal'"))
     ctes.append(("leaves", " UNION ALL ".join(
-        _leaf_sql(number, key, filters.get("account", ())) for key, number in leaves.items())))
+        _leaf_sql(number, key) for key, number in leaves.items())))
+    # What is summed: every leaf, or with an account filter only the leaves it names.
+    summed = "leaves"
+    if "account" in filters:
+        summed = "chosen"
+        ctes.append(("chosen", "SELECT leaf, account, list_order FROM leaves WHERE account IN "
+                               f"({_names(filters['account'])})"))
     # Each entity-month in scope with a figure on a line: in how many of the versions asked it
     # has any figure, and how many (version, account) figures it has of the accounts the
     # metric reads, beside how many those accounts are.
@@ -252,7 +268,7 @@ def compile(validated, registry, role) -> CompiledQuery:
     carried = ", ".join(c for d in dims for c in DIMENSIONS[d][3])
     ctes.append(("sums", f"SELECT {selects + ', ' if selects else ''}{sums} FROM {source} AS c "
                          "JOIN plan AS p ON p.entity = c.entity AND p.period = c.period JOIN "
-                         "leaves AS f ON f.account = p.account"
+                         f"{summed} AS f ON f.account = p.account"
                          + (" JOIN regions AS g ON g.region = c.region" if "region" in dims
                             else "")
                          + (f" GROUP BY {groups}" if groups else "") + " HAVING count(*) > 0"))

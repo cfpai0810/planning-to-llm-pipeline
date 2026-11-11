@@ -15,6 +15,9 @@ scales back, so a ratio is the exact quotient rounded once to twelve places. A z
 denominator gives NULL ("not meaningful"); a numerator too large for the scaling raises an
 error in the engine, never a wrong figure. Its tests compare it with Python's exact
 arithmetic on more than 3,000 cases, negatives and exact ties among them.
+
+Commit 3a (the reviewer's verdict of 11 November, F22): the leaves held is judged on do not
+depend on an account filter; the filter makes a second CTE that only the sums read.
 """
 
 import json
@@ -392,3 +395,31 @@ class TestTheCompilerChecksItself:
                                  "role_entities": ENTITIES})]
         assert compiler.ALLOWED_RELATIONS == ("fact_plan", "dim_version", "dim_time",
                                               "dim_entity", "dim_account")
+
+
+# -- F22: an account filter chooses what is summed (the reviewer's verdict of 11 November) --------
+
+def cte(sql: str, name: str) -> str:
+    """The body of one CTE of a compiled query (each CTE is on a line of its own)."""
+    found = re.search(rf"^(?:WITH )?{name} AS \((.*)\),$", sql, flags=re.MULTILINE)
+    return found.group(1) if found else ""
+
+
+class TestAnAccountFilterChoosesWhatIsSummed:
+    """F22 (verdict, section 5, item 3): held is judged on every account the metric reads,
+    whatever the filter. The CTE leaves holds every account the metric reads, unfiltered, and
+    the counts of held (em) read it; a filter on accounts makes a second CTE, chosen, the
+    leaves it names, and only the sums read that. A query with no account filter has no chosen
+    CTE, so its SQL is the same as before."""
+
+    def test_the_leaves_held_is_judged_on_do_not_depend_on_the_filter(self, compiler, loaded):
+        plain = compiler.compile(validated(metric="operating_expenses"), loaded, group()).sql
+        narrowed = compiler.compile(validated(metric="operating_expenses",
+                                              filters=(("account", ("6100",)),)),
+                                    loaded, group()).sql
+        assert cte(plain, "leaves") and cte(narrowed, "leaves") == cte(plain, "leaves")
+        assert cte(narrowed, "em") == cte(plain, "em")
+        assert cte(narrowed, "chosen") == ("SELECT leaf, account, list_order FROM leaves WHERE "
+                                           "account IN ('6100')")
+        assert "JOIN chosen AS f ON f.account = p.account" in cte(narrowed, "sums")
+        assert cte(plain, "chosen") == "" and "chosen" not in plain

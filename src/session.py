@@ -27,6 +27,9 @@ never changes another's answers.
   SELECT, and the query runs on a cursor of its own, closed after, all
   under the read lock. It returns an Answer, or a typed outcome; any error
   of the engine is engine_error, in fixed wording, with no SQL echoed.
+  answer, run and provenance first check the role they are given
+  (roles.checked): anything that is not a Role of the two shapes raises
+  RoleError, before anything is read or run.
 - dimensions() and registry() give what validation needs: the promoted
   pair's members, and the registry loaded with its accounts (each code's
   parent and kind), so an inline sum's kind is checked against the Lists
@@ -61,7 +64,7 @@ from typing import Callable, Iterable, Optional, Union
 
 import config
 from src import answer as answers
-from src import compiler, outcomes, promotion, registry, spec, warehouse
+from src import compiler, outcomes, promotion, registry, roles, spec, warehouse
 from src.batch import Pair
 from src.controls import SEVERITIES
 from src.startup import Template
@@ -232,7 +235,9 @@ class Session:
     # -- Provenance (5.5) -------------------------------------------------------------------------
 
     def provenance(self, role=None) -> dict:
-        """What an answer card needs (see _provenance), kept until the next write cycle."""
+        """What an answer card needs (see _provenance), kept until the next write cycle; a
+        role, when given, must be a Role of the two shapes (RoleError)."""
+        role = None if role is None else roles.checked(role)
         key = ("provenance", None if role is None else role.view())
         if key not in self._kept:
             self._kept[key] = self._provenance(role)
@@ -317,7 +322,9 @@ class Session:
     def answer(self, spec_or_json, role) -> Union[answers.Answer, outcomes.Outcome]:
         """A question, as a Specification, a JSON text or a mapping, answered under the role:
         an Answer, or a typed outcome. Validation, compiling and running happen under one hold
-        of the read lock, so no write cycle comes between them."""
+        of the read lock, so no write cycle comes between them. A role of the wrong shape
+        raises RoleError, whatever the question."""
+        role = roles.checked(role)
         if isinstance(spec_or_json, spec.Specification):
             question = spec_or_json
         else:
@@ -336,7 +343,9 @@ class Session:
 
     def run(self, compiled, validated, role) -> Union[answers.Answer, outcomes.Outcome]:
         """Runs a compiled query on a cursor of its own, closed after: only when the engine's own
-        parser reads it as one SELECT. An error of the engine is engine_error."""
+        parser reads it as one SELECT. An error of the engine is engine_error. A role of the
+        wrong shape raises RoleError before anything runs."""
+        role = roles.checked(role)
         with self.reading() as cursor:
             try:
                 if warehouse.statement_types(cursor, compiled.sql) != ("SELECT",):

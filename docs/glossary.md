@@ -38,7 +38,7 @@ a retired variant comes back. Each term below lists the variants it retires.
 | **specification** | A question as eight fields: metric, version, dimensions, filters, period, comparison, sort and limit. In Phase 3 a model writes it; it is never SQL. | |
 | **validate** | To check a specification against the registry, the promoted pair's members and the role, in a fixed order, and give it back with canonical names, or refuse it with an outcome. | |
 | **compile** | To turn a validated specification into one SELECT, from fixed templates and the registry's formulas, with the role's entities injected. | |
-| **guard** | The check every compiled query passes before it runs: one SELECT of the allowed tables, with the role's filter in place. A second line behind the read-only connection. | |
+| **guard** | The check every compiled query passes before it runs: one SELECT of the allowed tables, with the role's filter in place. A second line behind the compiler's fixed templates. | |
 | **role** | Who asks: a group controller sees every entity; an entity controller sees one, and every group figure is over it. | |
 | **session** | One visitor's copy of the template, opened read-only between write cycles: its acknowledgements, promotion and answers are its own. | |
 | **template** | The warehouse every session copies: both pairs landed, their breaks stored, nothing promoted, read-only on disk. | |
@@ -65,5 +65,6 @@ a retired variant comes back. Each term below lists the variants it retires.
   tile"; the pages stay stubs in Phase 2, and the widget is renamed when they
   are built. The block labelled "Scenario" in the `landed_block_short`
   fixture is data, not a term.
-- The governed layer's terms (metric to provenance) were added in part 2e as
-  proposals, for the reviewer to approve.
+- The governed layer's terms (metric to provenance) were added in part 2e and
+  approved by the reviewer on 11 November (D4), with the guard's entry
+  reworded.

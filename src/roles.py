@@ -20,6 +20,19 @@ Central Europe): an AT controller sees that region's name, which is AT's own
 member. Accounts and metrics are the same for every role. With nothing
 promoted there are no lists: the outcome nothing_promoted.
 
+The shape of a role (the reviewer's verdict of 11 November, F21). A role has
+one of two shapes: the group controller, with no entity; or an entity
+controller, with an entity code, text that passes the member-name
+allow-list. Role refuses any other shape when it is made, with RoleError;
+dataclasses.replace makes a role anew, so the same check runs. A role is
+built by the page's own code, never from a visitor's words, so a wrong one
+is a programming fault: it stops loudly, and is never answered. A frozen
+dataclass can still be made without its constructor (object.__new__), and an
+object can look like a role without being one, so checked(role) applies the
+same rule and also asks for a Role itself (type(role) is Role). validate,
+compile, session.answer, session.run, members_for and provenance call it
+before they use a role.
+
 This module imports neither the database engine nor the query parser
 (tests/test_boundaries.py): the session reads the dimensions for it.
 """
@@ -32,20 +45,36 @@ from typing import Optional, Union
 from src import names as allow_list
 from src import outcomes, registry
 
-__all__ = ["ENTITY_CONTROLLER", "GROUP_CONTROLLER", "Members", "Role", "RoleError",
-           "entity_controller", "group_controller", "members_for"]
+__all__ = ["ENTITY_CONTROLLER", "GROUP_CONTROLLER", "ROLES", "Members", "Role", "RoleError",
+           "checked", "entity_controller", "group_controller", "members_for"]
 
 GROUP_CONTROLLER, ENTITY_CONTROLLER = "group_controller", "entity_controller"
+ROLES = (GROUP_CONTROLLER, ENTITY_CONTROLLER)
+SHAPE = ("A role is the group controller, with no entity, or an entity controller, with one "
+         "entity code.")
 
 
 class RoleError(ValueError):
-    """A role that cannot be made, told in one fixed sentence."""
+    """A role that cannot be made, or is not a role, told in one fixed sentence."""
+
+
+def _wrong_shape(name, entity) -> bool:
+    """True unless (name, entity) is one of the two shapes of a role."""
+    if type(name) is not str or name not in ROLES:
+        return True
+    if name == GROUP_CONTROLLER:
+        return entity is not None
+    return type(entity) is not str or not allow_list.allowed(entity)
 
 
 @dataclass(frozen=True)
 class Role:
     name: str                       # group_controller or entity_controller
     entity: Optional[str] = None    # an entity controller's entity code
+
+    def __post_init__(self) -> None:
+        if _wrong_shape(self.name, self.entity):
+            raise RoleError(SHAPE)
 
     def view(self) -> str:
         """What the provenance says the figures are over."""
@@ -71,8 +100,18 @@ def entity_controller(entity) -> Role:
     return Role(ENTITY_CONTROLLER, entity)
 
 
+def checked(role) -> Role:
+    """The role itself when it is a Role of one of the two shapes, however it was made;
+    anything else raises RoleError."""
+    if type(role) is not Role or _wrong_shape(getattr(role, "name", None),
+                                              getattr(role, "entity", None)):
+        raise RoleError(SHAPE)
+    return role
+
+
 def members_for(role: Role, session) -> Union[Members, outcomes.Outcome]:
     """The member lists a prompt may use under role, from the session's promoted pair."""
+    role = checked(role)
     found = session.members()
     if isinstance(found, outcomes.Outcome):
         return found

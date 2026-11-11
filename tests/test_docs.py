@@ -188,12 +188,17 @@ class TestTheRegistryDoc:
 
 
 class TestTheGovernedLayerDoc:
-    def test_the_control_and_the_second_line_are_said_plainly(self):
+    def test_what_the_connection_stops_and_the_controls_for_reads_are_said_plainly(self):
+        # Changed on purpose in 3a (the reviewer's verdict of 11 November, F23): the brief's
+        # "the read-only connection ... is the control" was imprecise. The connection stops
+        # writes, files and settings, not reads; for reads the compiler and the guard are the
+        # controls.
         text = flat(GOVERNED)
-        for phrase in ("the read-only connection with external access off is the control; "
-                       "the guard is a second line; the allow-list of names narrows the "
-                       "injection route and does not close it",
-                       "v1 does not query the ledger",
+        first = flat_text(GOVERNED.read_text(encoding="utf-8").split("\n\n")[2])
+        assert first.startswith("Said plainly: ") and READS in first
+        for phrase in (READS, "the guard, a second line behind the compiler's fixed templates",
+                       "The allow-list of names narrows the injection route and does not close "
+                       "it", "v1 does not query the ledger",
                        "does not answer prior-year questions"):
             assert phrase in text, phrase
 
@@ -224,3 +229,136 @@ class TestTheGovernedLayerDoc:
         text = flat(GOVERNED)
         for code, sentence in outcomes.SENTENCES.items():
             assert f"`{code}`" in text and sentence in text, code
+
+
+# -- Commit 3a: the reviewer's verdict of 11 November ----------------------------------------------
+
+# The reviewer's sentence (F23), as the doc's first paragraph and the guard's docstring say it.
+READS = ("the read-only connection, with external access off, stops writes, files and "
+         "settings; it does not stop reads; for reads the controls are the compiler, which "
+         "writes only fixed templates with canonical members, and the guard")
+GUARD = ROOT / "src" / "guard.py"
+SPEC = ROOT / "src" / "spec.py"
+
+
+def flat_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def docstring(path: Path) -> str:
+    import ast
+    return flat_text(ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))))
+
+
+def section(path: Path, heading: str) -> str:
+    """The flat text of one section of a Markdown file, from its heading to the next."""
+    text = path.read_text(encoding="utf-8")
+    level = heading.split(" ", 1)[0]
+    body = text.split(f"\n{heading}\n", 1)[1]
+    return flat_text(re.split(rf"\n#{{1,{len(level)}}} ", body, maxsplit=1)[0])
+
+
+class TestThe3aDocs:
+    def test_no_passage_calls_the_connection_the_control(self):
+        # F23: the sentence came from the brief and stood in three places.
+        places = [README, *sorted((ROOT / "docs").glob("*.md")), ROOT / "main.py",
+                  *sorted((ROOT / "src").glob("*.py"))]
+        found = [p.name for p in places
+                 if re.search(r"is the control(?![\w'])", flat(p))]
+        assert found == []
+
+    def test_the_guards_docstring_says_what_the_guard_is_behind(self):
+        text = docstring(GUARD)
+        assert text.startswith("The guard (the reviewer's Phase 2 brief, 6.4): a second line "
+                               "behind the compiler's fixed templates.")
+        assert READS[0].upper() + READS[1:] in text
+
+    def test_the_condition_under_which_a_star_only_file_is_required(self):
+        # D2: accepted for v1, with the condition written where the reads are described.
+        text = section(GOVERNED, "### What the read-only connection does not stop")
+        for phrase in ("a star-only file, one per session, becomes a requirement, not an "
+                       "option, before any of these:",
+                       "real company data in the template;",
+                       "any feature in which text written by a person or a model reaches the "
+                       "engine as SQL;",
+                       "any setting in which a visitor can reach the file other than through "
+                       "`session.answer`",
+                       "`PRAGMA database_list` on the connection shows the path of the "
+                       "session's folder"):
+            assert phrase in text, phrase
+        # The paragraph on reads stays.
+        assert ("For reads the compiler (which writes only the queries below) and the guard "
+                "(which refuses any other relation and any unfiltered `fact_plan`) are the "
+                "controls.") in text
+
+    def test_the_limit_on_telling_that_a_code_exists_is_closed(self):
+        # D3: the limit kept as the brief designed it is closed, and the doc says the rule.
+        text = section(GOVERNED, "## Roles")
+        assert "A limit, kept as the brief designed it" not in text
+        assert "can tell that a code exists" not in text
+        for phrase in ("matched against its own entity and its own regions alone",
+                       "Any other value, real or made up",
+                       "is `entity_not_permitted`: one and the same outcome, so an entity "
+                       "controller cannot tell whether a code exists",
+                       "A group controller sees every entity, and a name that is no member is "
+                       "`unknown_member`",
+                       "an unknown one is `unknown_member` for every role"):
+            assert phrase in text, phrase
+
+    def test_a_role_of_the_wrong_shape_is_a_programming_fault(self):
+        # F21.
+        text = section(GOVERNED, "## Roles")
+        for phrase in ("never from a visitor's words", "`RoleError`",
+                       "`validate`, `compile`, `session.answer`, `session.run`, `members_for` "
+                       "and `provenance`"):
+            assert phrase in text, phrase
+
+    def test_a_hand_built_specification_is_read_by_the_same_type_rules(self):
+        # F24.
+        text = section(GOVERNED, "## The specification and its validation")
+        assert ("a specification built by hand is first read by the same type rules as "
+                "`from_json`: a field of the wrong type is `specification_invalid`") in text
+
+    def test_the_validation_docstring_states_the_order_and_the_rules(self):
+        text = docstring(SPEC)
+        for phrase in ("a role that is not a Role of the two shapes raises RoleError",
+                       "the types, by the rules from_json enforces (specification_invalid)",
+                       "real or made up, is entity_not_permitted",
+                       "for a group controller a name that is no member is unknown_member"):
+            assert phrase in text, phrase
+
+    def test_an_account_filter_chooses_what_is_summed(self):
+        # F22, in the registry's rules and in the compiler's guarantees.
+        registry_text = section(REGISTRY_DOC, "### Held, by metric")
+        assert "narrows the accounts a question reads" not in registry_text
+        assert ("An account filter chooses which of those accounts are summed, and nothing "
+                "else: held is judged on every account the metric reads, whatever the filter, "
+                "so the slices of a metric by account add up to its total and a gap is a gap "
+                "with or without the filter.") in registry_text
+        assert ("**An account filter chooses what is summed, nothing else.**"
+                in section(GOVERNED, "## The compiler"))
+
+    def test_the_grid_and_the_trigger_for_its_own_ci_job(self):
+        # D1: the whole grid stays in the default suite and in CI until the trigger.
+        text = section(GOVERNED, "## The compiler")
+        for phrase in ("The whole grid runs, unsampled, in the default suite and in CI",
+                       "When a grid job takes more than 15 minutes, or CI minutes become a "
+                       "cost, the grid becomes its own CI job per Python, and the rest of the "
+                       "suite its own"):
+            assert phrase in text, phrase
+
+    def test_the_readme_gives_the_inner_loop_in_one_line(self):
+        # D1.
+        readme = README.read_text(encoding="utf-8")
+        suite = readme.split("\n## Test suite\n", 1)[1].split("\n## ", 1)[0]
+        lines = [line for line in suite.splitlines() if "--ignore=tests/test_grid.py" in line]
+        assert lines == ["The inner loop is `python -m pytest --ignore=tests/test_grid.py`; a "
+                         "phase gate runs the full suite."]
+
+    def test_a_stale_folder_is_judged_by_its_age_alone(self):
+        # F26, a may item: stated as a limit, not changed.
+        text = section(GOVERNED, "## Sessions and promotion")
+        for phrase in ("A limit: a folder left behind is judged by its age alone",
+                       "whether or not another process still holds it",
+                       "give each deployment its own root"):
+            assert phrase in text, phrase

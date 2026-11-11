@@ -81,9 +81,11 @@ is not. Revenue reads 4000 and 4100; cost of sales 5000, 5100 and 5200;
 operating expenses 6000 to 6300; volume VOL; headcount HC. A difference or a
 ratio reads the accounts of all its parts: gross profit reads five accounts,
 EBIT all nine, marketing % of revenue 6100, 4000 and 4100, revenue per unit
-4000, 4100 and VOL. An account filter narrows the accounts a question reads
-to those it names. Subtotal rows are never read, so they never make an
-entity-month held.
+4000, 4100 and VOL. An account filter chooses which of those accounts are
+summed, and nothing else: held is judged on every account the metric reads,
+whatever the filter, so the slices of a metric by account add up to its
+total and a gap is a gap with or without the filter. Subtotal rows are never
+read, so they never make an entity-month held.
 
 The version's held range runs from the first to the last month in which any
 entity in scope has any figure for the version, on a line that is not a

@@ -22,29 +22,46 @@ validate(spec, registry, session, role) returns a Validated: the
 specification with every member replaced by its canonical name from the
 promoted pair's dimension tables (matched without regard to case, a member
 by its code or its name), the role's entities, and the months of the
-window. Or it returns a typed refusal, checked in this order:
+window. Or it returns a typed refusal (or, for a role of the wrong shape,
+raises), checked in this order:
 
-1. nothing promoted (nothing_promoted); then an entity controller whose
+1. the role: a role that is not a Role of the two shapes raises RoleError
+   (roles.checked), a programming fault and never an outcome, since a role
+   is built by the page's own code, never from a visitor's words;
+2. the types, by the rules from_json enforces (specification_invalid): a
+   Specification built by hand is turned back into the JSON data it stands
+   for (each of its dataclasses a mapping, each tuple a list, anything else
+   as it is) and read by from_json, so a field of the wrong type is refused,
+   never raised, and a limit of True is not a limit of 1; the rest of
+   validation reads what from_json gave back;
+3. nothing promoted (nothing_promoted); then an entity controller whose
    entity the promoted pair does not hold (entity_not_permitted), before
    anything else, so no query is ever built with an empty entity list;
-2. the metric is in the registry (unknown_metric);
-3. the version is a member of dim_version (unknown_member);
-4. each dimension is one the metric may be grouped by, named once
+4. the metric is in the registry (unknown_metric);
+5. the version is a member of dim_version (unknown_member);
+6. each dimension is one the metric may be grouped by, named once
    (dimension_not_allowed);
-5. each filter is on a dimension the metric may be filtered by, named once
-   (filter_not_allowed); each value is a member (unknown_member) that the
-   role may see (entity_not_permitted: another entity, a region only other
-   entities hold); an account the metric does not sum, a subtotal or a
-   statistic among them, is filter_not_allowed, because the member exists
-   and every role's member lists show it;
-6. the comparison: prior_year is prior_year_not_available; any other must be
+7. each filter is on a dimension the metric may be filtered by, named once
+   (filter_not_allowed); then each value. An entity or region value is
+   matched against the entities the role may see and their regions alone:
+   for an entity controller, its own entity and its own regions (a shared
+   region, Central Europe for AT, is its own), and any other value, another
+   entity's code or name, a region only other entities hold, or a name that
+   is no member at all, real or made up, is entity_not_permitted, one and
+   the same outcome, so it never tells whether a code exists (the
+   reviewer's verdict of 11 November, D3); for a group controller a name
+   that is no member is unknown_member. An account value that is no member
+   is unknown_member for every role; an account the metric does not sum, a
+   subtotal or a statistic among them, is filter_not_allowed, because the
+   member exists and every role's member lists show it;
+8. the comparison: prior_year is prior_year_not_available; any other must be
    one the metric allows and not the version itself
    (comparison_not_allowed);
-7. the period is a month, quarter, year to date or fiscal year of FY2026
+9. the period is a month, quarter, year to date or fiscal year of FY2026
    (period_invalid);
-8. the limit is between 1 and 100 (limit_invalid);
-9. the sort is by value or by a grouped dimension, asc or desc
-   (sort_invalid).
+10. the limit is between 1 and 100 (limit_invalid);
+11. the sort is by value or by a grouped dimension, asc or desc
+    (sort_invalid).
 
 Words of the schema (a dimension, a filter's dimension, the comparison, the
 period's kind, the sort's field and direction) are matched exactly: they
@@ -61,7 +78,7 @@ import json
 from dataclasses import dataclass
 from typing import Optional, Union
 
-from src import outcomes
+from src import outcomes, roles
 from src.outcomes import Outcome
 
 __all__ = ["COMPARISONS", "KEYS", "MAX_LIMIT", "PERIOD_KINDS", "Dimensions", "Filter", "Period",
@@ -175,6 +192,29 @@ def from_json(given: Union[str, bytes, dict]) -> Specification:
                          comparison=_text(data["comparison"]), sort=sort, limit=limit)
 
 
+def _as_data(given) -> dict:
+    """A hand-built Specification as the JSON data from_json reads: each of its dataclasses a
+    mapping, each tuple a list, anything else as it is, for from_json to judge. Anything that
+    is not a Specification is refused."""
+    if type(given) is not Specification:
+        raise SpecificationError()
+
+    def listed(value):
+        return list(value) if isinstance(value, tuple) else value
+
+    def mapping(value, kind, names: tuple):
+        return {n: listed(getattr(value, n)) for n in names} if isinstance(value, kind) else value
+
+    filters = listed(given.filters)
+    if isinstance(filters, list):
+        filters = [mapping(f, Filter, ("dimension", "values")) for f in filters]
+    return {"metric": given.metric, "version": given.version,
+            "dimensions": listed(given.dimensions), "filters": filters,
+            "period": mapping(given.period, Period, ("kind", "value")),
+            "comparison": given.comparison, "sort": mapping(given.sort, Sort, ("by", "direction")),
+            "limit": given.limit}
+
+
 # == Validation ======================================================================================
 
 def _match(value: str, candidates) -> Optional[str]:
@@ -215,7 +255,13 @@ def _window(period: Period, dims: Dimensions) -> Optional[tuple]:
 
 
 def validate(spec: Specification, registry, session, role) -> Union[Validated, Outcome]:
-    """The specification with canonical names, or a typed refusal (in the order above)."""
+    """The specification with canonical names, or a typed refusal (in the order above); a role
+    of the wrong shape raises RoleError."""
+    role = roles.checked(role)
+    try:
+        spec = from_json(_as_data(spec))
+    except SpecificationError as refused:
+        return refused.outcome
     dims = session.dimensions()
     if isinstance(dims, Outcome):
         return dims
@@ -223,6 +269,7 @@ def validate(spec: Specification, registry, session, role) -> Union[Validated, O
     if role.entity is not None and role.entity not in codes:
         return outcomes.outcome("entity_not_permitted")
     permitted = codes if role.entity is None else (role.entity,)
+    entity_view = role.name == roles.ENTITY_CONTROLLER
     if not permitted:
         return outcomes.NO_DATA
     metric_id = _match(spec.metric, ((m,) for m in registry.ids()))
@@ -241,7 +288,7 @@ def validate(spec: Specification, registry, session, role) -> Union[Validated, O
             return outcomes.outcome("filter_not_allowed")
         values = []
         for value in f.values:
-            found = _value(f.dimension, value, metric, dims, permitted)
+            found = _value(f.dimension, value, metric, dims, permitted, entity_view)
             if isinstance(found, Outcome):
                 return found
             if found not in values:
@@ -269,21 +316,22 @@ def validate(spec: Specification, registry, session, role) -> Union[Validated, O
     return Validated(spec=canonical, entities=permitted, months=window[1])
 
 
-def _value(dimension: str, value: str, metric, dims: Dimensions,
-           permitted: tuple) -> Union[str, Outcome]:
-    """A filter value's canonical member, or why it is refused."""
-    if dimension == "entity":
-        found = _match(value, ((code, name) for code, name, _ in dims.entities))
-        if found is None:
-            return outcomes.outcome("unknown_member")
-        return found if found in permitted else outcomes.outcome("entity_not_permitted")
-    if dimension == "region":
-        regions = tuple(dict.fromkeys(region for _, _, region in dims.entities if region))
-        found = _match(value, ((r,) for r in regions))
-        if found is None:
-            return outcomes.outcome("unknown_member")
-        own = {region for code, _, region in dims.entities if code in permitted}
-        return found if found in own else outcomes.outcome("entity_not_permitted")
+def _value(dimension: str, value: str, metric, dims: Dimensions, permitted: tuple,
+           entity_view: bool) -> Union[str, Outcome]:
+    """A filter value's canonical member, or why it is refused. An entity or region value is
+    matched against the permitted entities and their regions alone; for an entity controller
+    (entity_view) anything else, real or made up, is entity_not_permitted, and for a group
+    controller, who is permitted every entity, it is no member: unknown_member."""
+    if dimension in ("entity", "region"):
+        seen = tuple(e for e in dims.entities if e[0] in permitted)
+        if dimension == "entity":
+            found = _match(value, ((code, name) for code, name, _ in seen))
+        else:
+            regions = tuple(dict.fromkeys(region for _, _, region in seen if region))
+            found = _match(value, ((r,) for r in regions))
+        if found is not None:
+            return found
+        return outcomes.outcome("entity_not_permitted" if entity_view else "unknown_member")
     found = _match(value, ((code, name) for code, name, *_ in dims.accounts))
     if found is None:
         return outcomes.outcome("unknown_member")

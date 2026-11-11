@@ -16,7 +16,8 @@ The codes, in the order validation checks them (src/spec.py), then the
 outcomes of running a question:
 - nothing_promoted: no pair is promoted in the session (part 2c);
 - specification_invalid: the text is not a specification of exactly the
-  eight keys with values of the right JSON types;
+  eight keys with values of the right JSON types, or a Specification built
+  by hand has a field of the wrong type by the same rules (3a, F24);
 - unknown_metric, unknown_member, dimension_not_allowed, filter_not_allowed,
   comparison_not_allowed, prior_year_not_available, period_invalid,
   limit_invalid, sort_invalid, entity_not_permitted: a refusal by
