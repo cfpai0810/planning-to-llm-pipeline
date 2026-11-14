@@ -9,9 +9,10 @@ import.
     ask(client, session, role, question, *, audit, narrate="template")
 
 returns an Asked: the run id; the result, an Answer or an Outcome (None when
-a model call failed); the narration and its flags (part 3c fills them; none
-yet); and the failure code (src/errors.py) when the model call failed or its
-reply could not be used. The steps, in order:
+a model call failed); the narration, the text shown, and the flags of model
+wording that was withheld (part 3c); and the failure code (src/errors.py)
+when the specification call failed or its reply could not be used. The
+steps, in order:
 
 1. the question (4.6): text that, after trimming, is 1 to 500 characters,
    with no control character but newline and tab, no format character
@@ -33,7 +34,11 @@ reply could not be used. The steps, in order:
    object. A refusal is its outcome; a specification goes to session.answer
    as the mapping it came as, where Phase 2 validates, compiles and runs it
    unchanged; anything else is unreadable_reply;
-7. narration: part 3c;
+7. narration (src/narration.py, part 3c), of an answer with figures alone:
+   the template, or with narrate="model" one more call, whose wording is
+   shown when the checks give it no flag and otherwise withheld for the
+   template and a fixed notice. A failed narration call never touches the
+   answer or the failure code, which stay the specification call's;
 8. the record, handed to the audit seam (an object whose one method,
    write(record), takes the finished record as a mapping) last of all;
 9. the result.
@@ -54,7 +59,11 @@ and the SDK's version), the specification call's text as received, the
 canonical specification of an answer (or null), the outcome (a code, or
 answered), the SQL and its hash, the result hash, the row count, truncation,
 the coverage and gaps, the engine's message for an engine_error (never shown
-to a reader), asks_for_a_cause, and the narration mode asked for. The parsed
+to a reader), asks_for_a_cause, and the narration: the mode asked for and
+the mode shown, the text shown, the model's own text when it was withheld,
+the flags (kind, text, figure, reason) and the narration call's failure code
+(null where there was no narration). The narration call, when made, is the
+second entry of the calls, with the purpose narration. The parsed
 reply is never in it: only the text as received and the validated
 specification, so neither a question nor a reply can make it fail to encode.
 Nothing in it is the key, a request header or an exception's class name.
@@ -75,7 +84,7 @@ from datetime import datetime, timezone
 from typing import Optional, Union
 
 from src import answer as answers
-from src import model_call, outcomes, prompt, roles
+from src import model_call, narration, outcomes, prompt, roles
 from src.outcomes import Outcome
 from src.session import SessionError
 
@@ -88,6 +97,9 @@ RECORD_FIELDS = ("run_id", "at", "role", "question", "provenance", "prompt", "ca
                  "result_sha256", "row_count", "truncated", "coverage", "gaps", "engine_detail",
                  "asks_for_a_cause", "narration")
 UNREADABLE = "unreadable_reply"
+# The record's narration where there was none: an outcome, a failure, or no figure.
+NOT_NARRATED = {"mode_shown": None, "text_shown": None, "model_text": None, "flags": [],
+                "failure": None}
 
 
 @dataclass(frozen=True)
@@ -95,8 +107,8 @@ class Asked:
     """What a question came to."""
     run_id: str
     result: Union[answers.Answer, Outcome, None]   # None only when failure is set
-    narration: Optional[str] = None                # part 3c
-    flags: tuple = ()                              # part 3c
+    narration: Optional[str] = None                # the text shown; None with no figures
+    flags: tuple = ()                              # checks.Flag of model wording withheld
     failure: Optional[str] = None                  # a code of src/errors.py
 
 
@@ -163,7 +175,7 @@ def ask(client, session, role, question, *, audit, narrate: str = "template") ->
     record.update(run_id=run_id, at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   role={"name": role.name, "entity": role.entity, "view": role.view()},
                   question=question if isinstance(question, str) else None, calls=[],
-                  narration={"mode_asked": narrate})
+                  narration={"mode_asked": narrate, **NOT_NARRATED})
     ended = getattr(session, "closed", False)
     if not ended:
         try:
@@ -172,30 +184,35 @@ def ask(client, session, role, question, *, audit, narrate: str = "template") ->
             ended = True
     result: Union[answers.Answer, Outcome, None] = None
     failure: Optional[str] = None
+    narrated: Optional[narration.Narrated] = None
     if sent is None:
         result = outcomes.QUESTION_INVALID
     elif ended:
         result = outcomes.SESSION_ENDED
     else:
-        result, failure = _asked(client, session, role, sent, record)
+        result, failure, narrated = _asked(client, session, role, sent, record, narrate)
     _finish(record, result, failure)
     try:                                                                # step 8
         audit.write(record)
     except OSError:
         return Asked(run_id, outcomes.AUDIT_UNAVAILABLE)
-    return Asked(run_id, result, failure=failure)                       # step 9
+    if narrated is None:                                                # step 9
+        return Asked(run_id, result, failure=failure)
+    return Asked(run_id, result, narration=narrated.text, flags=narrated.flags,
+                 failure=failure)
 
 
-def _asked(client, session, role, sent: str, record: dict):
-    """Steps 3 to 6: (the result, the failure code), with what they found put in the record."""
+def _asked(client, session, role, sent: str, record: dict, narrate: str):
+    """Steps 3 to 7: (the result, the failure code, the narration or None), with what they
+    found put in the record."""
     try:
         members = roles.members_for(role, session)                      # step 3
         dims = members if isinstance(members, Outcome) else session.dimensions()
         if isinstance(dims, Outcome):
-            return dims, None
+            return dims, None, None
         loaded = session.registry()
     except SessionError:
-        return outcomes.SESSION_ENDED, None
+        return outcomes.SESSION_ENDED, None, None
     made = prompt.build(loaded, members, dims.versions, sent)           # step 4
     record["prompt"] = made.hashes()
     call = model_call.call_model(client, system=made.system, user=sent,  # step 5
@@ -203,20 +220,27 @@ def _asked(client, session, role, sent: str, record: dict):
     record["calls"].append(_call_entry(call, "specification"))
     record["model_text_raw"] = call.raw_text
     if not call.ok:
-        return None, call.code
+        return None, call.code, None
     kind, value, cause = _reply(call.data)                              # step 6
     record["asks_for_a_cause"] = cause
     if kind is None:
-        return None, UNREADABLE
+        return None, UNREADABLE, None
     if kind == "refusal":
-        return value, None
+        return value, None, None
     details: list = []
     try:
         result = session.answer(value, role, engine_detail=details.append)
     except SessionError:
-        return outcomes.SESSION_ENDED, None
+        return outcomes.SESSION_ENDED, None, None
     record["engine_detail"] = details[0] if details else None
-    return result, None
+    if not isinstance(result, answers.Answer) or result.outcome is not None:
+        return result, None, None
+    narrated = narration.narrate(client, result, loaded, members, role,  # step 7
+                                 mode=narrate, asks_for_a_cause=cause)
+    if narrated.call is not None:
+        record["calls"].append(_call_entry(narrated.call, "narration"))
+    record["narration"] = narrated.record()
+    return result, None, narrated
 
 
 def _finish(record: dict, result, failure: Optional[str]) -> None:

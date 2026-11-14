@@ -204,7 +204,9 @@ class TestEachPath:
         assert isinstance(asked.result, answer.Answer)
         assert (asked.result.sql_sha256, asked.result.result_sha256, asked.result.rows) == (
             direct.sql_sha256, direct.result_sha256, direct.rows)
-        assert (asked.failure, asked.narration, asked.flags) == (None, None, ())
+        # Changed on purpose in 3c: an answer with figures is narrated, by the template here.
+        assert (asked.failure, asked.flags) == (None, ())
+        assert asked.narration.startswith("Revenue for the group")
         assert len(client.calls) == 1
 
     @pytest.mark.parametrize("reason", ["out_of_scope", "needs_clarification",
@@ -295,13 +297,137 @@ class TestEachPath:
         assert record["provenance"] == asked.result.provenance
         assert record["provenance"]["plan_file_name"] == "planning_model.xlsx"
 
-    def test_narration_is_part_3cs(self, ask_module, sample):
-        for mode in ("template", "model"):
-            asked, client, audit = run(ask_module, sample, narrate=mode)
-            assert (asked.narration, asked.flags, len(client.calls)) == (None, (), 1)
-            assert audit.records[0]["narration"] == {"mode_asked": mode}
+    def test_the_narration_mode_is_template_or_model(self, ask_module, sample):
+        # Changed on purpose in 3c: part 3b left narration to 3c; the mode is still checked.
         with pytest.raises(ValueError):
             run(ask_module, sample, narrate="poetry")
+
+
+# -- Narration through the door (part 3c) -----------------------------------------------------------
+
+NARRATED = {"mode_asked", "mode_shown", "text_shown", "model_text", "flags", "failure"}
+NO_NARRATION = {"mode_shown": None, "text_shown": None, "model_text": None, "flags": [],
+                "failure": None}
+BY_ENTITY = {**GOOD, "version": "Actual", "dimensions": ["entity"],
+             "period": {"kind": "ytd", "value": "2026-06"}, "comparison": "budget"}
+
+
+def _narration_text(ask_module, sample, role=None):
+    """Wording a model might write for BY_ENTITY: the first row's value under its name."""
+    from src import answer as answers
+    from src import narration, roles
+    role = role or group()
+    answer = sample.answer(BY_ENTITY, role)
+    name = narration.figure_name(answer, sample.registry(), roles.members_for(role, sample),
+                                 answer.rows[0], "value")
+    return f"{name} was {answers.shown(answer.rows[0][1], answer.columns[1][2])}.", answer
+
+
+def _narrated_client(*narration_replies, cause=False):
+    return fakes.FakeClient(replies=[fakes.Reply(reply(specification=BY_ENTITY, cause=cause)),
+                                     *narration_replies])
+
+
+class TestNarrationThroughTheDoor:
+    def test_the_template_is_the_default_and_makes_no_call(self, ask_module, sample):
+        from src import narration, roles
+        asked, client, audit = run(ask_module, sample, reply(specification=BY_ENTITY))
+        expected = narration.template(asked.result, sample.registry(),
+                                      roles.members_for(group(), sample), group())
+        assert (asked.narration, asked.flags, len(client.calls)) == (expected, (), 1)
+        record = audit.records[0]["narration"]
+        assert set(record) == NARRATED
+        assert record == {"mode_asked": "template", "mode_shown": "template",
+                          "text_shown": expected, "model_text": None, "flags": [],
+                          "failure": None}
+
+    def test_model_wording_with_no_flag_is_shown_after_one_more_call(self, ask_module, sample):
+        text, _ = _narration_text(ask_module, sample)
+        asked, client, audit = run(ask_module, sample, client=_narrated_client(
+            fakes.Reply(text, request_id="req_narration")), narrate="model")
+        assert (asked.narration, asked.flags, asked.failure) == (text, (), None)
+        assert len(client.calls) == 2 and "output_config" in client.calls[1]
+        assert "format" not in client.calls[1]["output_config"]
+        record = audit.records[0]
+        assert [c["purpose"] for c in record["calls"]] == ["specification", "narration"]
+        assert record["calls"][1]["request_id"] == "req_narration"
+        assert tuple(record["calls"][1]) == CALL_FIELDS
+        assert record["narration"]["mode_shown"] == "model"
+        assert record["narration"]["text_shown"] == text
+
+    def test_flagged_wording_is_withheld_and_kept_for_the_record(self, ask_module, sample):
+        from src import answer as answers
+        from src import narration
+        text, answer = _narration_text(ask_module, sample)
+        written = answers.shown(answer.rows[0][1], answer.columns[1][2])
+        wrong = text.replace(written, "1,234 EUR")
+        asked, client, audit = run(ask_module, sample, client=_narrated_client(
+            fakes.Reply(wrong)), narrate="model")
+        assert asked.narration.endswith("\n" + narration.NOTICE_WITHHELD)
+        assert asked.flags and asked.failure is None and isinstance(asked.result, answers.Answer)
+        record = audit.records[0]["narration"]
+        assert (record["mode_shown"], record["model_text"]) == ("template", wrong)
+        assert [f["text"] for f in record["flags"]] == ["1,234 EUR"]
+
+    def test_a_failed_narration_call_keeps_the_answer(self, ask_module, sample):
+        from src import answer as answers
+        from src import narration
+        error = fakes.status_error(fakes.anthropic.RateLimitError, 429)
+        asked, client, audit = run(ask_module, sample, client=_narrated_client(error),
+                                   narrate="model")
+        assert isinstance(asked.result, answers.Answer) and asked.failure is None
+        assert asked.narration.endswith("\n" + narration.NOTICE_UNAVAILABLE)
+        record = audit.records[0]
+        assert record["narration"]["failure"] == "rate_limited"
+        assert record["calls"][1]["outcome"] == "rate_limited"
+        assert record["outcome"] == "answered"
+
+    def test_the_why_sentence_follows_the_narration(self, ask_module, sample):
+        from src import narration
+        text, _ = _narration_text(ask_module, sample)
+        asked, _, _ = run(ask_module, sample, client=_narrated_client(fakes.Reply(text),
+                                                                      cause=True),
+                          narrate="model")
+        assert asked.narration == text + "\n" + narration.CAUSE
+        asked, _, _ = run(ask_module, sample, reply(specification=BY_ENTITY, cause=True))
+        assert asked.narration.endswith("\n" + narration.CAUSE)
+        assert asked.narration.count(narration.CAUSE) == 1
+
+    @pytest.mark.parametrize("text, stop", [
+        (reply(refusal={"reason": "out_of_scope"}), "end_turn"), ("[]", "end_turn"),
+        (reply(specification={**GOOD, "limit": 0}), "end_turn"),
+        (reply(specification={**GOOD, "version": "Actual",
+                              "period": {"kind": "month", "value": "2026-09"}}), "end_turn"),
+        (reply(specification=GOOD), "refusal")])
+    def test_no_narration_call_without_figures(self, ask_module, sample, text, stop):
+        asked, client, audit = run(ask_module, sample, text, stop_reason=stop, narrate="model")
+        assert len(client.calls) == 1 and asked.narration is None and asked.flags == ()
+        assert {k: v for k, v in audit.records[0]["narration"].items()
+                if k != "mode_asked"} == NO_NARRATION
+
+    def test_no_call_at_all_before_the_question_can_be_asked(self, ask_module, sample,
+                                                             own_pool):
+        for session, question in ((sample, ""), (own_pool.open(), QUESTION)):
+            asked, client, audit = run(ask_module, session, question=question,
+                                       narrate="model")
+            assert client.calls == [] and asked.narration is None
+
+    def test_no_narration_leaves_when_the_record_cannot_be_written(self, ask_module, sample):
+        text, _ = _narration_text(ask_module, sample)
+        asked, client, _ = run(ask_module, sample, client=_narrated_client(fakes.Reply(text)),
+                               narrate="model", audit=Recorder(error=OSError("disk full")))
+        assert (asked.narration, asked.flags) == (None, ()) and len(client.calls) == 2
+
+    @pytest.mark.parametrize("code", list(ENTITIES))
+    def test_the_narration_input_names_no_other_entity(self, ask_module, sample, code):
+        text, _ = _narration_text(ask_module, sample, role=entity(code))
+        _, client, audit = run(ask_module, sample, role=entity(code),
+                               client=_narrated_client(fakes.Reply(text)), narrate="model")
+        message = client.calls[1]["messages"][0]["content"]
+        shown = audit.records[0]["narration"]["text_shown"]
+        for checked in (message, shown):
+            assert [p for p in other_patterns(code) if re.search(p, checked)] == [], code
+        assert QUESTION not in message
 
 
 # -- The audit ---------------------------------------------------------------------------------------

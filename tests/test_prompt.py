@@ -483,3 +483,23 @@ class TestTheStop1Text:
     def test_the_system_hashes_of_the_sample_pair(self, prompt, promoted):
         assert {role.view(): built(prompt, promoted, role).system_sha256
                 for role in roles_all()} == SYSTEM_SHA256
+
+
+# -- 3c: decision 2 of the Stop 1 verdict, pinned --------------------------------------------------
+
+class TestDecision2TheOneAllowedAt:
+    """Decision 2 of the Stop 1 verdict: codes are matched case-sensitively, as the Lists write
+    them. The ES and DE controllers' system texts hold the word "at" exactly once, in any case,
+    and that one is the frozen registry's headcount definition ("at the close of the last
+    month"), which names no entity; a second occurrence fails this test."""
+
+    @pytest.mark.parametrize("entity", ["ES", "DE"])
+    def test_the_one_occurrence_is_in_the_headcount_definition(self, prompt, promoted, entity):
+        from src import roles
+        system = built(prompt, promoted, roles.entity_controller(entity)).system
+        hits = [m.start() for m in re.finditer(r"(?i)\bat\b", system)]
+        assert len(hits) == 1, hits
+        definition = promoted.registry().metric("headcount").definition
+        start = system.index(definition)
+        assert start <= hits[0] < start + len(definition)
+        assert definition[hits[0] - start:hits[0] - start + 13] == "at the close "

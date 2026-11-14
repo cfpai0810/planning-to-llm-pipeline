@@ -9,7 +9,7 @@
 Part 3b (the reviewer's Phase 3 brief, section 8): the question path's modules, src/ask.py
 and src/prompt.py, import neither the engine nor the query parser; the pages import neither;
 the model is still called from src/model_call.py alone; and src/checks.py is byte for byte
-the file of 372b95a.
+the file of 372b95a. Part 3c adds src/narration.py to the question path, under the same rules.
 """
 
 import ast
@@ -115,7 +115,9 @@ PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "
             # Part 2d: the specification, the compiler, the guard and the answer as well.
             "spec", "compiler", "guard", "answer",
             # Part 3b: the question path, until the pages are built (phases W1 to W4).
-            "ask", "prompt")
+            "ask", "prompt",
+            # Part 3c: narration, which the question path uses.
+            "narration")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -362,7 +364,7 @@ class TestThe2dBoundaries:
 
 # -- Part 3b: the question path ----------------------------------------------------------------------
 
-QUESTION_PATH = ("ask", "prompt")
+QUESTION_PATH = ("ask", "prompt", "narration")
 # src/checks.py as committed at 372b95a: Phase 3 does not change it (the brief, sections 5 and 8).
 CHECKS_SHA256 = "ed4347dd29d81d3f093cb30ec8d0d6bf1db766c8dbdc9db50c067c5cb064b7cb"
 
