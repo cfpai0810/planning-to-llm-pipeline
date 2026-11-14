@@ -7,20 +7,53 @@ template's sentences and the model's sentences pass through the same code.
 A flag is for the reviewer: a check never rewrites a sentence.
 
 The numeric check. Every number in the prose is read with its formatting
-(thousands separators, k, m and bn in any case, per cent, points, brackets
-for a negative) and must match a computed figure at the precision it is
-written in: "£2.48m" and "£2.48M" match 2,477,550, "£2,477,560" does not. A
-lone b is billions only after a currency sign or code ("£2.4B"), and a
-number is always read whole, never as its first digits ("£2.48M" is never
-"£2"). A number is read against the figure whose name the clause gives
-("the group margin was 30%" is flagged when 30% is another unit's margin),
-and against every figure of its kind when no name is given. An amount in
-another currency than the run's is flagged, whether written with a sign or
-a code (US$, EUR, 2.48m EUR). A bare year (1900 to 2099, no unit) is a date,
-not a figure (item 56), and so is a day (1 to 31, no unit) beside a month
-name, full or three letters, before or after it: "15 June", "Jun 15"
+(thousands separators, k, m and bn in any case, per cent, points written
+"percentage points", "points", "pts", "pt" or "pp", and a sign) and must
+match a computed figure at the precision it is written in: "£2.48m" and
+"£2.48M" match 2,477,550, "£2,477,560" does not. A lone b is billions only
+after a currency sign or code ("£2.4B"), and a number is always read whole,
+never as its first digits ("£2.48M" is never "£2"). A number is read
+against the figure whose name the clause gives ("the group margin was 30%"
+is flagged when 30% is another unit's margin), and against every figure of
+its kind when no name is given. An amount in another currency than the
+run's is flagged, whether written with a currency sign or a code (US$, EUR,
+2.48m EUR). A bare year (1900 to 2099, no unit, no sign) is a date, not a
+figure (item 56), and so is a day (1 to 31, no unit, no sign) beside a
+month name, full or three letters, before or after it: "15 June", "Jun 15"
 (Phase 0 verdict, finding 3). A month name is capitalised, so "15 may" is
 still a figure.
+
+The sign (the reviewer's ruling of 14 November, F-a). A written "-", "+" or
+minus sign (U+2212) is the number's sign when it stands right before the
+number, before its currency sign or code, or between the currency and the
+number, touching what follows it, and does not follow a letter or a digit:
+"-118,992 EUR", "-\u20ac118,992", "\u20ac-118,992", "EUR -118,992" and "+3.1%" are
+signed; "Q2-2026", "6-12", "year-on-year", "EUR-118,992" (the minus
+follows a letter) and "- 118,992" (a space after the minus) hold no sign. A
+signed number is compared with the signed figure, rounded half away from
+zero at the precision written, so "+" written for a negative figure, or "-"
+for a positive one, is flagged. An unsigned number is compared with the
+figure's size. Brackets are not a sign.
+
+Two known limits follow. A number in brackets is read by its size, unsigned:
+"(118,992)" passes for a figure of 118,992 or of -118,992. And so is a
+negative level written with no sign: "EBIT was 500,000 EUR" passes for a
+loss of 500,000, unless a direction word beside it ("a profit of") says
+otherwise. The check reads signs and direction words, and a negative level
+written without either cannot be told from the positive one.
+
+Strict naming (the same ruling, F-b). check_text(..., strict_names=True)
+also flags a number read as a figure, and a direction word, whose own clause
+holds no figure name, before or after it: the sentence's earlier names do
+not count. A bare year, a day beside a month and a label given by the
+caller are not read as figures, so they are never flagged for it. The
+default, False, changes nothing.
+
+Labels (the reviewer's rulings on 3c). A label the caller gives, a member's
+name or a metric's label, is masked before either check reads the prose: its
+digits are never read as a figure, and its words never as a direction word
+("profit" in the label "Gross profit"). A direction word outside every label
+is still read. With no labels, both checks read the prose as they did.
 
 The direction check (item 43). A word that gives a figure a direction must
 agree with what Python computed for it:
@@ -35,10 +68,15 @@ agree with what Python computed for it:
 - offset language only where the sentence names one favourable and one
   adverse movement, so a cost overspend can never "offset" a shortfall.
 A word is read against the nearest figure name before it in its clause,
-then the nearest after it, then the nearest earlier in the sentence. When
-the figures cannot settle a word (no variance, or a comparator that leaves
-both directions possible), no flag is raised: the checks flag what is
+then the nearest after it, then the nearest earlier in the sentence (with
+strict naming, a word with no name in its own clause is flagged instead).
+When the figures cannot settle a word (no variance, or a comparator that
+leaves both directions possible), no flag is raised: the checks flag what is
 wrong, not what is merely unproven.
+
+Both checks read vocabulary: digits with their signs and units, and the
+direction words above. A number spelt out in words is not read, and any
+other wording is not checked.
 """
 
 from __future__ import annotations
@@ -84,16 +122,22 @@ _CURRENCY_OF = {"£": "GBP", "€": "EUR", "$": "USD", "US$": "USD", "¥": "JPY"
                 "GBP": "GBP", "EUR": "EUR", "USD": "USD", "JPY": "JPY", "CHF": "CHF"}
 _CODES = "GBP|EUR|USD|JPY|CHF"
 # The number is an atomic group, so a token is never its first digits: when
-# what follows a number is not read, the number is not read either.
+# what follows a number is not read, the number is not read either. A sign
+# is "-", "+" or the minus sign U+2212: before the currency (sign), or after
+# it (after) when nothing but a currency symbol or a space stands before it,
+# never after a letter or a digit; it always touches what follows it.
+_SIGNS = "-+\u2212"
 _TOKEN = re.compile(
     r"(?<![\w.])"
+    rf"(?P<sign>[{_SIGNS}])?"
     rf"(?:(?P<cur>US\$|£|€|\$|¥|(?:{_CODES})\s?))?"
+    rf"(?(sign)|(?:(?<![A-Za-z0-9])(?P<after>[{_SIGNS}]))?)"
     r"(?P<num>(?>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?))"
     r"(?:(?P<scale>(?i:bn|k|m)|(?(cur)(?i:b)|(?!)))"
     r"|\s(?P<word>billion|million|thousand)"
     r"|\s?(?P<pct>%)"
     r"|\s(?P<pctword>per\s?cent|percent)"
-    r"|\s?(?P<pts>percentage\s+points|points|pts|pt))?"
+    r"|\s?(?P<pts>percentage\s+points|points|pts|pp|pt))?"
     rf"(?:\s?(?P<code>{_CODES}))?"
     r"(?![A-Za-z0-9])"
 )
@@ -205,16 +249,21 @@ class _Prose:
     def _within(self, spans: list[_Span], position: int) -> _Span:
         return next(s for s in spans if s.start <= position <= s.end)
 
-    def bound_name(self, position: int) -> Optional[str]:
-        """The figure a word at position speaks of: clause before, clause after, sentence before."""
+    def clause_name(self, position: int) -> Optional[str]:
+        """The figure name of the clause of position: the nearest before it, else after it."""
         clause = self._within(self.clauses, position)
-        sentence = self._within(self.sentences, position)
         before = [n for n in self.names if clause.start <= n.start and n.end <= position]
         if before:
             return before[-1].text
         after = [n for n in self.names if position <= n.start and n.end <= clause.end]
-        if after:
-            return after[0].text
+        return after[0].text if after else None
+
+    def bound_name(self, position: int) -> Optional[str]:
+        """The figure a word at position speaks of: clause before, clause after, sentence before."""
+        found = self.clause_name(position)
+        if found is not None:
+            return found
+        sentence = self._within(self.sentences, position)
         earlier = [n for n in self.names if sentence.start <= n.start and n.end <= position]
         return earlier[-1].text if earlier else None
 
@@ -238,9 +287,19 @@ class _Prose:
 
 # -- The numeric check ----------------------------------------------------------------
 
-def _matches(value: Decimal, places: int, exponent: int, figure: Decimal) -> bool:
+def _matches(value: Decimal, places: int, exponent: int, figure: Decimal,
+             signed: bool = False) -> bool:
+    """Whether a number written matches a figure at the precision written: a signed number
+    against the signed figure, an unsigned one against its size. ROUND_HALF_UP rounds half away
+    from zero, the same on both sides of it."""
     step = Decimal(1).scaleb(-places)
-    return abs(figure).scaleb(-exponent).quantize(step, rounding=ROUND_HALF_UP) == value
+    target = figure if signed else abs(figure)
+    return target.scaleb(-exponent).quantize(step, rounding=ROUND_HALF_UP) == value
+
+
+def _sign(m: re.Match) -> Optional[str]:
+    """The sign written with a number, or None."""
+    return m.group("sign") or m.group("after")
 
 
 def _unit_of(m: re.Match) -> tuple[Optional[str], int]:
@@ -261,20 +320,27 @@ def _bare(m: re.Match) -> bool:
 
 def _is_year(m: re.Match) -> bool:
     raw = m.group("num")
-    return len(raw) == 4 and raw.isdigit() and 1900 <= int(raw) <= 2099 and _bare(m)
+    return (len(raw) == 4 and raw.isdigit() and 1900 <= int(raw) <= 2099 and _bare(m)
+            and _sign(m) is None)
 
 
 def _is_day(m: re.Match, text: str) -> bool:
     """A bare 1 to 31 with a month name just after it ("15 June") or just before it ("June 15")."""
     raw = m.group("num")
-    if not (raw.isdigit() and len(raw) <= 2 and 1 <= int(raw) <= 31 and _bare(m)):
+    if not (raw.isdigit() and len(raw) <= 2 and 1 <= int(raw) <= 31 and _bare(m)
+            and _sign(m) is None):
         return False
     return bool(_MONTH_AFTER.match(text, m.end()) or _MONTH_BEFORE.search(text[:m.start()]))
 
 
+def _unnamed(token: str) -> str:
+    return f"'{token}' has no figure name in its clause."
+
+
 def numeric_flags(text: str, figures: Sequence[Figure], *, currency: str,
-                  labels: Sequence[str] = ()) -> list[Flag]:
-    """Every number in text that no computed figure supports, once each, in order."""
+                  labels: Sequence[str] = (), strict_names: bool = False) -> list[Flag]:
+    """Every number in text that no computed figure supports, once each, in order; with
+    strict_names, also every number whose clause names no figure."""
     prose = _Prose(text, figures, labels)
     flags: list[Flag] = []
     for m in _TOKEN.finditer(prose.masked):
@@ -288,15 +354,20 @@ def numeric_flags(text: str, figures: Sequence[Figure], *, currency: str,
             flags.append(Flag(NUMERIC, token, None,
                               f"'{token}' is in another currency than the run's {currency}."))
             continue
+        if strict_names and prose.clause_name(m.start()) is None:
+            flags.append(Flag(NUMERIC, token, None, _unnamed(token)))
+            continue
         raw = m.group("num").replace(",", "")
-        value = Decimal(raw)
+        sign = _sign(m)
+        value = -Decimal(raw) if sign in ("-", "\u2212") else Decimal(raw)
         places = len(raw.split(".")[1]) if "." in raw else 0
         unit, exponent = _unit_of(m)
         name = prose.bound_name(m.start())
         of_kind = [f for f in figures if unit is None or f.unit == unit]
         named = [f for f in of_kind if f.name == name]
         candidates = named or of_kind
-        if not any(_matches(value, places, exponent, f.value) for f in candidates):
+        if not any(_matches(value, places, exponent, f.value, sign is not None)
+                   for f in candidates):
             where = f"for {name}" if named else "Python computed"
             flags.append(Flag(NUMERIC, token, name if named else None,
                               f"'{token}' matches no figure {where}."))
@@ -365,13 +436,19 @@ def _offset_flag(prose: _Prose, m: re.Match, figures: Sequence[Figure]) -> Optio
                 f"'{word}' needs one favourable and one adverse movement, but {said}.")
 
 
-def direction_flags(text: str, figures: Sequence[Figure]) -> list[Flag]:
-    """Every direction word in text that the computed figures contradict, in order."""
-    prose = _Prose(text, figures)
+def direction_flags(text: str, figures: Sequence[Figure], *, labels: Sequence[str] = (),
+                    strict_names: bool = False) -> list[Flag]:
+    """Every direction word in text, outside the labels, that the computed figures
+    contradict, in order; with strict_names, also every direction word whose clause names no
+    figure."""
+    prose = _Prose(text, figures, labels)
     flags: list[Flag] = []
     for m in _DIRECTION.finditer(prose.masked):
         word = " ".join(m.group(0).lower().split())
-        if not m.group("updown") and _CLAIM_OF.get(word) == "offset":
+        if strict_names and prose.clause_name(m.start()) is None:
+            said = " ".join(prose.text[m.start():m.end()].split())
+            flag = Flag(DIRECTION, said, None, _unnamed(said))
+        elif not m.group("updown") and _CLAIM_OF.get(word) == "offset":
             flag = _offset_flag(prose, m, figures)
         else:
             flag = _word_flag(prose, m, figures)
@@ -381,7 +458,10 @@ def direction_flags(text: str, figures: Sequence[Figure]) -> list[Flag]:
 
 
 def check_text(text: str, figures: Sequence[Figure], *, currency: str,
-               labels: Sequence[str] = ()) -> list[Flag]:
-    """Both checks: the numeric flags, then the direction flags. The text is never changed."""
-    return (numeric_flags(text, figures, currency=currency, labels=labels)
-            + direction_flags(text, figures))
+               labels: Sequence[str] = (), strict_names: bool = False) -> list[Flag]:
+    """Both checks: the numeric flags, then the direction flags. The text is never changed.
+    The labels are masked for both. strict_names (default False) flags a number or a direction
+    word whose own clause holds no figure name."""
+    return (numeric_flags(text, figures, currency=currency, labels=labels,
+                          strict_names=strict_names)
+            + direction_flags(text, figures, labels=labels, strict_names=strict_names))

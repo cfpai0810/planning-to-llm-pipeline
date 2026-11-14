@@ -16,6 +16,16 @@ improved, deteriorated, outperformed and their kin. Each new word has a
 sentence it must flag and one it must pass, on the figures below.
 Finding 3: "On 15 June" flagged 15, and "£2.48M" flagged £2. A day beside a
 month name is a date, and scale letters are read in any case.
+
+The reviewer's ruling of 14 November on 3c, which allowed this file to change once:
+F-a, a written sign ("-", "+" or the minus sign U+2212, right before the number, before its
+currency or between the two, touching what follows and not after a letter or a digit) is
+compared with the signed figure, and an unsigned number with its size; brackets are not a
+sign; "pp" is a points unit word. F-b, strict_names=True flags a number or a direction word
+whose own clause names no figure; the default changes nothing. The rulings on the questions
+(option A): direction_flags takes labels, and check_text hands its labels to both checks, so a
+word inside a label is never read as a direction word; with no labels the direction check gives,
+on every sentence this file held at eeed857, exactly the flags eeed857's own check gave.
 """
 
 from decimal import Decimal as D
@@ -85,7 +95,9 @@ class TestNumericCheck:
         assert flags[0].figure == "Revenue"
 
     def test_the_formatting_rules_are_read(self):
-        # Thousands separators, k and m, per cent, points, brackets for negatives.
+        # Thousands separators, k and m, per cent, points. Changed on purpose by the ruling of
+        # 14 November (F-a): this comment said "brackets for negatives", which was never so;
+        # brackets are not a sign, so the bracketed EBIT is an unsigned number, read by its size.
         text = ("Revenue was £2,477,550 (£2.48m), or 2.48 million pounds. EBIT was (£8,630), "
                 "(£8.6k). Revenue was 4.3 per cent below budget; the gross margin was 4.1 "
                 "points lower.")
@@ -357,3 +369,337 @@ class TestFlagsAreForTheReviewer:
         text = "Revenue was £112k above budget at £2,477,560, US$1m."
         for flag in check_text(text, MONTH, currency="GBP"):
             assert flag.reason.endswith(".") and "Error" not in flag.reason
+
+
+# -- The reviewer's ruling of 14 November on 3c ------------------------------------------------------
+
+# The minus sign U+2212, written as an escape so that a reader never takes it for a hyphen.
+MINUS = "\u2212"
+# The coordinator's probe: Austria's revenue and its variance against Budget, Spain's revenue,
+# and the group's EBIT, a loss.
+PROBE = [
+    Figure("Actual revenue for Calder Foods Austria", D("3983040"), MONEY),
+    Figure("Actual revenue for Calder Foods Spain", D("9865590"), MONEY),
+    _variance("the variance of revenue for Calder Foods Austria", "118992", MONEY, "budget",
+              True),
+    _variance("the variance in per cent of revenue for Calder Foods Austria", "3.1", PERCENT,
+              "budget", True),
+    Figure("Actual EBIT for the group", D("-500000"), MONEY),
+]
+MEMBERS = ["Calder Foods Austria", "Calder Foods Spain"]
+AUSTRIA = "Actual revenue for Calder Foods Austria was {}."
+EBIT = "Actual EBIT for the group was {}."
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+class TestFaTheSign:
+    @pytest.mark.parametrize("text, flagged", [
+        ("The variance of revenue for Calder Foods Austria was -118,992 EUR.", "-118,992 EUR"),
+        ("The variance in per cent of revenue for Calder Foods Austria was -3.1%.", "-3.1%"),
+        ("Actual revenue for Calder Foods Austria was -3,983,040 EUR.", "-3,983,040 EUR")],
+        ids=["variance", "variance in per cent", "value"])
+    def test_the_probes_wrong_signs_are_flagged(self, text, flagged):
+        flags = check_text(text, PROBE, currency="EUR")
+        assert [(f.kind, f.text) for f in flags] == [("numeric", flagged)]
+
+    def test_the_probes_unsigned_negative_is_not_flagged_and_the_docstring_says_so(self):
+        # A known limit: a negative level written with no sign and no word such as "loss".
+        import src.checks as checks
+        assert check_text("Actual EBIT for the group was 500,000 EUR.", PROBE,
+                          currency="EUR") == []
+        assert check_text("Actual EBIT for the group was a profit of 500,000 EUR.", PROBE,
+                          currency="EUR")
+        doc = _flat(checks.__doc__)
+        assert "Two known limits follow." in doc
+        assert ('so is a negative level written with no sign: "EBIT was 500,000 EUR" passes '
+                'for a loss of 500,000') in doc
+
+    def test_brackets_are_not_a_sign(self):
+        # The probe's second sentence: "(118,992)" is an unsigned number, read by its size.
+        import src.checks as checks
+        text = "The variance of revenue for Calder Foods Austria was (118,992) EUR."
+        assert check_text(text, PROBE, currency="EUR") == []
+        assert check_text(EBIT.format("(500,000) EUR"), PROBE, currency="EUR") == []
+        doc = _flat(checks.__doc__)
+        assert "Brackets are not a sign." in doc and "brackets for a negative" not in doc
+        assert ('A number in brackets is read by its size, unsigned: "(118,992)" passes for '
+                'a figure of 118,992 or of -118,992.') in doc
+
+    @pytest.mark.parametrize("written", [
+        "-500,000 EUR", f"{MINUS}500,000 EUR", "-\u20ac500,000", f"{MINUS}\u20ac500,000",
+        "\u20ac-500,000", f"\u20ac{MINUS}500,000", "EUR -500,000", "-EUR 500,000",
+        "-500k EUR", "500,000 EUR"],
+        ids=["minus", "minus sign", "before the euro", "minus sign before the euro",
+             "after the euro", "minus sign after the euro", "after the code and a space",
+             "before the code", "with a scale", "unsigned"])
+    def test_a_sign_where_the_ruling_puts_it_agrees_with_a_negative_figure(self, written):
+        assert check_text(EBIT.format(written), PROBE, currency="EUR") == []
+
+    @pytest.mark.parametrize("written", [
+        "-3,983,040 EUR", f"{MINUS}3,983,040 EUR", "-\u20ac3,983,040", "\u20ac-3,983,040",
+        "EUR -3,983,040", "-EUR 3,983,040", "-3.98m EUR"],
+        ids=["minus", "minus sign", "before the euro", "after the euro",
+             "after the code and a space", "before the code", "with a scale"])
+    def test_the_same_sign_on_a_positive_figure_is_flagged(self, written):
+        flags = check_text(AUSTRIA.format(written), PROBE, currency="EUR")
+        assert [(f.kind, f.text) for f in flags] == [("numeric", written)]
+
+    def test_a_plus_is_a_sign_too(self):
+        assert check_text(AUSTRIA.format("+3,983,040 EUR"), PROBE, currency="EUR") == []
+        flags = check_text(EBIT.format("+500,000 EUR"), PROBE, currency="EUR")
+        assert [(f.kind, f.text) for f in flags] == [("numeric", "+500,000 EUR")]
+
+    @pytest.mark.parametrize("written", ["- 3,983,040 EUR", "EUR-3,983,040"],
+                             ids=["a space after the minus", "a minus after the code"])
+    def test_the_two_open_cases_hold_no_sign(self, written):
+        # Decided for the ruling's open cases (BRIEF_3C_FIX, Trap 3): the sign must touch what
+        # follows it, and must not follow a letter, so neither minus is a sign; the number is
+        # read unsigned, by its size, and Austria's positive revenue is not flagged.
+        assert check_text(AUSTRIA.format(written), PROBE, currency="EUR") == []
+        assert check_text(EBIT.format(written.replace("3,983,040", "500,000")), PROBE,
+                          currency="EUR") == []
+
+    @pytest.mark.parametrize("text", [
+        "In Q2-2026, the variance of revenue for Calder Foods Austria was 118,992 EUR.",
+        "Year-on-year, the variance of revenue for Calder Foods Austria was 118,992 EUR.",
+        "In FY2025-2026, the variance of revenue for Calder Foods Austria was 118,992 EUR."],
+        ids=["Q2-2026", "year-on-year", "FY2025-2026"])
+    def test_a_hyphen_after_a_letter_or_a_digit_is_not_a_sign(self, text):
+        assert check_text(text, PROBE, currency="EUR") == []
+
+    def test_a_range_is_two_unsigned_numbers(self):
+        # "6-12": the hyphen follows a digit, so 12 is read as 12, never as -12.
+        figures = [Figure("months held", D("6"), COUNT),
+                   Figure("months asked for", D("12"), COUNT)]
+        assert numeric_flags("Rows 6-12 were read.", figures, currency="EUR") == []
+        assert _texts(numeric_flags("Rows 6-13 were read.", figures, currency="EUR")) == [
+            "13"]
+
+    def test_a_signed_number_is_compared_at_the_precision_written(self):
+        assert check_text("Revenue was -4.3% against budget.", MONTH, currency="GBP") == []
+        assert check_text("Revenue was 4.3% below budget.", MONTH, currency="GBP") == []
+        assert _texts(check_text("Revenue was +4.3% against budget.", MONTH,
+                                 currency="GBP")) == ["+4.3%"]
+        assert check_text("Revenue was -\u00a3112k against budget.", MONTH,
+                          currency="GBP") == []
+        assert _texts(check_text("Revenue was -\u00a3113k against budget.", MONTH,
+                                 currency="GBP")) == ["-\u00a3113k"]
+
+    def test_rounding_is_the_same_on_both_sides_of_zero(self):
+        small = [_variance("The margin's variance", "-0.04", PERCENT, "budget", True),
+                 _variance("The rate's variance", "0.05", PERCENT, "budget", True)]
+        for text in ("The margin's variance was -0.0%.", "The margin's variance was 0.0%.",
+                     "The rate's variance was 0.1%.", "The rate's variance was +0.1%."):
+            assert check_text(text, small, currency="EUR") == [], text
+        assert _texts(check_text("The rate's variance was -0.1%.", small,
+                                 currency="EUR")) == ["-0.1%"]
+
+    def test_a_signed_year_is_a_figure(self):
+        # A date has no sign: "-2026" is read as a number.
+        assert _texts(numeric_flags("The count was -2026.", PROBE, currency="EUR")) == ["-2026"]
+        assert numeric_flags("In 2026 the count was nil.", PROBE, currency="EUR") == []
+
+
+class TestPpIsAPointsUnitWord:
+    POINTS_FIGURE = [_variance("The margin's variance", "-1.5", POINTS, "budget", True)]
+    MONEY_FIGURE = [_variance("The margin's variance", "-1.5", MONEY, "budget", True)]
+
+    @pytest.mark.parametrize("written", ["-1.5 pp", "-1.5pp", "-1.5 pts", "-1.5 pt",
+                                         "-1.5 points", "-1.5 percentage points"])
+    def test_pp_and_the_other_points_words_read_a_points_figure(self, written):
+        text = f"The margin's variance was {written}."
+        assert check_text(text, self.POINTS_FIGURE, currency="EUR") == []
+
+    def test_pp_against_a_money_figure_is_flagged(self):
+        flags = check_text("The margin's variance was -1.5 pp.", self.MONEY_FIGURE,
+                           currency="EUR")
+        assert [(f.kind, f.text) for f in flags] == [("numeric", "-1.5 pp")]
+
+    def test_pp_is_read_whole_and_never_as_pt(self):
+        flags = check_text("The margin's variance was -1.6 pp.", self.POINTS_FIGURE,
+                           currency="EUR")
+        assert _texts(flags) == ["-1.6 pp"]
+        # "ppm" is not the points word: the number before it is read with no unit.
+        flags = check_text("The margin's variance was -1.6 ppm.", self.POINTS_FIGURE,
+                           currency="EUR")
+        assert _texts(flags) == ["-1.6"]
+
+
+FB_SENTENCES = [
+    ("Spain's revenue was 3,983,040 EUR, and Austria's was 9,865,590 EUR.",
+     [("numeric", "3,983,040 EUR"), ("numeric", "9,865,590 EUR")]),
+    ("Calder Foods Spain had revenue of 3,983,040 EUR.", [("numeric", "3,983,040 EUR")]),
+    ("Revenue for Calder Foods Austria was 118,992 EUR below Budget.",
+     [("numeric", "118,992 EUR"), ("direction", "below")]),
+]
+
+
+class TestFbStrictNames:
+    @pytest.mark.parametrize("text, flagged", FB_SENTENCES,
+                             ids=["swapped", "full name", "below"])
+    def test_the_three_sentences_are_flagged_with_strict_names_and_not_by_default(
+            self, text, flagged):
+        assert check_text(text, PROBE, currency="EUR", labels=MEMBERS) == []
+        flags = check_text(text, PROBE, currency="EUR", labels=MEMBERS, strict_names=True)
+        assert [(f.kind, f.text) for f in flags] == flagged
+        assert all(f.figure is None and f.reason == f"'{f.text}' has no figure name in its "
+                   "clause." for f in flags)
+
+    @pytest.mark.parametrize("text", [
+        "Actual revenue for Calder Foods Austria was 3,983,040 EUR; the variance of revenue "
+        "for Calder Foods Austria was 118,992 EUR (favourable).",
+        "3,983,040 EUR was Actual revenue for Calder Foods Austria.",
+        "In June 2026, Actual revenue for Calder Foods Austria was 3,983,040 EUR.",
+        "On 15 June, Actual revenue for Calder Foods Austria was 3,983,040 EUR.",
+        "For Calder Foods Austria, Actual revenue for Calder Foods Austria was 3,983,040 EUR."],
+        ids=["each in its clause", "the name after the number", "a year", "a day",
+             "a member name"])
+    def test_a_name_in_the_clause_before_or_after_passes(self, text):
+        assert check_text(text, PROBE, currency="EUR", labels=MEMBERS,
+                          strict_names=True) == []
+
+    def test_a_name_earlier_in_the_sentence_does_not_count(self):
+        text = "Actual revenue for Calder Foods Austria was high, at 3,983,040 EUR."
+        assert check_text(text, PROBE, currency="EUR", labels=MEMBERS) == []
+        flags = check_text(text, PROBE, currency="EUR", labels=MEMBERS, strict_names=True)
+        assert _texts(flags) == ["3,983,040 EUR"]
+        text = ("The variance of revenue for Calder Foods Austria was 118,992 EUR, which was "
+                "above Budget.")
+        flags = check_text(text, PROBE, currency="EUR", labels=MEMBERS, strict_names=True)
+        assert [(f.kind, f.text) for f in flags] == [("direction", "above")]
+
+    def test_strict_names_asks_more_than_the_default(self):
+        assert check_text(GOOD_PARAGRAPH, MONTH, currency="GBP") == []
+        flags = check_text(GOOD_PARAGRAPH, MONTH, currency="GBP", strict_names=True)
+        assert flags and all("has no figure name in its clause" in f.reason for f in flags)
+
+    def test_a_wrong_figure_in_a_named_clause_is_still_its_own_flag(self):
+        flags = check_text(AUSTRIA.format("3,983,041 EUR"), PROBE, currency="EUR",
+                           labels=MEMBERS, strict_names=True)
+        assert [(f.text, f.figure) for f in flags] == [
+            ("3,983,041 EUR", "Actual revenue for Calder Foods Austria")]
+
+    def test_the_option_is_keyword_only_and_off_by_default(self):
+        import inspect
+        for function in (check_text, numeric_flags, direction_flags):
+            option = inspect.signature(function).parameters["strict_names"]
+            assert (option.kind, option.default) == (inspect.Parameter.KEYWORD_ONLY, False)
+
+    def test_the_docstring_states_strict_naming_and_the_vocabulary(self):
+        import src.checks as checks
+        doc = _flat(checks.__doc__)
+        assert ("check_text(..., strict_names=True) also flags a number read as a figure, and "
+                "a direction word, whose own clause holds no figure name") in doc
+        assert "any other wording is not checked" in doc
+
+
+class TestLabelsReachTheDirectionCheck:
+    """The reviewer's rulings on 3c (provisional: option A). A label the caller gives is masked
+    for the direction check as for the numeric one, so its words are never read as a direction
+    word; a direction word outside every label is still read."""
+
+    GROSS = [Figure("Gross profit for the group", D("866370"), MONEY)]
+
+    def test_a_metric_label_is_not_read_as_a_direction_word(self):
+        text = "Gross profit for the group: Budget, FY2026."
+        assert check_text(text, [], currency="EUR", labels=["Gross profit"],
+                          strict_names=True) == []
+        flags = check_text(text, [], currency="EUR", strict_names=True)
+        assert [(f.kind, f.text) for f in flags] == [("direction", "profit")]
+
+    def test_a_direction_word_outside_every_label_is_still_read(self):
+        text = "Gross profit for the group was a loss."
+        for strict in (False, True):
+            flags = check_text(text, self.GROSS, currency="EUR", labels=["Gross profit"],
+                               strict_names=strict)
+            assert [(f.kind, f.text, f.figure) for f in flags] == [
+                ("direction", "loss", "Gross profit for the group")], strict
+
+    def test_a_member_name_holding_a_direction_word_is_not_read_either(self):
+        figures = [_variance("The variance of revenue for Upper Region", "-5000", MONEY,
+                             "budget", True)]
+        text = "The variance of revenue for Upper Region was -5,000 EUR (adverse)."
+        assert direction_flags(text, figures, labels=["Upper Region"]) == []
+        flipped = text.replace("adverse", "favourable")
+        assert _texts(direction_flags(flipped, figures, labels=["Upper Region"])) == [
+            "favourable"]
+
+    def test_with_no_labels_the_direction_check_reads_as_before(self):
+        for text in ("Revenue was \u00a3112k above budget.", "EBIT was a profit of \u00a38.6k."):
+            assert direction_flags(text, MONTH) == direction_flags(text, MONTH, labels=())
+            assert direction_flags(text, MONTH)
+
+    def test_check_text_hands_its_labels_to_both_checks(self):
+        import inspect
+        assert "labels" in inspect.signature(direction_flags).parameters
+        assert check_text("Gross profit for the group: Budget.", [], currency="EUR",
+                          labels=["Gross profit"], strict_names=True) == []
+        import src.checks as checks
+        assert ("A label the caller gives, a member's name or a metric's label, is masked "
+                "before either check reads the prose") in _flat(checks.__doc__)
+
+
+# -- With no labels, the direction check reads as it did at eeed857 (the reviewer's ruling, A) ------
+
+# The parts of this file that held at eeed857, the commit before the 3c fix: their sentences are
+# the corpus, each read against each figure set the file held then.
+EEED857_PARTS = ("GOOD_PARAGRAPH", "VOCABULARY", "TestNumericCheck", "TestDirectionCheck",
+                 "TestFinding3DatesAndCapitalScales", "TestFinding2DirectionVocabulary",
+                 "TestFlagsAreForTheReviewer")
+# What eeed857's own direction_flags gives on the corpus below: the number of readings, the
+# number of flags, and the SHA-256 of the canonical JSON of every reading's flags (kind, text,
+# figure, reason). Computed outside the repository by eeed857's src/checks.py, imported under
+# another name; the computation is kept with the 3c fix's evidence.
+EEED857_SENTENCES = (450, 72, "01496b66b623675d37be33342d08c28a20422ac0327aadee1580bbe8e6110e78")
+
+
+def direction_corpus() -> list:
+    """(sentence, figure set name, figures) for every sentence the parts EEED857_PARTS hold
+    (each string of more than one word that ends a sentence), with each figure set: MONTH,
+    MARGINS, and MONTH with Gross profit, as the direction tests used them."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    sentences: list = []
+    for node in tree.body:
+        name = (node.name if isinstance(node, ast.ClassDef)
+                else node.targets[0].id if isinstance(node, ast.Assign)
+                and isinstance(node.targets[0], ast.Name) else None)
+        if name not in EEED857_PARTS:
+            continue
+        for found in ast.walk(node):
+            if (isinstance(found, ast.Constant) and isinstance(found.value, str)
+                    and " " in found.value and found.value.rstrip().endswith(".")
+                    and found.value not in sentences):
+                sentences.append(found.value)
+    sets = (("MONTH", MONTH), ("MARGINS", MARGINS),
+            ("MONTH and Gross profit", MONTH + [Figure("Gross profit", D("866370"), MONEY)]))
+    return [(s, set_name, figures) for s in sentences for set_name, figures in sets]
+
+
+def readings(flags_per_reading: list) -> tuple:
+    """(readings, flags, SHA-256 of the canonical JSON of every reading's flags)."""
+    import hashlib
+    import json
+    data = [[[f.kind, f.text, f.figure, f.reason] for f in flags] for flags in flags_per_reading]
+    text = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return (len(data), sum(len(d) for d in data),
+            hashlib.sha256(text.encode("ascii")).hexdigest())
+
+
+class TestNoLabelsReadsAsEeed857:
+    def test_the_corpus_is_every_sentence_of_the_parts_held_at_eeed857(self):
+        corpus = direction_corpus()
+        sentences = {s for s, _, _ in corpus}
+        assert len(corpus) == 3 * len(sentences) == EEED857_SENTENCES[0] and len(sentences) == 150
+        for v in VOCABULARY:
+            assert set(v[1:2] + v[3:]) <= sentences, v[0]
+        assert GOOD_PARAGRAPH in sentences
+
+    def test_direction_flags_with_no_labels_gives_eeed857s_flags_on_the_corpus(self):
+        found = readings([direction_flags(s, figures) for s, _, figures in direction_corpus()])
+        assert found == EEED857_SENTENCES
+        assert found[1] > 40

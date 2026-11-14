@@ -9,7 +9,7 @@
 Part 3b (the reviewer's Phase 3 brief, section 8): the question path's modules, src/ask.py
 and src/prompt.py, import neither the engine nor the query parser; the pages import neither;
 the model is still called from src/model_call.py alone; and src/checks.py is byte for byte
-the file of 372b95a. Part 3c adds src/narration.py to the question path, under the same rules,
+the file the reviewer's rulings allow (372b95a's until the 3c fix). Part 3c adds src/narration.py to the question path, under the same rules,
 and part 3d src/audit.py: the audit and replay, which makes no model call.
 """
 
@@ -368,8 +368,12 @@ class TestThe2dBoundaries:
 # -- Part 3b: the question path ----------------------------------------------------------------------
 
 QUESTION_PATH = ("ask", "prompt", "narration", "audit")
-# src/checks.py as committed at 372b95a: Phase 3 does not change it (the brief, sections 5 and 8).
-CHECKS_SHA256 = "ed4347dd29d81d3f093cb30ec8d0d6bf1db766c8dbdc9db50c067c5cb064b7cb"
+# src/checks.py changes only with a reviewer's ruling that allows it, and this pin changes with
+# it, on purpose. It was 372b95a's file (ed4347dd...), which Phase 3 did not change (the brief,
+# sections 5 and 8), until the reviewer's rulings on 3c gave the complete list of changes
+# allowed in the 3c fix: the sign rule, "pp" as a points unit, strict_names, labels in
+# direction_flags, and the docstring. Anything beyond that is a stop.
+CHECKS_SHA256 = "cf4b2daa5505a420fd572e3c0780b1545396509b94f126d0f49a1d37d5428aba"
 
 
 class TestThe3bBoundaries:
@@ -392,7 +396,8 @@ class TestThe3bBoundaries:
         for name in QUESTION_PATH:
             assert name in PIPELINE
 
-    def test_checks_is_unchanged(self):
+    def test_checks_is_the_file_the_rulings_allow(self):
+        # Changed on purpose in the 3c fix: renamed, and the pin is the new file's hash.
         import hashlib
         data = (ROOT / "src" / "checks.py").read_bytes()
         assert hashlib.sha256(data).hexdigest() == CHECKS_SHA256
