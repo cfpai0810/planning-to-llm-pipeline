@@ -288,18 +288,15 @@ def _parses(text: str) -> bool:
 class TestADeepReplyNeverRaises:
     @pytest.mark.parametrize("depth", [1_000, 10_000, 100_000])
     def test_a_deep_reply_is_data_or_unreadable_never_an_exception(self, depth):
-        # How deep json.loads can go depends on the Python and the platform's stack: on this
-        # project's Windows machine 3.14 parses 10,000 levels and 3.13 does not; neither parses
-        # 100,000. Where it cannot parse, the reply is unreadable_reply.
+        # How deep json.loads can go depends on the Python and the platform's stack, so the
+        # test asks it first. Where it cannot parse, the reply is unreadable_reply; where it can,
+        # the reply is data. Either way nothing is raised.
         text = _nested(depth)
         result = _call(_scripted(fakes.Reply(text)), schema=SCHEMA)
         if _parses(text):
             assert result.ok and isinstance(result.data, dict)
         else:
             assert (result.code, result.raw_text) == ("unreadable_reply", text)
-
-    def test_a_hundred_thousand_levels_cannot_be_parsed_here(self):
-        assert not _parses(_nested(100_000))
 
     def test_a_recursion_error_while_parsing_is_unreadable(self, monkeypatch):
         def too_deep(text, *args, **kwargs):

@@ -1,6 +1,6 @@
 {
   "written_by": "tests/conftest.py, after a full, passing run of the whole suite",
-  "total": 2392,
+  "total": 2391,
   "by_file": {
     "tests/test_answer.py": 32,
     "tests/test_ask.py": 74,
@@ -22,7 +22,7 @@
     "tests/test_key_gate.py": 19,
     "tests/test_main.py": 65,
     "tests/test_model.py": 20,
-    "tests/test_model_call.py": 76,
+    "tests/test_model_call.py": 75,
     "tests/test_names.py": 61,
     "tests/test_neutrality.py": 8,
     "tests/test_oracle.py": 39,
@@ -49,7 +49,7 @@
   "by_class": {
     "(no class)": 239,
     "TestABadFileInPlainWords": 8,
-    "TestADeepReplyNeverRaises": 6,
+    "TestADeepReplyNeverRaises": 5,
     "TestAHandBuiltSpecificationIsReadByTheSameTypeRules": 16,
     "TestAHeaderNotRead": 8,
     "TestALandedBlockNotBuilt": 2,

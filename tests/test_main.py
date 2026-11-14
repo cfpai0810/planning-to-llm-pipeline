@@ -621,7 +621,7 @@ class TestSchema:
             if name.startswith("system_"):
                 digest = hashlib.sha256((out / name).read_bytes()).hexdigest()
                 assert f"  {name}: {digest}" in text, name
-        assert text.endswith("\n") and "\r" not in text
+        assert text.endswith("\n") and b"\r" not in (out / "schema_report.txt").read_bytes()
 
     def test_it_says_where_each_file_went(self, schema_run):
         done, _, out = schema_run
