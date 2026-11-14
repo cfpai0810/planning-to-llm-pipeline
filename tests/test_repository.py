@@ -140,6 +140,13 @@ class TestFilesAndEndings:
         for rule in (".env", ".env.*", ".streamlit/secrets.toml", "__pycache__/", "output/"):
             assert rule in lines, rule
 
+    def test_gitignore_keeps_the_audit_log_and_the_project_records_out(self):
+        # Part 3d (the reviewer's Stop 1 verdict, section 7): the audit's default folder, and
+        # the three names the six project folders keep out of their repositories.
+        lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for rule in ("audit_log/", "records/", "cv_bullets.txt", "debrief_log.txt"):
+            assert rule in lines, rule
+
     def test_every_text_file_has_lf_endings(self):
         crlf = [p.relative_to(ROOT).as_posix() for p in _repo_text_files()
                 if b"\r\n" in p.read_bytes()]

@@ -32,12 +32,15 @@ never changes another's answers.
   under the read lock. It returns an Answer, or a typed outcome; any error
   of the engine is engine_error, in fixed wording, with no SQL echoed.
   The engine's message is kept for the audit, never shown (part 3b): a
-  caller that passes engine_detail, a function, has it called with the
-  engine's message text when the query is engine_error (or with the
-  statement types the engine's parser read, when it did not read one
-  SELECT). The outcome returned is the same fixed object either way, and
-  the detail goes to that one call alone: nothing about it is kept on the
-  session, which serves many requests at once.
+  caller that passes engine_detail, a function, has it called with one
+  EngineDetail when the query is engine_error. It holds the engine's
+  message text (or the statement types the engine's parser read, when it
+  did not read one SELECT) and, since part 3d (decision 6 of the
+  reviewer's Stop 1 verdict), the validated specification and the compiled
+  SQL with its hash, so the audit's record of an engine_error is as
+  complete as an answer's. The outcome returned is the same fixed object
+  either way, and the detail goes to that one call alone: nothing about it
+  is kept on the session, which serves many requests at once.
   answer, run and provenance first check the role they are given
   (roles.checked): anything that is not a Role of the two shapes raises
   RoleError, before anything is read or run.
@@ -74,6 +77,7 @@ import threading
 import time
 from collections import Counter, OrderedDict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
 
@@ -84,8 +88,8 @@ from src.batch import Pair
 from src.controls import SEVERITIES
 from src.startup import Template
 
-__all__ = ["BREAKS_SCOPE", "PREFIX", "STALE_SECONDS", "Session", "SessionError", "Sessions",
-           "remove_stale"]
+__all__ = ["BREAKS_SCOPE", "PREFIX", "STALE_SECONDS", "EngineDetail", "Session", "SessionError",
+           "Sessions", "remove_stale"]
 
 PREFIX = "p7_session_"
 STALE_SECONDS = 24 * 60 * 60
@@ -95,6 +99,16 @@ _LIVE: set = set()                   # every open session of the process, closed
 
 class SessionError(Exception):
     """A session that cannot do what was asked, told in one plain line."""
+
+
+@dataclass(frozen=True)
+class EngineDetail:
+    """What run hands to a caller that asks, when the query is engine_error: for the audit,
+    never for a reader."""
+    message: str                    # the engine's message, or the statement types it read
+    specification: spec.Specification   # the validated specification, canonical names
+    sql: str                        # the compiled SQL the engine stopped
+    sql_sha256: str                 # the hash the compiled query carries
 
 
 class _ReadersAndWriter:
@@ -366,10 +380,11 @@ class Session:
             ) -> Union[answers.Answer, outcomes.Outcome]:
         """Runs a compiled query on a cursor of its own, closed after: only when the engine's own
         parser reads it as one SELECT. An error of the engine is engine_error, the one fixed
-        outcome; engine_detail, when given, is called with the engine's message text (or, when
-        the engine's parser read something other than one SELECT, with the statement types it
-        read), for the audit and never for a reader. A role of the wrong shape raises RoleError
-        before anything runs."""
+        outcome; engine_detail, when given, is called with an EngineDetail: the engine's message
+        text (or, when the engine's parser read something other than one SELECT, the statement
+        types it read), the validated specification and the compiled SQL with its hash, for
+        the audit and never for a reader. A role of the wrong shape raises RoleError before
+        anything runs."""
         role = roles.checked(role)
         detail = None
         with self.reading() as cursor:
@@ -383,7 +398,8 @@ class Session:
                 detail = str(error)
         if detail is not None:
             if engine_detail is not None:
-                engine_detail(detail)
+                engine_detail(EngineDetail(detail, validated.spec, compiled.sql,
+                                           compiled.sql_sha256))
             return outcomes.ENGINE_ERROR
         return answers.build(compiled, validated, fetched, self.provenance(role))
 

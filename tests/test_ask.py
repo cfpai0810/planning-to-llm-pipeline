@@ -33,9 +33,12 @@ GOOD = {"metric": "revenue", "version": "Budget", "dimensions": [], "filters": [
         "period": {"kind": "fy", "value": "FY2026"}, "comparison": "none", "sort": None,
         "limit": 100}
 QUESTION = "What is the plan's Budget revenue for FY2026?"
-FIELDS = ("run_id", "at", "role", "question", "provenance", "prompt", "calls", "model_text_raw",
-          "specification", "outcome", "sql", "sql_sha256", "result_sha256", "row_count",
-          "truncated", "coverage", "gaps", "engine_detail", "asks_for_a_cause", "narration")
+# Changed on purpose in 3d: the closed set grows by question_length (F28) and
+# engine_detail_length (decision 3), each beside the field it measures.
+FIELDS = ("run_id", "at", "role", "question", "question_length", "provenance", "prompt", "calls",
+          "model_text_raw", "specification", "outcome", "sql", "sql_sha256", "result_sha256",
+          "row_count", "truncated", "coverage", "gaps", "engine_detail", "engine_detail_length",
+          "asks_for_a_cause", "narration")
 CALL_FIELDS = ("purpose", "model", "effort", "outcome", "stop_reason", "request_id",
                "served_by", "input_tokens", "output_tokens", "sdk_version")
 

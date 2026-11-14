@@ -191,7 +191,10 @@ SELECT, runs it on its own cursor, and returns an answer: the rows as exact
 decimals, the coverage and gaps, the result hash and the provenance. Any
 error of the engine is `engine_error`, with no SQL echoed; the engine's message
 is handed to the caller that asks for it, for the audit, and never shown: the
-outcome a reader sees is the one fixed `engine_error`. Every metric of
+outcome a reader sees is the one fixed `engine_error`. With the message come
+the validated specification and the compiled SQL with its hash, so the audit's
+record of an `engine_error` is as complete as an answer's; it has no result
+hash and no row count. Every metric of
 the grid of `tests/oracle.py` (29,232 questions on each pair) equals the
 independent oracle's figures exactly. The whole grid runs, unsampled, in the
 default suite and in CI (the reviewer's verdict of 11 November, D1). When a

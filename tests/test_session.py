@@ -17,9 +17,14 @@ says its break counts are pair-wide (F27), and an entity view's names no other e
 engine's message reaches the caller who asks for it, for the audit, while the outcome a reader
 sees stays the one fixed object; and a pool needs a root of its own and never removes a
 folder under another root (F26).
+
+Part 3d (decision 6 of the reviewer's Stop 1 verdict): the hand-off of an engine_error is one
+EngineDetail, which holds with the engine's message the validated specification and the
+compiled SQL with its hash, so the record of an engine_error is as complete as an answer's.
 """
 
 import csv
+import dataclasses
 import hashlib
 import json
 import os
@@ -556,13 +561,16 @@ class TestTheEnginesDetailForTheAudit:
 
     def test_the_engines_message_is_handed_over_and_the_outcome_is_the_fixed_one(
             self, promoted, monkeypatch):
+        # Changed on purpose in 3d (decision 6): the hand-off is one EngineDetail, whose
+        # message is the text 3b handed over alone.
         from src import outcomes, roles
         self._failing(monkeypatch)
         handed = []
         result = promoted.answer(REVENUE, roles.group_controller, engine_detail=handed.append)
         assert result is outcomes.ENGINE_ERROR
         assert result == outcomes.Outcome("engine_error", outcomes.SENTENCES["engine_error"])
-        (message,) = handed
+        (detail,) = handed
+        message = detail.message
         assert isinstance(message, str) and "no_such_column" in message
         assert "Exception" not in message and "duckdb" not in message
         assert message not in repr(result)
@@ -579,7 +587,8 @@ class TestTheEnginesDetailForTheAudit:
         handed = []
         result = promoted.answer(REVENUE, roles.group_controller, engine_detail=handed.append)
         assert result is outcomes.ENGINE_ERROR
-        assert handed == ["the engine's parser read: SELECT, SELECT"]
+        # Changed on purpose in 3d (decision 6): the message is the hand-off's message.
+        assert [d.message for d in handed] == ["the engine's parser read: SELECT, SELECT"]
 
     def test_an_answer_hands_over_nothing(self, promoted):
         from src import answer, roles
@@ -608,8 +617,50 @@ class TestTheEnginesDetailForTheAudit:
         for t in threads:
             t.join(60)
         assert handed["good"] == [] and len(handed["bad"]) == 15
-        assert all("no_such_column" in m for m in handed["bad"])
+        # Changed on purpose in 3d (decision 6): each hand-off is an EngineDetail.
+        assert all("no_such_column" in d.message for d in handed["bad"])
+        assert all(d.sql == NO_COLUMN for d in handed["bad"])
         assert not hasattr(promoted, "engine_detail") and not hasattr(promoted, "last_error")
+
+    # -- Decision 6 of the Stop 1 verdict (part 3d) ------------------------------------------------
+
+    def test_the_hand_off_holds_the_validated_specification_and_the_sql_with_its_hash(
+            self, promoted, monkeypatch):
+        # The record of an engine_error is as complete as an answer's: with the engine's
+        # message come the validated specification (canonical names) and the compiled SQL with
+        # the hash the compiled query carries. The outcome is still the one fixed object.
+        from src import compiler, outcomes, roles, session, spec
+        role = roles.group_controller
+        asked = {**REVENUE, "metric": "REVENUE", "version": "budget",
+                 "filters": [{"dimension": "entity", "values": ["calder foods austria"]}]}
+        validated = spec.validate(spec.from_json(asked), promoted.registry(), promoted, role)
+        compiled = compiler.compile(validated, promoted.registry(), role)
+        self._failing(monkeypatch)
+        handed = []
+        result = promoted.answer(asked, role, engine_detail=handed.append)
+        assert result is outcomes.ENGINE_ERROR
+        (detail,) = handed
+        assert type(detail) is session.EngineDetail
+        assert detail.specification == validated.spec
+        assert (detail.specification.metric, detail.specification.version) == (
+            "revenue", "Budget")
+        assert detail.specification.filters[0].values == ("AT",)
+        assert (detail.sql, detail.sql_sha256) == (NO_COLUMN, compiled.sql_sha256)
+        assert detail.sql not in repr(result) and detail.sql_sha256 not in repr(result)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            detail.message = "changed"
+
+    def test_run_hands_over_the_same_three_things(self, promoted):
+        from src import compiler, roles, spec
+        role = roles.entity_controller("AT")
+        validated = spec.validate(spec.from_json(REVENUE), promoted.registry(), promoted, role)
+        good = compiler.compile(validated, promoted.registry(), role)
+        bad = compiler.CompiledQuery(**{**good.__dict__, "sql": NO_COLUMN})
+        handed = []
+        promoted.run(bad, validated, role, engine_detail=handed.append)
+        (detail,) = handed
+        assert (detail.specification, detail.sql, detail.sql_sha256) == (
+            validated.spec, NO_COLUMN, good.sql_sha256)
 
 
 class TestF26APoolHasARootOfItsOwn:

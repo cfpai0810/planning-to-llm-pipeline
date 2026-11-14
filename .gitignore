@@ -12,3 +12,9 @@ output/
 # The warehouse is built at start into a temporary folder; no database file is committed
 *.duckdb
 *.duckdb.wal
+# The audit's default folder (src/audit.py), and the project's own notes, kept out as in the
+# other project folders
+audit_log/
+records/
+cv_bullets.txt
+debrief_log.txt

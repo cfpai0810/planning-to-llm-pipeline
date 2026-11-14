@@ -392,6 +392,13 @@ class TestThe3bDocs:
                 "and never shown: the outcome a reader sees is the one fixed `engine_error`") \
             in text
 
+    def test_the_hand_off_of_an_engine_error_is_described(self):
+        # Part 3d (decision 6 of the reviewer's Stop 1 verdict).
+        text = section(GOVERNED, "## The compiler")
+        assert ("With the message come the validated specification and the compiled SQL with "
+                "its hash, so the audit's record of an `engine_error` is as complete as an "
+                "answer's; it has no result hash and no row count.") in text
+
     def test_the_question_paths_outcomes_are_in_the_table(self):
         text = section(GOVERNED, "## Outcomes")
         assert ("The question path (`src/ask.py`, part 3b) adds seven: `question_invalid` "

@@ -40,7 +40,8 @@ steps, in order:
    template and a fixed notice. A failed narration call never touches the
    answer or the failure code, which stay the specification call's;
 8. the record, handed to the audit seam (an object whose one method,
-   write(record), takes the finished record as a mapping) last of all;
+   write(record), takes the finished record as a mapping) last of all:
+   src/audit.py's AuditLog writes it as one line of its file (part 3d);
 9. the result.
 
 It never raises for anything a visitor or the model can cause. A SessionError
@@ -49,9 +50,11 @@ cannot be written (an OSError from audit.write), the result is
 audit_unavailable and no figure leaves. Every run is recorded, refusals and
 failures included. Any other exception is a fault in the code and is raised.
 
-The record (RECORD_FIELDS; part 3d closes the set and writes the line) holds
-the run id, the time (UTC, to the second), the role (name, entity, view), the
-question as received, the provenance (null when the session had already
+The record (RECORD_FIELDS, a closed set: src/audit.py refuses any other and
+writes the line) holds the run id, the time (UTC, to the second), the role
+(name, entity, view), the question as received, cut to its first RECORDED
+(2,000) characters, with its full length beside it, or null and null when it
+was not text (F28), the provenance (null when the session had already
 ended; the answer's own when there is an answer, read under the same lock as
 its query), the prompt's three hashes, the model calls (purpose, model,
 effort, outcome, stop reason, request id, the model that served it, tokens
@@ -59,7 +62,9 @@ and the SDK's version), the specification call's text as received, the
 canonical specification of an answer (or null), the outcome (a code, or
 answered), the SQL and its hash, the result hash, the row count, truncation,
 the coverage and gaps, the engine's message for an engine_error (never shown
-to a reader), asks_for_a_cause, and the narration: the mode asked for and
+to a reader), cut to its first RECORDED characters, with its full length
+beside it, or null and null (decision 3), asks_for_a_cause, and the
+narration: the mode asked for and
 the mode shown, the text shown, the model's own text when it was withheld,
 the flags (kind, text, figure, reason) and the narration call's failure code
 (null where there was no narration). The narration call, when made, is the
@@ -69,7 +74,9 @@ specification, so neither a question nor a reply can make it fail to encode.
 Nothing in it is the key, a request header or an exception's class name.
 The one text an exception gives that it keeps is the engine's message of an
 engine_error, as engine_detail, for the audit alone; a failed model call is
-kept as its code.
+kept as its code. The record of an engine_error also holds the specification,
+the SQL and its hash, as an answer's does, from the session's hand-off; its
+result hash and row count stay null (decision 6).
 
 This module imports neither the database engine nor the query parser, and
 calls the model through src/model_call.py alone (tests/test_boundaries.py).
@@ -88,14 +95,18 @@ from src import model_call, narration, outcomes, prompt, roles
 from src.outcomes import Outcome
 from src.session import SessionError
 
-__all__ = ["MAX_QUESTION", "NARRATIONS", "RECORD_FIELDS", "Asked", "ask", "checked_question"]
+__all__ = ["MAX_QUESTION", "NARRATIONS", "RECORDED", "RECORD_FIELDS", "Asked", "ask",
+           "checked_question"]
 
 MAX_QUESTION = 500
 NARRATIONS = ("template", "model")
-RECORD_FIELDS = ("run_id", "at", "role", "question", "provenance", "prompt", "calls",
-                 "model_text_raw", "specification", "outcome", "sql", "sql_sha256",
+# The most characters of the question (F28) and of the engine's message (decision 3) a record
+# keeps; the record holds each one's full length beside it.
+RECORDED = 2000
+RECORD_FIELDS = ("run_id", "at", "role", "question", "question_length", "provenance", "prompt",
+                 "calls", "model_text_raw", "specification", "outcome", "sql", "sql_sha256",
                  "result_sha256", "row_count", "truncated", "coverage", "gaps", "engine_detail",
-                 "asks_for_a_cause", "narration")
+                 "engine_detail_length", "asks_for_a_cause", "narration")
 UNREADABLE = "unreadable_reply"
 # The record's narration where there was none: an outcome, a failure, or no figure.
 NOT_NARRATED = {"mode_shown": None, "text_shown": None, "model_text": None, "flags": [],
@@ -171,10 +182,12 @@ def ask(client, session, role, question, *, audit, narrate: str = "template") ->
     sent = checked_question(question)                                   # step 1
     role = roles.checked(role)                                          # step 2
     run_id = uuid.uuid4().hex
+    text = isinstance(question, str)
     record = dict.fromkeys(RECORD_FIELDS)
     record.update(run_id=run_id, at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                   role={"name": role.name, "entity": role.entity, "view": role.view()},
-                  question=question if isinstance(question, str) else None, calls=[],
+                  question=question[:RECORDED] if text else None,
+                  question_length=len(question) if text else None, calls=[],
                   narration={"mode_asked": narrate, **NOT_NARRATED})
     ended = getattr(session, "closed", False)
     if not ended:
@@ -232,7 +245,8 @@ def _asked(client, session, role, sent: str, record: dict, narrate: str):
         result = session.answer(value, role, engine_detail=details.append)
     except SessionError:
         return outcomes.SESSION_ENDED, None, None
-    record["engine_detail"] = details[0] if details else None
+    if details:
+        _engine_failed(record, details[0])
     if not isinstance(result, answers.Answer) or result.outcome is not None:
         return result, None, None
     narrated = narration.narrate(client, result, loaded, members, role,  # step 7
@@ -241,6 +255,15 @@ def _asked(client, session, role, sent: str, record: dict, narrate: str):
         record["calls"].append(_call_entry(narrated.call, "narration"))
     record["narration"] = narrated.record()
     return result, None, narrated
+
+
+def _engine_failed(record: dict, detail) -> None:
+    """The record of an engine_error (decisions 3 and 6 of the Stop 1 verdict): the
+    specification, the SQL and its hash as an answer's (no result hash, no row count), and the
+    engine's message cut at RECORDED characters, with its full length."""
+    record.update(specification=_canonical(detail.specification), sql=detail.sql,
+                  sql_sha256=detail.sql_sha256, engine_detail=detail.message[:RECORDED],
+                  engine_detail_length=len(detail.message))
 
 
 def _finish(record: dict, result, failure: Optional[str]) -> None:
