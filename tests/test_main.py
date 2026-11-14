@@ -16,6 +16,10 @@ same function the command uses.
 
 Part 1e (the reviewer's verdict, item 7a): a file that is not a workbook is
 told in plain words, and nothing the command prints names a Python class.
+
+Part 3b (the reviewer's Phase 3 brief, 4.8): python main.py schema --out
+<folder> writes the schema and the system texts, with a report, and calls
+nothing.
 """
 
 import json
@@ -513,3 +517,139 @@ class TestFiguresAreRoundedOnceWhereShown:
     def test_each_unit(self, text, unit, expected):
         from src import answer
         assert answer.shown(text, unit) == expected
+
+
+# -- Part 3b: python main.py schema (the reviewer's Phase 3 brief, 4.8) ----------------------------
+# The command builds the template as query does, acknowledges the sample pair's breaks and
+# promotes it as "Schema dump", and writes the schema and the system texts for the owner's live
+# check and the reviewer: schema.json (the canonical bytes that schema_sha256 hashes), one
+# system text for the group controller and one for each of the sample's three entities, and
+# schema_report.txt. It reads no key and calls nothing: it is run here with the model call and
+# every way of making a client replaced by functions that stop the process.
+
+SCHEMA_FILES = ["schema.json", "schema_report.txt", "system_entity_controller_AT.txt",
+                "system_entity_controller_DE.txt", "system_entity_controller_ES.txt",
+                "system_group_controller.txt"]
+NO_MODEL = ("import runpy, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import anthropic\n"
+            "from src import model_call\n"
+            "from streamlit_app.lib import claude_client\n"
+            "def refuse(*args, **kwargs):\n"
+            "    raise SystemExit('a model call or a client was attempted')\n"
+            "model_call.call_model = refuse\n"
+            "claude_client.build_client = refuse\n"
+            "anthropic.Anthropic.__init__ = refuse\n"
+            "sys.argv = sys.argv[2:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n")
+
+
+@pytest.fixture(scope="module")
+def schema_run(tmp_path_factory):
+    temp = tmp_path_factory.mktemp("schema_temp")
+    out = tmp_path_factory.mktemp("schema_out") / "dump"
+    done = subprocess.run([sys.executable, "-c", NO_MODEL, str(ROOT), str(MAIN), "schema",
+                           "--out", str(out)], capture_output=True, text=True,
+                          encoding="utf-8", cwd=str(ROOT), timeout=300,
+                          env=subprocess_env(TEMP=str(temp), TMP=str(temp), TMPDIR=str(temp)))
+    return done, temp, out
+
+
+@pytest.fixture(scope="module")
+def dumped(template, tmp_path_factory):
+    """The sample pair promoted in a session of the test's own, as the command promotes it."""
+    from src import session
+    pool = session.Sessions(template, root=tmp_path_factory.mktemp("schema_session"))
+    s = pool.open()
+    s.acknowledge_many("sample", [(b.break_id, "Schema dump", "accepted")
+                                  for b in s.breaks("sample")])
+    s.promote("sample", "Schema dump")
+    yield s
+    pool.close_all()
+
+
+class TestSchema:
+    def test_it_writes_the_six_files_and_calls_nothing(self, schema_run):
+        done, _, out = schema_run
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert done.stderr == "" and "attempted" not in done.stdout
+        assert sorted(p.name for p in out.iterdir()) == SCHEMA_FILES
+
+    def test_nothing_is_left_in_the_temporary_folder(self, schema_run):
+        _, temp, _ = schema_run
+        assert list(temp.iterdir()) == []
+
+    def test_schema_json_is_the_canonical_schema(self, schema_run, dumped):
+        from src import prompt
+        _, _, out = schema_run
+        shape = prompt.schema(dumped.registry(), dumped.dimensions().versions)
+        data = (out / "schema.json").read_bytes()
+        assert data == prompt.canonical(shape).encode("utf-8") and not data.endswith(b"\n")
+        assert prompt.walk_problems(json.loads(data)) == []
+
+    def test_each_system_text_is_the_one_ask_sends(self, schema_run, dumped):
+        from src import prompt, roles
+        _, _, out = schema_run
+        for name, role in (("group_controller", roles.group_controller),
+                           ("entity_controller_ES", roles.entity_controller("ES")),
+                           ("entity_controller_AT", roles.entity_controller("AT")),
+                           ("entity_controller_DE", roles.entity_controller("DE"))):
+            made = prompt.build(dumped.registry(), roles.members_for(role, dumped),
+                                dumped.dimensions().versions, "Any question")
+            assert (out / f"system_{name}.txt").read_bytes() == made.system.encode("utf-8")
+
+    def test_the_report(self, schema_run):
+        import hashlib
+
+        from src import prompt
+        _, _, out = schema_run
+        text = (out / "schema_report.txt").read_text(encoding="utf-8")
+        schema_bytes = (out / "schema.json").read_bytes()
+        described = prompt.describe(json.loads(schema_bytes))
+        assert "the sample pair, its breaks acknowledged and promoted as Schema dump" in text
+        assert f"size: {len(schema_bytes)} bytes" in text
+        assert "properties: 18" in text
+        assert "nullable fields: 3 (refusal, specification, specification.sort); at most 16" \
+            in text
+        assert ("deepest nesting: 5 levels in a reply (the reply, specification, filters, a "
+                "filter, its values)") in text
+        assert f"{described['json_depth']} levels of JSON in schema.json" in text
+        for path, values in described["enums"]:
+            assert f"  {path}: {len(values)}: {', '.join(values)}" in text, path
+        assert f"schema_sha256: {hashlib.sha256(schema_bytes).hexdigest()}" in text
+        for name in SCHEMA_FILES:
+            if name.startswith("system_"):
+                digest = hashlib.sha256((out / name).read_bytes()).hexdigest()
+                assert f"  {name}: {digest}" in text, name
+        assert text.endswith("\n") and "\r" not in text
+
+    def test_it_says_where_each_file_went(self, schema_run):
+        done, _, out = schema_run
+        lines = done.stdout.splitlines()
+        assert lines[0] == f"schema: wrote 6 files to {out}"
+        assert lines[-1] == "No key was read and no model was called."
+
+    def test_the_usage_names_the_schema_command(self, capsys):
+        import main
+        assert main.main([]) == 0
+        assert "python main.py schema --out <folder>" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("argv", [["schema"], ["schema", "--out"],
+                                      ["schema", "--folder", "x"],
+                                      ["schema", "--out", "x", "--out", "y"]])
+    def test_a_wrong_option_is_one_plain_line(self, capsys, argv):
+        import main
+        assert main.main(argv) == 2
+        out = capsys.readouterr().out.strip().splitlines()
+        assert out == ["schema: give --out and a folder; run python main.py for the usage."]
+
+    def test_an_out_that_is_a_file_is_refused_before_anything_is_built(self, tmp_path, capsys,
+                                                                      monkeypatch):
+        import main
+        from src import startup
+        monkeypatch.setattr(startup, "build_template", lambda *a, **k: pytest.fail("built"))
+        taken = tmp_path / "taken.txt"
+        taken.write_text("x", encoding="utf-8")
+        assert main.main(["schema", "--out", str(taken)]) == 1
+        assert capsys.readouterr().out.strip().splitlines() == [
+            "schema: taken.txt: that is a file, not a folder."]

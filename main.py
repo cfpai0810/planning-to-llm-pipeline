@@ -2,7 +2,7 @@
 # main.py: the command line
 # =============================================================================
 """
-The pipeline's command line. Two commands:
+The pipeline's command line. Three commands:
 
     python main.py check <workbook> <ledger>
 
@@ -33,7 +33,24 @@ unless --acknowledge-all-as is given too. It writes nothing outside the
 temporary folder, and removes it, the read-only template file included. A
 wrong option is one plain line and the exit code 2; a spec file that is
 missing or malformed, a refused promotion or a refused question is one plain
-line and 1; an answer exits 0. No model is called.
+line and 1; an answer exits 0. No model is called. The provenance's break
+counts are labelled pair-wide (F27).
+
+    python main.py schema --out <folder>
+
+Part 3b (the reviewer's Phase 3 brief, 4.8), for the owner's live check of
+the real schema and for review. It builds the template as query does,
+acknowledges every break of the sample pair and promotes it as "Schema
+dump", so the member lists are real, and writes to the folder (made if it
+does not exist): schema.json, the schema's canonical JSON, the exact bytes
+that schema_sha256 hashes, with no newline after; system_group_controller.txt
+and system_entity_controller_<code>.txt for each entity of the pair, each the
+exact system text ask sends that role, whose SHA-256 is its system_sha256;
+and schema_report.txt: the schema's size, its properties, every enum and its
+length, the nullable fields, the deepest nesting, and the hashes. It reads no
+key and calls nothing. A wrong option is one plain line and the exit code 2;
+an --out that is a file, or a build or write that fails, is one plain line
+and 1.
 """
 
 from __future__ import annotations
@@ -49,6 +66,7 @@ from typing import Optional
 
 USAGE = """Usage: python main.py check <workbook> <ledger>
        python main.py query <spec.json> --pair clean|sample --role group_controller|entity_controller [--entity ES] [--acknowledge-all-as "Name"] [--promote-as "Name"]
+       python main.py schema --out <folder>
 
   check   Lands the workbook and the ledger in a temporary warehouse, runs the
           spreadsheet controls and reconcile, prints each batch record and every
@@ -58,6 +76,9 @@ USAGE = """Usage: python main.py check <workbook> <ledger>
           specification under the role, prints the outcome or the answer (the
           SQL, the figures, the coverage and gaps, the provenance), and deletes
           the folder.
+  schema  Writes the schema a model's reply must match and the system text
+          each role is sent, with a report of their sizes and hashes, from the
+          sample pair promoted as "Schema dump". It calls nothing.
 
 Phase 2: the sample workbook and its ledger extract, the extractor, the
 spreadsheet controls, reconcile and promotion, the metric registry, and the
@@ -276,7 +297,8 @@ def answer_lines(result, role) -> list[str]:
               f"{p['ledger_file_sha256']})",
               f"  promotion {p['promotion_number']}, promoted by {p['promoted_by']} at "
               f"{p['promoted_at']}",
-              "  breaks: " + ", ".join(f"{k} {v}" for k, v in p["breaks"].items())
+              f"  breaks ({p['breaks_scope']}): "
+              + ", ".join(f"{k} {v}" for k, v in p["breaks"].items())
               + f"; acknowledged {p['acknowledged']} (accepted {p['accepted']}, dismissed "
                 f"{p['dismissed']}, investigated {p['investigated']})",
               f"  registry {p['registry_version']} (SHA-256 {p['registry_hash']}); engine "
@@ -339,6 +361,106 @@ def query(argv: list[str]) -> int:
     return 0
 
 
+# == schema (part 3b) ==============================================================================
+
+DUMP = "Schema dump"
+NESTING = "the reply, specification, filters, a filter, its values"
+
+
+def _file_name(code: str) -> str:
+    """An entity code as part of a file name: letters and digits kept, anything else _."""
+    return "".join(c if c.isascii() and c.isalnum() else "_" for c in code)
+
+
+def schema_files(s) -> dict:
+    """{file name: text} for a session with a pair promoted: the canonical schema, the system
+    text for the group controller and for each entity's controller, and the report."""
+    from src import prompt, roles
+    loaded, versions = s.registry(), s.dimensions().versions
+    shape = prompt.schema(loaded, versions)
+    every = [("system_group_controller.txt", roles.group_controller)] + [
+        (f"system_entity_controller_{_file_name(code)}.txt", roles.entity_controller(code))
+        for code, _, _ in roles.members_for(roles.group_controller, s).entities]
+    systems = {name: prompt.system_text(loaded, roles.members_for(role, s), versions)
+               for name, role in every}
+    return {"schema.json": prompt.canonical(shape), **systems,
+            "schema_report.txt": schema_report(shape, systems, loaded)}
+
+
+def schema_report(shape: dict, systems: dict, loaded) -> str:
+    """The schema report: size, properties, enums, nullable fields, nesting and hashes."""
+    from src import prompt
+    d = prompt.describe(shape)
+    enums = d["enums"]
+    lines = ["Schema report: python main.py schema, from the sample pair, its breaks "
+             f"acknowledged and promoted as {DUMP}.",
+             f"Registry {loaded.version} (SHA-256 {loaded.sha256}).",
+             "",
+             "schema.json is the canonical JSON (keys sorted, no spaces, ASCII), the exact "
+             "bytes schema_sha256 hashes.",
+             f"size: {d['size_bytes']} bytes",
+             f"properties: {d['properties']}",
+             f"nullable fields: {d['nullable']} ({', '.join(d['nullable_paths'])}); at most "
+             f"{prompt.MAX_NULLABLE}",
+             f"deepest nesting: {d['reply_depth']} levels in a reply ({NESTING}); "
+             f"{d['json_depth']} levels of JSON in schema.json",
+             f"keywords allowed: {', '.join(prompt.KEYWORDS)}; the walk's problems: "
+             f"{'; '.join(prompt.walk_problems(shape)) or 'none'}",
+             f"enums: {len(enums)}, {sum(len(v) for _, v in enums)} values in all",
+             *[f"  {path}: {len(values)}: {', '.join(values)}" for path, values in enums],
+             "",
+             f"schema_sha256: {prompt.sha256(prompt.canonical(shape))}",
+             "system_sha256, the SHA-256 of each file's UTF-8 bytes:",
+             *[f"  {name}: {prompt.sha256(text)} ({len(text.encode('utf-8'))} bytes)"
+               for name, text in systems.items()]]
+    return "\n".join(lines) + "\n"
+
+
+def schema(argv: list[str]) -> int:
+    from src import promotion, session, startup, warehouse
+    from src.batch import SourceError
+    if len(argv) != 2 or argv[0] != "--out":
+        print("schema: give --out and a folder; run python main.py for the usage.")
+        return 2
+    out = Path(argv[1])
+    if out.exists() and not out.is_dir():
+        print(f"schema: {out.name}: that is a file, not a folder.")
+        return 1
+    folder = Path(tempfile.mkdtemp(prefix="p7_schema_"))
+    try:
+        template = startup.build_template(folder / "template")
+        pool = session.Sessions(template, root=folder / "sessions")
+        try:
+            s = pool.open()
+            s.acknowledge_many("sample", [(b.break_id, DUMP, "accepted")
+                                          for b in s.breaks("sample")])
+            s.promote("sample", DUMP)
+            files = schema_files(s)
+        finally:
+            pool.close_all()
+    except (promotion.PromotionError, SourceError, warehouse.WarehouseError) as error:
+        print(f"schema: {error}")
+        return 1
+    except OSError:
+        print("schema: the schema could not be written: a file could not be read or written.")
+        return 1
+    finally:
+        remove_folder(folder)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        for name, text in files.items():
+            (out / name).write_bytes(text.encode("utf-8"))
+    except OSError:
+        print("schema: the schema could not be written: a file could not be read or written.")
+        return 1
+    from src import prompt
+    print(f"schema: wrote {len(files)} files to {out}")
+    for name, text in files.items():
+        print(f"  {name}: SHA-256 {prompt.sha256(text)}")
+    print("No key was read and no model was called.")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -346,6 +468,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     if argv[0] == "query":
         return query(argv[1:])
+    if argv[0] == "schema":
+        return schema(argv[1:])
     if argv[0] != "check" or len(argv) != 3:
         print(USAGE)
         return 2

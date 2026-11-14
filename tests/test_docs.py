@@ -356,9 +356,56 @@ class TestThe3aDocs:
                          "phase gate runs the full suite."]
 
     def test_a_stale_folder_is_judged_by_its_age_alone(self):
-        # F26, a may item: stated as a limit, not changed.
+        # F26: stated as a limit in 3a; changed on purpose in 3b, where the root became
+        # required (the reviewer's Phase 3 brief, 4.7 item 4).
         text = section(GOVERNED, "## Sessions and promotion")
-        for phrase in ("A limit: a folder left behind is judged by its age alone",
-                       "whether or not another process still holds it",
-                       "give each deployment its own root"):
+        assert "A limit: a folder left behind is judged by its age alone" not in text
+        assert "Until that is changed" not in text
+        for phrase in ("A pool's root is required, with no default (F26)",
+                       "each deployment, the command line's and the app's, gives a root of "
+                       "its own",
+                       "a pool removes stale folders only directly under its own root, never "
+                       "under another",
+                       "A folder left behind is judged by its age alone, whether or not "
+                       "another process still holds it",
+                       "two processes given one root are not coordinated"):
             assert phrase in text, phrase
+
+
+# -- Part 3b: the reviewer's Phase 3 brief, 4.7 and 4.8 ---------------------------------------------
+
+class TestThe3bDocs:
+    def test_provenance_takes_a_role_and_its_break_counts_are_pair_wide(self):
+        # F27.
+        text = section(GOVERNED, "## Sessions and promotion")
+        for phrase in ("Provenance takes a role, always: there is no provenance without a view.",
+                       "`breaks_scope`: `pair-wide`",
+                       "the counts cover every entity of the pair and show no break's location "
+                       "or text",
+                       "whether the pair was reviewed before promotion, which is pair-wide by "
+                       "construction"):
+            assert phrase in text, phrase
+
+    def test_the_engines_message_is_kept_for_the_audit_and_never_shown(self):
+        text = section(GOVERNED, "## The compiler")
+        assert ("the engine's message is handed to the caller that asks for it, for the audit, "
+                "and never shown: the outcome a reader sees is the one fixed `engine_error`") \
+            in text
+
+    def test_the_question_paths_outcomes_are_in_the_table(self):
+        text = section(GOVERNED, "## Outcomes")
+        assert ("The question path (`src/ask.py`, part 3b) adds seven: `question_invalid` "
+                "before anything is sent, the four refusal reasons a model may give, "
+                "`session_ended` and `audit_unavailable`.") in text
+
+    def test_the_schema_command_is_described(self):
+        text = section(GOVERNED, "## Trying it")
+        for phrase in ("`python main.py schema --out <folder>`", "`schema.json`",
+                       "`schema_report.txt`", "calls nothing"):
+            assert phrase in text, phrase
+
+    def test_the_first_paragraph_says_the_model_writes_the_specification(self):
+        first = flat_text(GOVERNED.read_text(encoding="utf-8").split("\n\n")[1])
+        assert "No model is called yet" not in first
+        assert ("A model writes the specification through the question path (`src/ask.py`), "
+                "and nothing else.") in first

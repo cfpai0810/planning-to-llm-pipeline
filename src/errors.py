@@ -18,9 +18,11 @@ An account with no credit is billing_problem, not a fault in this app
 credit balance, in any case. The message is read from the error's body, or
 its text when the body has none, and never shown.
 
-Phase 3 adds two outcomes with fixed wording, for a refusal and for a reply
-cut off at max_tokens. They are outcomes of a call that succeeded, so they
-join CODES and MESSAGES there; nothing here needs to change shape.
+Phase 3 (part 3b) adds two codes with fixed wording, for a reply that
+stopped on refusal (model_refused) and for one cut off at max_tokens
+(reply_cut_off). They are outcomes of a call that succeeded, so no exception
+maps to them: src/model_call.py gives them from the reply's stop reason. They
+join CODES and MESSAGES; nothing here changed shape.
 """
 
 from __future__ import annotations
@@ -39,9 +41,11 @@ RATE_LIMITED = "rate_limited"
 SERVICE_UNAVAILABLE = "service_unavailable"
 UNREADABLE_REPLY = "unreadable_reply"
 BILLING_PROBLEM = "billing_problem"
+MODEL_REFUSED = "model_refused"
+REPLY_CUT_OFF = "reply_cut_off"
 
 CODES = (KEY_REJECTED, KEY_FORBIDDEN, MODEL_NOT_FOUND, BAD_REQUEST, RATE_LIMITED,
-         SERVICE_UNAVAILABLE, UNREADABLE_REPLY, BILLING_PROBLEM)
+         SERVICE_UNAVAILABLE, UNREADABLE_REPLY, BILLING_PROBLEM, MODEL_REFUSED, REPLY_CUT_OFF)
 
 # The series wording (P1 to P6), one line per code.
 MESSAGES = {
@@ -61,6 +65,10 @@ MESSAGES = {
     UNREADABLE_REPLY: "The model replied, but not in the form this app asked for.",
     BILLING_PROBLEM: "Anthropic reports a problem with billing on this account. Check your plan "
                      "and credits in your Anthropic account.",
+    # Part 3b: a reply that stopped on refusal, and one cut off at max_tokens.
+    MODEL_REFUSED: "The model declined to answer this question. Try asking it differently.",
+    REPLY_CUT_OFF: "The model's reply was cut off before it finished. Try a shorter or simpler "
+                   "question.",
 }
 
 _BY_CLASS = (

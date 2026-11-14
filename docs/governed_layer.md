@@ -3,8 +3,8 @@
 What stands between a question and the figures: the metric registry
 (`docs/registry.md`), a specification of the question, its validation, the
 compiler that turns it into one SELECT, the guard that checks every query,
-the roles, and the session that holds one visitor's warehouse. No model is
-called yet: in Phase 3 a model will write the specification, and nothing
+the roles, and the session that holds one visitor's warehouse. A model writes
+the specification through the question path (`src/ask.py`), and nothing
 else. A model never writes SQL and never calculates.
 
 Said plainly: the read-only connection, with external access off, stops
@@ -37,12 +37,25 @@ are open in a process; one more closes the least recently used, and the
 folders are removed on close, at exit, and, for a crashed process's, at the
 next start.
 
-A limit: a folder left behind is judged by its age alone. A pool removes
-every folder under its root that has the session prefix and is older than a
-day, whether or not another process still holds it, so two processes that
-share one temporary folder could remove an idle session of the other's, and
-that session's next write cycle would fail. Until that is changed, give each
-deployment its own root (the `root` of `Sessions`).
+A pool's root is required, with no default (F26): each deployment, the
+command line's and the app's, gives a root of its own, and a pool removes
+stale folders only directly under its own root, never under another. A
+folder left behind is judged by its age alone, whether or not another
+process still holds it: a pool removes every folder under its root that has
+the session prefix and is older than a day. So two processes given one root
+are not coordinated, and could remove an idle session of the other's; that is
+why the root has no default, and no longer falls back to the shared
+temporary folder. Each command of the command line uses a temporary folder of
+its own.
+
+Provenance takes a role, always: there is no provenance without a view. Its
+break counts (by severity, and how many are acknowledged, accepted, dismissed
+or investigated) are the pair's, the same for every role, and every
+provenance says so with `breaks_scope`: `pair-wide` (F27): the counts cover
+every entity of the pair and show no break's location or text. They tell
+whether the pair was reviewed before promotion, which is pair-wide by
+construction, and they hold no name, so an entity controller's provenance
+names no other entity.
 
 A question runs on one cursor per request, taken from the session's
 read-only connection and closed after. With nothing promoted, every question
@@ -176,7 +189,9 @@ fixed templates and the registry's structured formulas. Its guarantees:
 `session.answer` then asks DuckDB's own parser whether the text is one
 SELECT, runs it on its own cursor, and returns an answer: the rows as exact
 decimals, the coverage and gaps, the result hash and the provenance. Any
-error of the engine is `engine_error`, with no SQL echoed. Every metric of
+error of the engine is `engine_error`, with no SQL echoed; the engine's message
+is handed to the caller that asks for it, for the audit, and never shown: the
+outcome a reader sees is the one fixed `engine_error`. Every metric of
 the grid of `tests/oracle.py` (29,232 questions on each pair) equals the
 independent oracle's figures exactly. The whole grid runs, unsampled, in the
 default suite and in CI (the reviewer's verdict of 11 November, D1). When a
@@ -212,7 +227,10 @@ floor, not a proof.
 ## Outcomes
 
 A refusal is an outcome (`src/outcomes.py`): a code and one fixed sentence,
-filled with nothing, so it never echoes a name.
+filled with nothing, so it never echoes a name. The question path
+(`src/ask.py`, part 3b) adds seven: `question_invalid` before anything is
+sent, the four refusal reasons a model may give, `session_ended` and
+`audit_unavailable`.
 
 | Code | Sentence |
 |---|---|
@@ -230,6 +248,13 @@ filled with nothing, so it never echoes a name.
 | `entity_not_permitted` | That entity is not available to your role. |
 | `no_data` | The version holds no figures for the period asked for. |
 | `engine_error` | The figures could not be computed: the engine stopped the query. |
+| `question_invalid` | Ask a question of between 1 and 500 characters, in plain text. |
+| `out_of_scope` | That is not a question this pipeline can answer: it answers questions about the plan's figures. |
+| `needs_clarification` | The question is ambiguous. Say which metric, version, entity and period you mean. |
+| `change_not_possible` | This pipeline answers questions. It does not change data, definitions or access. |
+| `currency_not_supported` | All figures are in euros. Conversion to another currency is not available. |
+| `session_ended` | Your session ended. Review the batch again. |
+| `audit_unavailable` | The answer was not shown because the record of it could not be written. |
 
 ## Trying it
 
@@ -240,3 +265,11 @@ may acknowledge every break of the pair and promote it as the people named,
 asks the specification under the role, and prints the outcome or the answer:
 the SQL and its hash, the figures, the coverage and gaps, and the
 provenance. It removes the folder after.
+
+`python main.py schema --out <folder>` builds the template the same way,
+acknowledges every break of the sample pair and promotes it as "Schema
+dump", and writes what a model would be sent: `schema.json`, the schema its
+reply must match, as canonical JSON (the exact bytes its SHA-256 hashes); the
+system text for the group controller and for each entity's controller; and
+`schema_report.txt`, with the schema's size, properties, enums, nullable
+fields, nesting and hashes. It reads no key and calls nothing.

@@ -11,6 +11,12 @@ expected figures (tests/generated/oracle_expected.csv), never summed here.
 Commit 3a (the reviewer's verdict of 11 November, F25): what only a user other than root can
 show, that no one may write to the template, is a test of its own, skipped when the suite
 runs as root.
+
+Part 3b (the reviewer's Phase 3 brief, 4.7): provenance takes a role, always; every provenance
+says its break counts are pair-wide (F27), and an entity view's names no other entity; the
+engine's message reaches the caller who asks for it, for the audit, while the outcome a reader
+sees stays the one fixed object; and a pool needs a root of its own and never removes a
+folder under another root (F26).
 """
 
 import csv
@@ -387,22 +393,26 @@ class TestTheLock:
 # -- 5.5 Provenance ---------------------------------------------------------------------------
 
 class TestProvenance:
+    # Changed on purpose in 3b: provenance takes a role (the group controller here, which the
+    # session's own code would pass), and every provenance carries breaks_scope.
     def test_with_nothing_promoted_it_says_so(self, sessions):
-        from src import warehouse
-        p = sessions.open().provenance()
+        from src import roles, warehouse
+        p = sessions.open().provenance(roles.group_controller)
         registry = hashlib.sha256(REGISTRY_FILE.read_bytes()).hexdigest()
         assert p == {"promoted": False, "outcome": "nothing_promoted",
                      "sentence": "Nothing has been promoted yet. Review a batch first.",
+                     "breaks_scope": "pair-wide", "view": "group view",
                      "registry_version": "1.0.0", "registry_hash": registry,
                      "engine": "DuckDB", "engine_version": warehouse.ENGINE_VERSION}
         assert registry.startswith("1e682403") and registry.endswith("7de4c0")
 
     def test_after_promoting_the_sample_pair(self, sessions):
+        from src import roles
         from src.hashing import file_sha256
         s = sessions.open()
         acknowledge_all(s, "sample")
         s.promote("sample", "P. Promoter", clock=lambda: NOON)
-        p = s.provenance()
+        p = s.provenance(roles.group_controller)
         pair = s.pairs["sample"]
         assert {k: v for k, v in p.items() if not k.startswith(("registry", "engine"))} == {
             "promoted": True, "plan_batch_id": pair.plan_batch_id,
@@ -410,10 +420,12 @@ class TestProvenance:
             "ledger_batch_id": pair.ledger_batch_id, "ledger_file_name": "erp_trial_balance.csv",
             "ledger_file_sha256": file_sha256(LEDGER), "promotion_number": 1,
             "promoted_by": "P. Promoter", "promoted_at": "2026-11-08T12:00:00Z",
-            "breaks": {"high": 3, "medium": 5, "low": 0}, "acknowledged": 8, "accepted": 8,
-            "dismissed": 0, "investigated": 0}
+            "breaks": {"high": 3, "medium": 5, "low": 0}, "breaks_scope": "pair-wide",
+            "acknowledged": 8, "accepted": 8, "dismissed": 0, "investigated": 0,
+            "view": "group view"}
 
     def test_a_breaks_latest_action_is_the_one_counted(self, sessions):
+        from src import roles
         s = sessions.open()
         acknowledge_all(s, "sample")
         pair = s.pairs["sample"]
@@ -421,14 +433,15 @@ class TestProvenance:
         s.acknowledge_many(pair, [(first, "B. Checker", "investigated"),
                                   (second, "B. Checker", "dismissed")], clock=lambda: NOON)
         s.promote(pair, "P. Promoter", clock=lambda: NOON)
-        p = s.provenance()
+        p = s.provenance(roles.group_controller)
         assert (p["acknowledged"], p["accepted"], p["dismissed"], p["investigated"]) == (8, 6, 1, 1)
 
     def test_it_names_no_cell_content(self, sessions):
+        from src import roles
         s = sessions.open()
         acknowledge_all(s, "sample")
         s.promote("sample", "P. Promoter", clock=lambda: NOON)
-        p = s.provenance()
+        p = s.provenance(roles.group_controller)
         hashes = {k: v for k, v in p.items() if k.endswith(("sha256", "hash", "batch_id"))}
         assert all(re.fullmatch(r"[0-9a-f]{16}|[0-9a-f]{64}", v) for v in hashes.values())
         text = json.dumps({k: v for k, v in p.items() if k not in hashes}, ensure_ascii=False)
@@ -445,9 +458,185 @@ class TestProvenance:
         assert not re.search(r"\b[A-Z]{1,3}[0-9]{1,5}\b", text)          # no cell address
 
     def test_the_role_view_is_named(self, sessions):
+        # Changed on purpose in 3b: there is no view without a role, because there is no
+        # provenance without one.
         from src import roles
         s = sessions.open()
         s.promote("clean", "P. Promoter", clock=lambda: NOON)
         assert s.provenance(roles.entity_controller("ES"))["view"] == "entity view: ES"
         assert s.provenance(roles.group_controller)["view"] == "group view"
-        assert "view" not in s.provenance()
+        with pytest.raises(TypeError):
+            s.provenance()
+
+
+# -- Part 3b: the session items (the reviewer's Phase 3 brief, 4.7) ---------------------------------
+
+ENTITIES = {"ES": ("Calder Foods Spain", "Southern Europe"),
+            "AT": ("Calder Foods Austria", "Central Europe"),
+            "DE": ("Calder Foods Germany", "Central Europe")}
+REVENUE = {"metric": "revenue", "version": "Budget", "dimensions": [], "filters": [],
+           "period": {"kind": "fy", "value": "FY2026"}, "comparison": "none", "sort": None,
+           "limit": 100}
+NO_COLUMN = "SELECT no_such_column FROM dim_version"
+
+
+def others_of(entity: str) -> list:
+    """Patterns for every code, name and region of the other entities that the entity does not
+    share: codes as whole words in capitals, names and regions in any case."""
+    own_region = ENTITIES[entity][1]
+    found = []
+    for code, (name, region) in ENTITIES.items():
+        if code != entity:
+            found += [rf"\b{code}\b", rf"(?i){re.escape(name)}"]
+            if region != own_region:
+                found.append(rf"(?i){re.escape(region)}")
+    return found
+
+
+@pytest.fixture
+def promoted(sessions):
+    s = sessions.open()
+    acknowledge_all(s, "sample")
+    s.promote("sample", "P. Promoter", clock=lambda: NOON)
+    return s
+
+
+class TestProvenanceTakesARole:
+    def test_the_role_is_a_required_argument(self, session_module):
+        import inspect
+        parameter = inspect.signature(session_module.Session.provenance).parameters["role"]
+        assert parameter.default is inspect.Parameter.empty
+
+    def test_no_role_is_a_type_error_before_anything_is_read(self, sessions):
+        s = sessions.open()
+        with pytest.raises(TypeError):
+            s.provenance()
+
+    def test_none_is_not_a_role(self, sessions):
+        from src import roles
+        with pytest.raises(roles.RoleError):
+            sessions.open().provenance(None)
+
+
+class TestF27TheBreakCountsArePairWide:
+    def test_every_provenance_says_so(self, sessions, promoted):
+        from src import roles
+        empty = sessions.open()
+        for s in (empty, promoted):
+            for role in (roles.group_controller, roles.entity_controller("ES"),
+                         roles.entity_controller("AT")):
+                assert s.provenance(role)["breaks_scope"] == "pair-wide"
+
+    def test_the_counts_are_the_same_for_every_role(self, promoted):
+        from src import roles
+        counted = {key: promoted.provenance(roles.group_controller)[key]
+                   for key in ("breaks", "acknowledged", "accepted", "dismissed", "investigated")}
+        for entity in ENTITIES:
+            view = promoted.provenance(roles.entity_controller(entity))
+            assert {key: view[key] for key in counted} == counted
+
+    @pytest.mark.parametrize("entity", list(ENTITIES))
+    def test_an_entity_views_provenance_names_no_other_entity(self, promoted, entity):
+        from src import roles
+        text = json.dumps(promoted.provenance(roles.entity_controller(entity)),
+                          ensure_ascii=False)
+        assert [p for p in others_of(entity) if re.search(p, text)] == []
+        assert f"entity view: {entity}" in text
+
+
+class TestTheEnginesDetailForTheAudit:
+    def _failing(self, monkeypatch, sql=NO_COLUMN):
+        from src import compiler
+        real = compiler.compile
+
+        def broken(*args, **kwargs):
+            q = real(*args, **kwargs)
+            return compiler.CompiledQuery(**{**q.__dict__, "sql": sql})
+        monkeypatch.setattr(compiler, "compile", broken)
+
+    def test_the_engines_message_is_handed_over_and_the_outcome_is_the_fixed_one(
+            self, promoted, monkeypatch):
+        from src import outcomes, roles
+        self._failing(monkeypatch)
+        handed = []
+        result = promoted.answer(REVENUE, roles.group_controller, engine_detail=handed.append)
+        assert result is outcomes.ENGINE_ERROR
+        assert result == outcomes.Outcome("engine_error", outcomes.SENTENCES["engine_error"])
+        (message,) = handed
+        assert isinstance(message, str) and "no_such_column" in message
+        assert "Exception" not in message and "duckdb" not in message
+        assert message not in repr(result)
+
+    def test_without_a_receiver_nothing_changes(self, promoted, monkeypatch):
+        from src import outcomes, roles
+        self._failing(monkeypatch)
+        assert promoted.answer(REVENUE, roles.group_controller) is outcomes.ENGINE_ERROR
+
+    def test_a_query_the_engines_parser_reads_as_more_than_one_select(self, promoted,
+                                                                       monkeypatch):
+        from src import outcomes, roles
+        self._failing(monkeypatch, sql="SELECT 1; SELECT 2")
+        handed = []
+        result = promoted.answer(REVENUE, roles.group_controller, engine_detail=handed.append)
+        assert result is outcomes.ENGINE_ERROR
+        assert handed == ["the engine's parser read: SELECT, SELECT"]
+
+    def test_an_answer_hands_over_nothing(self, promoted):
+        from src import answer, roles
+        handed = []
+        result = promoted.answer(REVENUE, roles.group_controller, engine_detail=handed.append)
+        assert isinstance(result, answer.Answer) and handed == []
+
+    def test_each_caller_gets_its_own_detail_across_threads(self, promoted):
+        # One session serves many requests: the detail goes to the caller who asked, never to a
+        # shared attribute. One thread runs a query that fails, the other one that does not.
+        from src import compiler, roles, spec
+        role = roles.group_controller
+        validated = spec.validate(spec.from_json(REVENUE), promoted.registry(), promoted, role)
+        good = compiler.compile(validated, promoted.registry(), role)
+        bad = compiler.CompiledQuery(**{**good.__dict__, "sql": NO_COLUMN})
+        handed = {"good": [], "bad": []}
+
+        def run(name, compiled):
+            for _ in range(15):
+                promoted.run(compiled, validated, role, engine_detail=handed[name].append)
+
+        threads = [threading.Thread(target=run, args=("good", good)),
+                   threading.Thread(target=run, args=("bad", bad))]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert handed["good"] == [] and len(handed["bad"]) == 15
+        assert all("no_such_column" in m for m in handed["bad"])
+        assert not hasattr(promoted, "engine_detail") and not hasattr(promoted, "last_error")
+
+
+class TestF26APoolHasARootOfItsOwn:
+    def test_a_pool_needs_a_root(self, template, session_module):
+        import inspect
+        parameter = inspect.signature(session_module.Sessions).parameters["root"]
+        assert parameter.default is inspect.Parameter.empty
+        with pytest.raises(TypeError):
+            session_module.Sessions(template)
+
+    def test_a_pool_never_removes_a_folder_under_another_root(self, template, tmp_path,
+                                                              session_module):
+        mine, other = tmp_path / "mine", tmp_path / "other"
+        old_mine = mine / f"{session_module.PREFIX}old"
+        old_other = other / f"{session_module.PREFIX}old"
+        old_beside = tmp_path / f"{session_module.PREFIX}beside"
+        for folder in (old_mine, old_other, old_beside):
+            folder.mkdir(parents=True)
+            (folder / "warehouse.duckdb").write_bytes(b"x")
+            two_days = time.time() - 2 * 24 * 3600
+            os.utime(folder, (two_days, two_days))
+        pool = session_module.Sessions(template, root=mine)
+        try:
+            assert not old_mine.exists()
+            assert old_other.exists() and old_beside.exists()
+        finally:
+            pool.close_all()
+        other_pool = session_module.Sessions(template, root=other)
+        other_pool.close_all()
+        assert not old_other.exists() and old_beside.exists()

@@ -18,8 +18,12 @@ never changes another's answers.
   acknowledge_many() and promote() each run in one cycle; promote wraps
   promotion.promote (a named promoter, one transaction, the facts rebuilt).
 - promoted() gives the promoted pair, or the outcome nothing_promoted.
-- provenance() gives what an answer card needs (5.5), reading only and
-  naming no cell content.
+- provenance(role) gives what an answer card needs (5.5), reading only and
+  naming no cell content. The role is required (part 3b): there is no
+  provenance without a view. Its break counts are the pair's, for every
+  role, and it says so with breaks_scope "pair-wide" (F27): they tell
+  whether the pair was reviewed before promotion, which is pair-wide by
+  construction, and they hold no break's location or text.
 - answer(spec_or_json, role) (part 2d, brief 6.5) reads the specification,
   validates it against the promoted pair's dimension tables and the
   registry, compiles it (the compiler checks its own output with the
@@ -27,6 +31,13 @@ never changes another's answers.
   SELECT, and the query runs on a cursor of its own, closed after, all
   under the read lock. It returns an Answer, or a typed outcome; any error
   of the engine is engine_error, in fixed wording, with no SQL echoed.
+  The engine's message is kept for the audit, never shown (part 3b): a
+  caller that passes engine_detail, a function, has it called with the
+  engine's message text when the query is engine_error (or with the
+  statement types the engine's parser read, when it did not read one
+  SELECT). The outcome returned is the same fixed object either way, and
+  the detail goes to that one call alone: nothing about it is kept on the
+  session, which serves many requests at once.
   answer, run and provenance first check the role they are given
   (roles.checked): anything that is not a Role of the two shapes raises
   RoleError, before anything is read or run.
@@ -43,8 +54,12 @@ Bounds (Sessions): at most config.MAX_SESSIONS sessions are open; opening one
 more closes the least recently used, by its last read or write. A session's
 folder is removed when it closes and, for every session still open, when the
 process exits (atexit). A pool removes, when it starts, the folders a crashed
-process left behind: those under its root whose name has the fixed prefix and
-which are older than one day.
+process left behind: those directly under its root whose name has the fixed
+prefix and which are older than one day, judged by age alone. So a pool's
+root is required, with no default (F26, part 3b): each deployment, the
+command line's and the app's, gives a root of its own, and a pool never
+touches a folder under another root. Two processes given one root are not
+coordinated.
 
 The session reaches the database through warehouse.connect alone and imports
 neither the engine nor the query parser (tests/test_boundaries.py).
@@ -69,10 +84,12 @@ from src.batch import Pair
 from src.controls import SEVERITIES
 from src.startup import Template
 
-__all__ = ["PREFIX", "STALE_SECONDS", "Session", "SessionError", "Sessions", "remove_stale"]
+__all__ = ["BREAKS_SCOPE", "PREFIX", "STALE_SECONDS", "Session", "SessionError", "Sessions",
+           "remove_stale"]
 
 PREFIX = "p7_session_"
 STALE_SECONDS = 24 * 60 * 60
+BREAKS_SCOPE = "pair-wide"          # what a provenance's break counts cover, for every role
 _LIVE: set = set()                   # every open session of the process, closed at exit
 
 
@@ -234,34 +251,35 @@ class Session:
 
     # -- Provenance (5.5) -------------------------------------------------------------------------
 
-    def provenance(self, role=None) -> dict:
-        """What an answer card needs (see _provenance), kept until the next write cycle; a
-        role, when given, must be a Role of the two shapes (RoleError)."""
-        role = None if role is None else roles.checked(role)
-        key = ("provenance", None if role is None else role.view())
+    def provenance(self, role) -> dict:
+        """What an answer card needs (see _provenance), kept until the next write cycle; the
+        role is required and must be a Role of the two shapes (RoleError)."""
+        role = roles.checked(role)
+        key = ("provenance", role.view())
         if key not in self._kept:
             self._kept[key] = self._provenance(role)
         return dict(self._kept[key])
 
-    def _provenance(self, role=None) -> dict:
+    def _provenance(self, role) -> dict:
         """What an answer card needs, read and never written: no cell content.
 
         The promoted pair's plan batch (id, file name and hash) and ledger batch (id, file
         name and hash), the promotion (number, person, time), the pair's breaks by severity
         and how many have an acknowledgement and, by each break's latest one, how many are
-        accepted, dismissed or investigated; the registry's version and hash; the engine and
-        its version; and, given a role, its view. With nothing promoted it says so.
+        accepted, dismissed or investigated, with breaks_scope "pair-wide": the counts cover
+        every entity of the pair, whatever the role (F27); the registry's version and hash;
+        the engine and its version; and the role's view. With nothing promoted it says so.
         """
         loaded = registry.load()
         tail = {"registry_version": loaded.version, "registry_hash": loaded.sha256,
                 "engine": warehouse.ENGINE, "engine_version": warehouse.ENGINE_VERSION}
-        view = {} if role is None else {"view": role.view()}
+        view = {"view": role.view()}
         with self.reading() as cursor:
             found = promotion.promoted_batch(cursor)
             if found is None:
                 nothing = outcomes.NOTHING_PROMOTED
                 return {"promoted": False, "outcome": nothing.code, "sentence": nothing.sentence,
-                        **view, **tail}
+                        "breaks_scope": BREAKS_SCOPE, **view, **tail}
             pair = found.pair
             files = dict((b, (name, sha)) for b, name, sha in cursor.execute(
                 "SELECT batch_id, file_name, file_sha256 FROM raw_batch WHERE batch_id IN (?, ?)",
@@ -282,6 +300,7 @@ class Session:
                 "promotion_number": found.number, "promoted_by": found.promoted_by,
                 "promoted_at": found.promoted_at,
                 "breaks": {severity: severities.get(severity, 0) for severity in SEVERITIES},
+                "breaks_scope": BREAKS_SCOPE,
                 "acknowledged": len(ids & set(latest)),
                 **{action: actions.get(action, 0) for action in promotion.ACTIONS},
                 **view, **tail}
@@ -319,11 +338,13 @@ class Session:
             self._kept["registry"] = registry.load(accounts=accounts)
         return self._kept["registry"]
 
-    def answer(self, spec_or_json, role) -> Union[answers.Answer, outcomes.Outcome]:
+    def answer(self, spec_or_json, role, *, engine_detail: Optional[Callable] = None
+               ) -> Union[answers.Answer, outcomes.Outcome]:
         """A question, as a Specification, a JSON text or a mapping, answered under the role:
         an Answer, or a typed outcome. Validation, compiling and running happen under one hold
         of the read lock, so no write cycle comes between them. A role of the wrong shape
-        raises RoleError, whatever the question."""
+        raises RoleError, whatever the question. engine_detail, when given, receives the
+        engine's message of an engine_error (see run)."""
         role = roles.checked(role)
         if isinstance(spec_or_json, spec.Specification):
             question = spec_or_json
@@ -339,20 +360,31 @@ class Session:
             if isinstance(validated, outcomes.Outcome):
                 return validated
             compiled = compiler.compile(validated, loaded, role)
-            return self.run(compiled, validated, role)
+            return self.run(compiled, validated, role, engine_detail=engine_detail)
 
-    def run(self, compiled, validated, role) -> Union[answers.Answer, outcomes.Outcome]:
+    def run(self, compiled, validated, role, *, engine_detail: Optional[Callable] = None
+            ) -> Union[answers.Answer, outcomes.Outcome]:
         """Runs a compiled query on a cursor of its own, closed after: only when the engine's own
-        parser reads it as one SELECT. An error of the engine is engine_error. A role of the
-        wrong shape raises RoleError before anything runs."""
+        parser reads it as one SELECT. An error of the engine is engine_error, the one fixed
+        outcome; engine_detail, when given, is called with the engine's message text (or, when
+        the engine's parser read something other than one SELECT, with the statement types it
+        read), for the audit and never for a reader. A role of the wrong shape raises RoleError
+        before anything runs."""
         role = roles.checked(role)
+        detail = None
         with self.reading() as cursor:
             try:
-                if warehouse.statement_types(cursor, compiled.sql) != ("SELECT",):
-                    return outcomes.ENGINE_ERROR
-                fetched = cursor.execute(compiled.sql).fetchall()
-            except warehouse.ENGINE_ERRORS:
-                return outcomes.ENGINE_ERROR
+                types = warehouse.statement_types(cursor, compiled.sql)
+                if types != ("SELECT",):
+                    detail = "the engine's parser read: " + ", ".join(types)
+                else:
+                    fetched = cursor.execute(compiled.sql).fetchall()
+            except warehouse.ENGINE_ERRORS as error:
+                detail = str(error)
+        if detail is not None:
+            if engine_detail is not None:
+                engine_detail(detail)
+            return outcomes.ENGINE_ERROR
         return answers.build(compiled, validated, fetched, self.provenance(role))
 
     # -- Closing ---------------------------------------------------------------------------------
@@ -384,12 +416,13 @@ def remove_stale(root: Path | str, now: Optional[float] = None) -> list:
 
 
 class Sessions:
-    """The open sessions of one template, at most max_sessions of them."""
+    """The open sessions of one template, at most max_sessions of them, in folders under a root
+    the caller gives: one root per deployment (F26)."""
 
-    def __init__(self, template: Template, *, root: Path | str | None = None,
+    def __init__(self, template: Template, *, root: Path | str,
                  max_sessions: Optional[int] = None):
         self.template = template
-        self.root = Path(root) if root is not None else Path(tempfile.gettempdir())
+        self.root = Path(root)
         self.max_sessions = config.MAX_SESSIONS if max_sessions is None else max_sessions
         if self.max_sessions < 1:
             raise ValueError("a pool holds at least one session")

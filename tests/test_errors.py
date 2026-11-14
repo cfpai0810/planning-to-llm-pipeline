@@ -9,6 +9,10 @@ Phase 0 verdict, finding 1: a visitor whose account has no credit was told
 the fault was in this app. A 402, and a 400 whose message names the credit
 balance, are now billing_problem, tested with built errors and through the
 real SDK against the local stand-in API (tests/fakes.py).
+
+Part 3b (the reviewer's Phase 3 brief, 4.4): two codes of a call that succeeded but gave no
+specification, each with fixed wording: model_refused, for a reply that stopped on refusal,
+and reply_cut_off, for one that stopped on max_tokens. There are ten codes now.
 """
 
 import ast
@@ -100,11 +104,20 @@ class TestTheMapping:
 
 
 class TestTheWords:
-    def test_the_eight_codes(self):
+    def test_the_ten_codes(self):
+        # Changed on purpose in 3b: model_refused and reply_cut_off join the eight.
         assert errors.CODES == ("key_rejected", "key_forbidden", "model_not_found", "bad_request",
                                 "rate_limited", "service_unavailable", "unreadable_reply",
-                                "billing_problem")
+                                "billing_problem", "model_refused", "reply_cut_off")
         assert set(errors.MESSAGES) == set(errors.CODES)
+
+    def test_the_two_new_lines_are_the_proposed_wording(self):
+        assert (errors.MODEL_REFUSED, errors.REPLY_CUT_OFF) == ("model_refused", "reply_cut_off")
+        assert errors.message("model_refused") == (
+            "The model declined to answer this question. Try asking it differently.")
+        assert errors.message("reply_cut_off") == (
+            "The model's reply was cut off before it finished. Try a shorter or simpler "
+            "question.")
 
     def test_the_billing_and_bad_request_lines_are_the_approved_wording(self):
         assert errors.message("billing_problem") == (
@@ -116,7 +129,8 @@ class TestTheWords:
 
     @pytest.mark.parametrize("code", ["key_rejected", "key_forbidden", "model_not_found",
                                       "bad_request", "rate_limited", "service_unavailable",
-                                      "unreadable_reply", "billing_problem"])
+                                      "unreadable_reply", "billing_problem", "model_refused",
+                                      "reply_cut_off"])
     def test_each_code_has_one_plain_line_ending_with_its_code(self, code):
         line = errors.line(code)
         assert line == f"{errors.message(code)} Code: {code}"

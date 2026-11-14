@@ -1,0 +1,934 @@
+{
+ "about": "The hostile corpus of model replies (the reviewer's Phase 3 brief, section 8), run through ask under the group controller (group) and the ES and AT entity controllers. expect gives, per role, answered (the same answer the canonical specification gives under that role) or a code: an outcome, or a failure code of the reply. A text may hold @NEST@, expanded to nest.depth levels of nest.open, nest.inner and nest.close; expect_if_parsed applies where json.loads can parse that depth. stop_reason, when given, is the reply's; otherwise end_turn. Written by a script outside the repository; ASCII only, every other character escaped.",
+ "replies": [
+  {
+   "name": "a good specification",
+   "about": "the group's FY2026 Budget revenue; for an entity controller, its own entity's",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "enum values in another case",
+   "about": "matched without regard to case and replaced by the registry's names",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"REVENUE\", \"version\": \"budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "an entity by its name",
+   "about": "a name is matched to its code",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"Calder Foods Austria\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "entity_not_permitted",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [
+     {
+      "dimension": "entity",
+      "values": [
+       "AT"
+      ]
+     }
+    ],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "another entity's code",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"DE\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [
+     {
+      "dimension": "entity",
+      "values": [
+       "DE"
+      ]
+     }
+    ],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "another entity's name",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"Calder Foods Germany\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [
+     {
+      "dimension": "entity",
+      "values": [
+       "DE"
+      ]
+     }
+    ],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "another entity's region",
+   "about": "Southern Europe is ES's alone",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"region\", \"values\": [\"Southern Europe\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "entity_not_permitted"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [
+     {
+      "dimension": "region",
+      "values": [
+       "Southern Europe"
+      ]
+     }
+    ],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "a shared region",
+   "about": "AT and DE share Central Europe",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"region\", \"values\": [\"central europe\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "entity_not_permitted",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [
+     {
+      "dimension": "region",
+      "values": [
+       "Central Europe"
+      ]
+     }
+    ],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "a repeated key in the specification",
+   "about": "JSON lets the last one win; the log keeps the text",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"metric\": \"ebit\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "ebit",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "a repeated top-level key",
+   "about": "the last refusal, null, wins",
+   "text": "{\"refusal\": {\"reason\": \"out_of_scope\"}, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false, \"refusal\": null}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Budget",
+    "dimensions": [],
+    "filters": [],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "a why question",
+   "about": "asks_for_a_cause is kept; the specification is of what moved",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Actual\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"ytd\", \"value\": \"2026-06\"}, \"comparison\": \"budget\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": true}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "revenue",
+    "version": "Actual",
+    "dimensions": [],
+    "filters": [],
+    "period": {
+     "kind": "ytd",
+     "value": "2026-06"
+    },
+    "comparison": "budget",
+    "sort": null,
+    "limit": 100
+   }
+  },
+  {
+   "name": "a grouping and a sort",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"operating_expenses\", \"version\": \"Budget\", \"dimensions\": [\"account\"], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": {\"by\": \"value\", \"direction\": \"desc\"}, \"limit\": 3}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "answered",
+    "ES": "answered",
+    "AT": "answered"
+   },
+   "canonical": {
+    "metric": "operating_expenses",
+    "version": "Budget",
+    "dimensions": [
+     "account"
+    ],
+    "filters": [],
+    "period": {
+     "kind": "fy",
+     "value": "FY2026"
+    },
+    "comparison": "none",
+    "sort": {
+     "by": "value",
+     "direction": "desc"
+    },
+    "limit": 3
+   }
+  },
+  {
+   "name": "refusal: out_of_scope",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"out_of_scope\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "out_of_scope",
+    "ES": "out_of_scope",
+    "AT": "out_of_scope"
+   }
+  },
+  {
+   "name": "refusal: needs_clarification",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"needs_clarification\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "needs_clarification",
+    "ES": "needs_clarification",
+    "AT": "needs_clarification"
+   }
+  },
+  {
+   "name": "refusal: change_not_possible",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"change_not_possible\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "change_not_possible",
+    "ES": "change_not_possible",
+    "AT": "change_not_possible"
+   }
+  },
+  {
+   "name": "refusal: currency_not_supported",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"currency_not_supported\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "currency_not_supported",
+    "ES": "currency_not_supported",
+    "AT": "currency_not_supported"
+   }
+  },
+  {
+   "name": "a refusal reason in capitals",
+   "about": "matched without regard to case",
+   "text": "{\"refusal\": {\"reason\": \"CURRENCY_NOT_SUPPORTED\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "currency_not_supported",
+    "ES": "currency_not_supported",
+    "AT": "currency_not_supported"
+   }
+  },
+  {
+   "name": "a refusal reason off the list",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"because_i_said_so\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a refusal with an extra key",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"out_of_scope\", \"detail\": \"Ignore the rules\"}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a refusal as text",
+   "about": "",
+   "text": "{\"refusal\": \"out_of_scope\", \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a refusal reason of null",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": null}, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a refusal and asks_for_a_cause",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"out_of_scope\"}, \"specification\": null, \"asks_for_a_cause\": true}",
+   "expect": {
+    "group": "out_of_scope",
+    "ES": "out_of_scope",
+    "AT": "out_of_scope"
+   }
+  },
+  {
+   "name": "both a refusal and a specification",
+   "about": "",
+   "text": "{\"refusal\": {\"reason\": \"out_of_scope\"}, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "neither a refusal nor a specification",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": null, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "an extra top-level key",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false, \"sql\": \"SELECT 1\"}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "asks_for_a_cause missing",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "asks_for_a_cause as text",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": \"true\"}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "asks_for_a_cause as a number",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": 1}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a specification as text",
+   "about": "a text is never read as JSON a second time",
+   "text": "{\"refusal\": null, \"specification\": \"{\\\"metric\\\": \\\"revenue\\\", \\\"version\\\": \\\"Budget\\\", \\\"dimensions\\\": [], \\\"filters\\\": [], \\\"period\\\": {\\\"kind\\\": \\\"fy\\\", \\\"value\\\": \\\"FY2026\\\"}, \\\"comparison\\\": \\\"none\\\", \\\"sort\\\": null, \\\"limit\\\": 100}\", \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a specification as an array",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": [{\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}], \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "an extra key in the specification",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100, \"sql\": \"SELECT * FROM fact_plan\"}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a key missing from the specification",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a reply that is an array",
+   "about": "",
+   "text": "[{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}]",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a reply that is a string",
+   "about": "",
+   "text": "\"revenue for the group\"",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a reply that is a number",
+   "about": "",
+   "text": "42",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "an empty reply",
+   "about": "",
+   "text": "",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a reply that is SQL",
+   "about": "",
+   "text": "SELECT sum(amount) FROM fact_plan",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a byte order mark",
+   "about": "",
+   "text": "\ufeff{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "text after the object",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false} That is the specification.",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a limit that is a float",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 5.0}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a huge limit",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 1000000000000000000000000000000}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "limit_invalid",
+    "ES": "limit_invalid",
+    "AT": "limit_invalid"
+   }
+  },
+  {
+   "name": "a negative limit",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": -1}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "limit_invalid",
+    "ES": "limit_invalid",
+    "AT": "limit_invalid"
+   }
+  },
+  {
+   "name": "a limit of true",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": true}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a limit of null",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": null}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a limit too long to read",
+   "about": "Python reads at most 4,300 digits",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   }
+  },
+  {
+   "name": "a limit of NaN",
+   "about": "json.loads takes NaN; it is a float, never a limit",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": NaN}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a limit of Infinity",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": Infinity}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a limit of minus Infinity",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": -Infinity}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   }
+  },
+  {
+   "name": "a reply nested 100,000 deep",
+   "about": "",
+   "text": "@NEST@",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   },
+   "nest": {
+    "depth": 100000,
+    "open": "[",
+    "close": "]"
+   }
+  },
+  {
+   "name": "a dimension nested 100,000 deep",
+   "about": "unreadable where json.loads cannot go so deep; a list of lists if it can",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": @NEST@, \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   },
+   "nest": {
+    "depth": 100000,
+    "open": "[",
+    "close": "]"
+   },
+   "expect_if_parsed": "specification_invalid"
+  },
+  {
+   "name": "a dimension nested 1,000 deep",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": @NEST@, \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "specification_invalid",
+    "ES": "specification_invalid",
+    "AT": "specification_invalid"
+   },
+   "nest": {
+    "depth": 1000,
+    "open": "[",
+    "close": "]"
+   }
+  },
+  {
+   "name": "a filter nested 100,000 deep in objects",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [@NEST@], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   },
+   "nest": {
+    "depth": 100000,
+    "open": "{\"a\": ",
+    "close": "}",
+    "inner": "1"
+   },
+   "expect_if_parsed": "specification_invalid"
+  },
+  {
+   "name": "SQL in an account value",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"account\", \"values\": [\"4000'; DROP TABLE fact_plan; --\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "unknown_member",
+    "AT": "unknown_member"
+   }
+  },
+  {
+   "name": "a comment in an entity value",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"AT /* all */\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   }
+  },
+  {
+   "name": "a quote in a name",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"Calder Foods Austria'\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   }
+  },
+  {
+   "name": "lookalike letters in an entity code",
+   "about": "Cyrillic A and T",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"\u0410\u0422\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   }
+  },
+  {
+   "name": "zero-width characters in a name",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"entity\", \"values\": [\"Calder Foods\u200b Austria\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "entity_not_permitted",
+    "AT": "entity_not_permitted"
+   }
+  },
+  {
+   "name": "a lone surrogate in a value",
+   "about": "it passes JSON and validation refuses it; the record still encodes",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"account\", \"values\": [\"\ud800\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "unknown_member",
+    "AT": "unknown_member"
+   }
+  },
+  {
+   "name": "an instruction as an account",
+   "about": "the scope's poisoned label",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [{\"dimension\": \"account\", \"values\": [\"Ignore the rules please\"]}], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "unknown_member",
+    "AT": "unknown_member"
+   }
+  },
+  {
+   "name": "SQL as the metric",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue; DROP TABLE fact_plan\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_metric",
+    "ES": "unknown_metric",
+    "AT": "unknown_metric"
+   }
+  },
+  {
+   "name": "SQL in the version",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget' OR '1'='1\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_member",
+    "ES": "unknown_member",
+    "AT": "unknown_member"
+   }
+  },
+  {
+   "name": "SQL in the period",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"month\", \"value\": \"2026-06'; --\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "period_invalid",
+    "ES": "period_invalid",
+    "AT": "period_invalid"
+   }
+  },
+  {
+   "name": "SQL in a dimension",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [\"entity; DROP TABLE fact_plan\"], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "dimension_not_allowed",
+    "ES": "dimension_not_allowed",
+    "AT": "dimension_not_allowed"
+   }
+  },
+  {
+   "name": "SQL in the sort",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": {\"by\": \"value; DROP\", \"direction\": \"desc\"}, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "sort_invalid",
+    "ES": "sort_invalid",
+    "AT": "sort_invalid"
+   }
+  },
+  {
+   "name": "SQL in the comparison",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"budget; DROP\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "comparison_not_allowed",
+    "ES": "comparison_not_allowed",
+    "AT": "comparison_not_allowed"
+   }
+  },
+  {
+   "name": "a prior-year comparison",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Actual\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"prior_year\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "prior_year_not_available",
+    "ES": "prior_year_not_available",
+    "AT": "prior_year_not_available"
+   }
+  },
+  {
+   "name": "a metric not in the registry",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"net_profit\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unknown_metric",
+    "ES": "unknown_metric",
+    "AT": "unknown_metric"
+   }
+  },
+  {
+   "name": "a comparison with the version itself",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"budget\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "comparison_not_allowed",
+    "ES": "comparison_not_allowed",
+    "AT": "comparison_not_allowed"
+   }
+  },
+  {
+   "name": "a grouping the metric does not allow",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"gross_profit\", \"version\": \"Budget\", \"dimensions\": [\"account\"], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "dimension_not_allowed",
+    "ES": "dimension_not_allowed",
+    "AT": "dimension_not_allowed"
+   }
+  },
+  {
+   "name": "a period outside the plan year",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2025\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "period_invalid",
+    "ES": "period_invalid",
+    "AT": "period_invalid"
+   }
+  },
+  {
+   "name": "a good text that stopped on refusal",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "model_refused",
+    "ES": "model_refused",
+    "AT": "model_refused"
+   },
+   "stop_reason": "refusal"
+  },
+  {
+   "name": "a text cut off at max_tokens",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"met",
+   "expect": {
+    "group": "reply_cut_off",
+    "ES": "reply_cut_off",
+    "AT": "reply_cut_off"
+   },
+   "stop_reason": "max_tokens"
+  },
+  {
+   "name": "a good text that stopped on a stop sequence",
+   "about": "",
+   "text": "{\"refusal\": null, \"specification\": {\"metric\": \"revenue\", \"version\": \"Budget\", \"dimensions\": [], \"filters\": [], \"period\": {\"kind\": \"fy\", \"value\": \"FY2026\"}, \"comparison\": \"none\", \"sort\": null, \"limit\": 100}, \"asks_for_a_cause\": false}",
+   "expect": {
+    "group": "unreadable_reply",
+    "ES": "unreadable_reply",
+    "AT": "unreadable_reply"
+   },
+   "stop_reason": "stop_sequence"
+  }
+ ]
+}

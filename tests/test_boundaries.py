@@ -5,6 +5,11 @@
   builds one. The calls are found as attribute calls (client.messages.create,
   anthropic.Anthropic): P6's boundary test read only calls by a bare name, so
   pipeline.render(...) passed it unseen (item 56).
+
+Part 3b (the reviewer's Phase 3 brief, section 8): the question path's modules, src/ask.py
+and src/prompt.py, import neither the engine nor the query parser; the pages import neither;
+the model is still called from src/model_call.py alone; and src/checks.py is byte for byte
+the file of 372b95a.
 """
 
 import ast
@@ -108,7 +113,9 @@ PIPELINE = ("extract", "ledger", "long_format", "names", "warehouse", "batch", "
             # Part 2c: the session, the roles and the outcomes stay out of the pages too.
             "session", "roles", "outcomes",
             # Part 2d: the specification, the compiler, the guard and the answer as well.
-            "spec", "compiler", "guard", "answer")
+            "spec", "compiler", "guard", "answer",
+            # Part 3b: the question path, until the pages are built (phases W1 to W4).
+            "ask", "prompt")
 
 
 def duckdb_uses(source: str) -> list[tuple[str, str]]:
@@ -351,3 +358,36 @@ class TestThe2dBoundaries:
     def test_the_pages_import_none_of_the_new_modules(self):
         for name in ("spec", "compiler", "guard", "answer"):
             assert name in PIPELINE
+
+
+# -- Part 3b: the question path ----------------------------------------------------------------------
+
+QUESTION_PATH = ("ask", "prompt")
+# src/checks.py as committed at 372b95a: Phase 3 does not change it (the brief, sections 5 and 8).
+CHECKS_SHA256 = "ed4347dd29d81d3f093cb30ec8d0d6bf1db766c8dbdc9db50c067c5cb064b7cb"
+
+
+class TestThe3bBoundaries:
+    def test_the_question_path_imports_neither_the_engine_nor_the_parser(self):
+        for name in QUESTION_PATH:
+            source = (ROOT / "src" / f"{name}.py").read_text(encoding="utf-8")
+            names = imports_of(source)
+            assert not [n for n in names if n.split(".")[0] in ("duckdb", "sqlglot")], name
+            assert not {"src.warehouse", "src.guard", "src.compiler"} & names, name
+            assert duckdb_uses(source) == [], name
+
+    def test_the_question_path_calls_the_model_only_through_model_call(self):
+        for name in QUESTION_PATH:
+            source = (ROOT / "src" / f"{name}.py").read_text(encoding="utf-8")
+            assert model_calls(source) == [] and client_builds(source) == [], name
+        ask = (ROOT / "src" / "ask.py").read_text(encoding="utf-8")
+        assert "model_call.call_model(" in ask
+
+    def test_the_pages_import_neither_module(self):
+        for name in QUESTION_PATH:
+            assert name in PIPELINE
+
+    def test_checks_is_unchanged(self):
+        import hashlib
+        data = (ROOT / "src" / "checks.py").read_bytes()
+        assert hashlib.sha256(data).hexdigest() == CHECKS_SHA256
