@@ -19,7 +19,7 @@ def build_client(api_key: str) -> anthropic.Anthropic:
     """A client for a pasted key. The key is passed to the client and kept nowhere else."""
     if not api_key or not api_key.strip():
         raise NoKeyError("No API key provided.")
-    return anthropic.Anthropic(api_key=api_key.strip())
+    return anthropic.Anthropic(api_key=api_key.strip(), max_retries=0)
 
 
 def looks_like_anthropic_key(api_key: str) -> bool:

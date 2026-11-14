@@ -17,12 +17,16 @@ more than one text block is unreadable_reply. The recording fake allows one mode
 the comparison model give it config.COMPARISON_MODEL. The real SDK is run against the loopback
 stand-in for what the fake cannot show: how it sends output_config, and how it reads the stop
 reason, the usage and the request id. Neither the fake nor the stand-in leaves the machine.
+
+3b (text), decision 1 of the Stop 1 verdict: the seam's client has max_retries 0, so a 529 or a
+lost connection is one request, shown through httpx.MockTransport and through the stand-in.
 """
 
 import io
 import json
 
 import anthropic
+import httpx
 import pytest
 
 import config
@@ -339,14 +343,14 @@ class TestTheTextBlocks:
 @pytest.fixture
 def through_the_sdk(monkeypatch):
     """A function that calls call_model through the real SDK against the stand-in serving the
-    replies given, with a client built as the seam builds it and then given max_retries=0, so
-    each reply in the list is one request. It returns (result, what the stand-in received)."""
-    def run(replies, *, schema=SCHEMA, retries=False):
+    replies given, with the client the seam builds (since 3b (text), with max_retries=0, so each
+    reply in the list is one request), or with the SDK's own default client when sdk_default is
+    true. It returns (result, what the stand-in received)."""
+    def run(replies, *, schema=SCHEMA, sdk_default=False):
         with fakes.StandInAPI(replies=replies) as api:
             monkeypatch.setenv("ANTHROPIC_BASE_URL", api.url)
-            client = claude_client.build_client(STAND_IN_KEY)
-            if not retries:
-                client = client.with_options(max_retries=0)
+            client = (anthropic.Anthropic(api_key=STAND_IN_KEY) if sdk_default
+                      else claude_client.build_client(STAND_IN_KEY))
             result = model_call.call_model(client, system="You answer briefly.",
                                            user="What was revenue in June?", schema=schema)
         monkeypatch.delenv("ANTHROPIC_BASE_URL")
@@ -403,15 +407,58 @@ class TestThroughTheSDK:
         result, _ = through_the_sdk([(200, body)])
         assert (result.ok, result.data) == (True, {"answer": "ready"})
 
-    def test_the_seams_client_retries_a_529_twice_on_its_own(self, through_the_sdk):
-        # A question for the reviewer (no retry loop anywhere): the SDK's default, which the
-        # seam keeps, makes three requests for one call_model on a 529; max_retries=0 makes one.
-        result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY)], retries=True)
-        assert (result.code, len(received)) == ("service_unavailable", 3)
-        result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY)], retries=False)
+    def test_the_seams_client_sends_one_request_for_a_529(self, through_the_sdk):
+        # Changed on purpose in 3b (text), decision 1 of the Stop 1 verdict: the seam's client
+        # no longer keeps the SDK's default, which makes three requests on a 529.
+        result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY)])
         assert (result.code, len(received)) == ("service_unavailable", 1)
+        result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY)], sdk_default=True)
+        assert (result.code, len(received)) == ("service_unavailable", 3)
 
     def test_a_retried_529_takes_the_next_reply_in_the_list(self, through_the_sdk):
+        # Changed on purpose in 3b (text): the stand-in's list, shown with the SDK's own default
+        # client, since the seam's no longer retries.
         result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY),
-                                            (200, fakes.message(GOOD_JSON))], retries=True)
+                                            (200, fakes.message(GOOD_JSON))], sdk_default=True)
         assert (result.ok, result.request_id, len(received)) == (True, "req_standin_2", 2)
+        result, received = through_the_sdk([(529, fakes.OVERLOADED_BODY),
+                                            (200, fakes.message(GOOD_JSON))])
+        assert (result.code, len(received)) == ("service_unavailable", 1)
+
+
+class TestDecision1TheSeamDoesNotRetry:
+    """Decision 1 of the Stop 1 verdict: build_client gives a client with max_retries 0, so one
+    call_model is one request and the record sees every request (rule 8: no retry anywhere).
+    Shown through httpx.MockTransport and the real SDK, which open no socket."""
+
+    def _one_call(self, respond):
+        sent = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request)
+            return respond(request)
+        client = claude_client.build_client(STAND_IN_KEY).with_options(
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+        result = model_call.call_model(client, system="s", user="What was revenue in June?",
+                                       schema=SCHEMA)
+        return result, sent
+
+    def test_a_client_from_build_client_has_max_retries_0(self):
+        assert claude_client.build_client(STAND_IN_KEY).max_retries == 0
+        assert claude_client.build_client(STAND_IN_KEY).with_options().max_retries == 0
+
+    def test_a_529_sends_exactly_one_request(self):
+        result, sent = self._one_call(
+            lambda request: httpx.Response(529, json=fakes.OVERLOADED_BODY))
+        assert (result.code, len(sent)) == ("service_unavailable", 1)
+
+    def test_a_connection_error_sends_exactly_one_request(self):
+        def refuse(request):
+            raise httpx.ConnectError("stand-in: no connection", request=request)
+        result, sent = self._one_call(refuse)
+        assert (result.code, len(sent)) == ("service_unavailable", 1)
+
+    def test_a_good_reply_is_still_one_request(self):
+        result, sent = self._one_call(lambda request: httpx.Response(
+            200, json=fakes.message(GOOD_JSON), headers={"request-id": "req_mock_1"}))
+        assert (result.ok, result.request_id, len(sent)) == (True, "req_mock_1", 1)
