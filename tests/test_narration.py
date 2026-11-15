@@ -1122,3 +1122,178 @@ class TestEveryMetricsHeaderAndTheTemplateAsBefore:
                  for text, figures in template_corpus(narration, found)]
         assert readings(flags) == EEED857_TEMPLATES
         assert EEED857_TEMPLATES[0] == 2 * len(found)
+
+
+# -- The reviewer's verdict of 15 November: what model wording the checks are asked to read --------
+
+BY_ENTITY_SPEC = spec("revenue", "Actual", ("ytd", "2026-06"), ("entity",), "budget")
+BY_MONTH_SPEC = spec("revenue", "Budget", ("fy", "FY2026"), ("month",))
+# Characters with their category, for the one rule of narration.unreadable and checked_question.
+CHARACTERS = [
+    (chr(0x00), "Cc", True), (chr(0x07), "Cc", True), ("\r", "Cc", True), (chr(0x1B), "Cc", True),
+    (chr(0x7F), "Cc", True), (chr(0x85), "Cc", True), (chr(0x200B), "Cf", True),
+    (chr(0xFEFF), "Cf", True), (chr(0x202E), "Cf", True), (chr(0x00AD), "Cf", True),
+    (chr(0x2066), "Cf", True), (chr(0xD800), "Cs", True), (chr(0xDC80), "Cs", True),
+    ("\n", "Cc", False), ("\t", "Cc", False), (" ", "Zs", False), (chr(0x00A0), "Zs", False),
+    (chr(0x2013), "Pd", False), (chr(0x2212), "Sm", False), (chr(0x00E9), "Ll", False),
+    (chr(0x20AC), "Sc", False), ("x", "Ll", False), (chr(0x1F600), "So", False)]
+
+
+class TestTheModelWordingTheChecksRead:
+    """F-e and F-f. A reply the checks are not asked to read is unreadable_reply, shown as the
+    template with the "not available" notice, and the checks are never called: in this order,
+    more than one text block, white space alone, longer than MAX_MODEL_TEXT characters as
+    received, or a character that is not text to read (narration.unreadable, the rule a question
+    is checked with). Every case runs through the door with the fake transport, so the answer,
+    the record and the audit line are checked too."""
+
+    def _item(self, span, question=BY_ENTITY_SPEC):
+        found, _ = span
+        return next(i for i in found if i[0] == "sample" and i[1] == "group"
+                    and i[2] == question)
+
+    def _clean(self, narration, item):
+        answer, members, loaded = item[3], item[4], item[5]
+        names = [c[0] for c in answer.columns]
+        rows = {row[0]: row for row in answer.rows}
+
+        def said(column):
+            return (f"{narration.figure_name(answer, loaded, members, rows['AT'], column)} was "
+                    + narration.written(rows["AT"][names.index(column)],
+                                        answer.columns[names.index(column)][2]))
+        label = rows["AT"][names.index("label")]
+        return f"{said('value')}; {said('variance')} ({label})."
+
+    def _door(self, narration, sessions, tmp_path, item, text):
+        """The question through ask with model narration: the fake replies with the item's
+        specification, then with text. (asked, the record read back, the audit file)."""
+        from src import ask, audit
+        log = audit.AuditLog(tmp_path / "audit_log")
+        client = fakes.FakeClient(replies=[
+            fakes.Reply(json.dumps({"refusal": None, "specification": item[2],
+                                    "asks_for_a_cause": False})),
+            fakes.Reply(text)])
+        asked = ask.ask(client, sessions["sample"], role_of("group"),
+                        "How did revenue compare with budget?", audit=log, narrate="model")
+        assert len(client.calls) == 2
+        (record,) = audit.read(log.path)
+        return asked, record, log.path
+
+    def _not_available(self, narration, sessions, tmp_path, item, text):
+        """Everything a reply that is not read must come to, through the door."""
+        from src import answer as answers
+        asked, record, path = self._door(narration, sessions, tmp_path, item, text)
+        answer = item[3]
+        template = narration.template(answer, item[5], item[4], role_of(item[1]))
+        assert isinstance(asked.result, answers.Answer) and asked.failure is None
+        assert asked.result.result_sha256 == answer.result_sha256
+        assert asked.narration == template + "\n" + narration.NOTICE_UNAVAILABLE
+        assert asked.flags == ()
+        assert record["outcome"] == "answered"
+        assert record["narration"] == {
+            "mode_asked": "model", "mode_shown": "template", "text_shown": asked.narration,
+            "model_text": text, "flags": [], "failure": "unreadable_reply"}
+        assert [c["outcome"] for c in record["calls"]] == ["ok", "ok"]
+        data = path.read_bytes()
+        assert max(data) < 128 and b"\r" not in data
+
+    def _shown(self, narration, sessions, tmp_path, item, text):
+        asked, record, _ = self._door(narration, sessions, tmp_path, item, text)
+        assert asked.narration == text.strip() and asked.flags == ()
+        assert (record["narration"]["mode_shown"], record["narration"]["failure"],
+                record["narration"]["text_shown"]) == ("model", None, text.strip())
+
+    def test_the_cap_is_4000_characters_as_received(self, narration, span, sessions,
+                                                    tmp_path):
+        item = self._item(span)
+        clean = self._clean(narration, item)
+        assert narration.MAX_MODEL_TEXT == 4000
+        at_cap = clean + " " * (4000 - len(clean))
+        assert len(at_cap) == 4000
+        self._shown(narration, sessions, tmp_path / "at", item, at_cap)
+        # One more character, a space the strip would remove: still over the cap as received.
+        self._not_available(narration, sessions, tmp_path / "over", item, at_cap + " ")
+
+    @pytest.mark.parametrize("text", [" " * 60000, "1," * 30000, "1-" * 30000],
+                             ids=["spaces", "1 and a comma", "1 and a hyphen"])
+    def test_a_long_reply_comes_back_at_once_and_the_checks_are_never_called(
+            self, narration, span, sessions, tmp_path, monkeypatch, text):
+        from src import checks
+
+        def never(*args, **kwargs):
+            raise AssertionError("the checks were called on a reply that is not read")
+        monkeypatch.setattr(checks, "check_text", never)
+        item = self._item(span)
+        _, role_name, _, answer, members, loaded = item
+        started = time.perf_counter()
+        narrated = narration.narrate(fakes.FakeClient(replies=[fakes.Reply(text)]), answer,
+                                     loaded, members, role_of(role_name), mode="model",
+                                     asks_for_a_cause=False)
+        seconds = time.perf_counter() - started
+        print(f"\nThe narration step for {len(text):,} characters ({text[:2]!r} repeated): "
+              f"{seconds:.3f} s")
+        assert seconds < 2
+        assert (narrated.mode_shown, narrated.failure, narrated.model_text) == (
+            "template", "unreadable_reply", text)
+        self._not_available(narration, sessions, tmp_path, item, text)
+
+    @pytest.mark.parametrize("character", [chr(0x00), chr(0xD800), chr(0x200B), chr(0xFEFF),
+                                           chr(0x202E)],
+                             ids=["NUL", "a lone surrogate", "U+200B", "U+FEFF", "U+202E"])
+    def test_a_character_that_is_not_text_makes_the_reply_unreadable(
+            self, narration, span, sessions, tmp_path, monkeypatch, character):
+        from src import checks
+
+        def never(*args, **kwargs):
+            raise AssertionError("the checks were called on a reply that is not read")
+        monkeypatch.setattr(checks, "check_text", never)
+        item = self._item(span)
+        clean = self._clean(narration, item)
+        text = clean[:20] + character + clean[20:]
+        assert narration.unreadable(text)
+        self._not_available(narration, sessions, tmp_path, item, text)
+
+    def test_newlines_tabs_and_ordinary_symbols_are_read_and_shown(self, narration, span,
+                                                                   sessions, tmp_path):
+        item = self._item(span)
+        clean = self._clean(narration, item)
+        symbols = "\u20ac \u00e9 \u2212 \u00a0 \u2013"
+        assert [ord(c) for c in symbols.split(" ")] == [0x20AC, 0xE9, 0x2212, 0xA0, 0x2013]
+        text = clean + "\n\tIn words: " + symbols + "\n"
+        assert not narration.unreadable(text)
+        self._shown(narration, sessions, tmp_path, item, text)
+
+    def test_a_realistic_reply_about_ten_rows_is_shown(self, narration, span, sessions,
+                                                       tmp_path):
+        item = self._item(span, BY_MONTH_SPEC)
+        answer, members, loaded = item[3], item[4], item[5]
+        names = [c[0] for c in answer.columns]
+        clauses = [f"{narration.figure_name(answer, loaded, members, row, 'value')} was "
+                   + narration.written(row[names.index("value")],
+                                       answer.columns[names.index("value")][2])
+                   for row in answer.rows[:10]]
+        text = (f"{'; '.join(clauses[:4])}. {'; '.join(clauses[4:7])}. "
+                f"{'; '.join(clauses[7:10])}.")
+        assert len(answer.rows) >= 10 and len(text) < 2000
+        self._shown(narration, sessions, tmp_path, item, text)
+
+    @pytest.mark.parametrize("character, category, refused", CHARACTERS,
+                             ids=[f"U+{ord(c[0]):04X}" for c in CHARACTERS])
+    def test_one_rule_for_the_question_and_the_models_wording(self, narration, character,
+                                                              category, refused):
+        # The rule for a question does not change: checked_question refuses the same
+        # characters that make the model's wording unreadable, and no others.
+        import unicodedata
+
+        from src import ask
+        assert unicodedata.category(character) == category
+        text = f"Revenue {character} in June?"
+        assert narration.unreadable(text) is refused
+        assert (ask.checked_question(text) is None) is refused
+
+    def test_the_order_of_the_checks_is_written_down(self, narration):
+        text = " ".join(narration.__doc__.split())
+        assert ("The reply is not read, in this order, when: it holds more than one text "
+                "block; it is white space alone once stripped (F-c); it is longer than "
+                "MAX_MODEL_TEXT (4,000) characters, measured with len on the text as received, "
+                "before any strip, so a lone surrogate counts as one") in text

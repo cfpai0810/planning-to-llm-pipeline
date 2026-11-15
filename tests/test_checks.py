@@ -649,17 +649,33 @@ class TestLabelsReachTheDirectionCheck:
 EEED857_PARTS = ("GOOD_PARAGRAPH", "VOCABULARY", "TestNumericCheck", "TestDirectionCheck",
                  "TestFinding3DatesAndCapitalScales", "TestFinding2DirectionVocabulary",
                  "TestFlagsAreForTheReviewer")
+# One wrongly used sentence for each claim kind of the direction check (the reviewer's verdict
+# of 15 November, item 3), each read against MONTH, where its word is wrong: (claim kind,
+# sentence, the word flagged, the figure it is read against). Dropping any one claim kind from
+# the vocabulary changes their flags, so the pin below fails.
+WRONGLY_USED = [
+    ("up", "Opex rose against budget.", "rose", "Opex"),
+    ("down", "COGS fell against budget.", "fell", "COGS"),
+    ("favourable", "COGS was favourable against budget.", "favourable", "COGS"),
+    ("adverse", "Opex was adverse against budget.", "adverse", "Opex"),
+    ("profit", "EBIT was a profit.", "profit", "EBIT"),
+    ("loss", "Revenue was a loss.", "loss", "Revenue"),
+    ("offset", "Revenue was \u00a3112k below budget, offset by a \u00a334k overspend on COGS.",
+     "offset", None),
+]
 # What eeed857's own direction_flags gives on the corpus below: the number of readings, the
 # number of flags, and the SHA-256 of the canonical JSON of every reading's flags (kind, text,
 # figure, reason). Computed outside the repository by eeed857's src/checks.py, imported under
-# another name; the computation is kept with the 3c fix's evidence.
-EEED857_SENTENCES = (450, 72, "01496b66b623675d37be33342d08c28a20422ac0327aadee1580bbe8e6110e78")
+# another name; the computation is kept with the evidence. Changed on purpose by the verdict of
+# 15 November: the corpus gained WRONGLY_USED, and the pin was (450, 72, "01496b66...").
+EEED857_SENTENCES = (457, 79, "9a2807d9f74c88749f65dc2e8263c7dc33710714336555e9c033828da8a541ce")
 
 
 def direction_corpus() -> list:
     """(sentence, figure set name, figures) for every sentence the parts EEED857_PARTS hold
     (each string of more than one word that ends a sentence), with each figure set: MONTH,
-    MARGINS, and MONTH with Gross profit, as the direction tests used them."""
+    MARGINS, and MONTH with Gross profit, as the direction tests used them; then each sentence
+    of WRONGLY_USED with MONTH."""
     import ast
     from pathlib import Path
     tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
@@ -677,7 +693,8 @@ def direction_corpus() -> list:
                 sentences.append(found.value)
     sets = (("MONTH", MONTH), ("MARGINS", MARGINS),
             ("MONTH and Gross profit", MONTH + [Figure("Gross profit", D("866370"), MONEY)]))
-    return [(s, set_name, figures) for s in sentences for set_name, figures in sets]
+    return ([(s, set_name, figures) for s in sentences for set_name, figures in sets]
+            + [(sentence, "MONTH", MONTH) for _, sentence, _, _ in WRONGLY_USED])
 
 
 def readings(flags_per_reading: list) -> tuple:
@@ -692,9 +709,13 @@ def readings(flags_per_reading: list) -> tuple:
 
 class TestNoLabelsReadsAsEeed857:
     def test_the_corpus_is_every_sentence_of_the_parts_held_at_eeed857(self):
+        # Changed on purpose by the verdict of 15 November: the seven of WRONGLY_USED follow.
         corpus = direction_corpus()
-        sentences = {s for s, _, _ in corpus}
-        assert len(corpus) == 3 * len(sentences) == EEED857_SENTENCES[0] and len(sentences) == 150
+        held = corpus[:-len(WRONGLY_USED)]
+        sentences = {s for s, _, _ in held}
+        assert len(held) == 3 * len(sentences) and len(sentences) == 150
+        assert corpus[-len(WRONGLY_USED):] == [(s, "MONTH", MONTH) for _, s, _, _ in WRONGLY_USED]
+        assert len(corpus) == EEED857_SENTENCES[0] == 457
         for v in VOCABULARY:
             assert set(v[1:2] + v[3:]) <= sentences, v[0]
         assert GOOD_PARAGRAPH in sentences
@@ -703,3 +724,18 @@ class TestNoLabelsReadsAsEeed857:
         found = readings([direction_flags(s, figures) for s, _, figures in direction_corpus()])
         assert found == EEED857_SENTENCES
         assert found[1] > 40
+
+    @pytest.mark.parametrize("kind, sentence, word, figure", WRONGLY_USED,
+                             ids=[w[0] for w in WRONGLY_USED])
+    def test_each_claim_kind_has_a_wrongly_used_sentence_that_is_flagged(self, kind, sentence,
+                                                                         word, figure):
+        import src.checks as checks
+        flags = direction_flags(sentence, MONTH)
+        assert [(f.kind, f.text, f.figure) for f in flags] == [("direction", word, figure)]
+        claims = {checks._CLAIM_OF[w] for w in checks._CLAIM_OF}
+        assert kind in claims and checks._CLAIM_OF[word] == kind
+
+    def test_the_seven_cover_every_claim_kind(self):
+        import src.checks as checks
+        assert {w[0] for w in WRONGLY_USED} == set(checks._CLAIM_OF.values()) == {
+            "up", "down", "favourable", "adverse", "profit", "loss", "offset"}

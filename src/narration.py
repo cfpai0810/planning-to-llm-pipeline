@@ -70,9 +70,17 @@ answer with figures is narrated. The model's text is shown when the checks
 give it no flag and it holds no causal word (F-d): CAUSAL_WORDS, whole words
 in any case, each a Flag of the kind CAUSAL, since the plan holds no causes.
 Any flag: the template is shown, then NOTICE_WITHHELD, and the model's text
-and the flags are kept for the record. A failed call (any code; a reply of
-more than one text block; and a reply that is empty once stripped, F-c,
-each unreadable_reply) shows the template, then NOTICE_UNAVAILABLE. CAUSE is
+and the flags are kept for the record. A failed call (any code), and a reply
+the checks are not asked to read, show the template, then
+NOTICE_UNAVAILABLE, with the code unreadable_reply and the model's text kept
+for the record. The reply is not read, in this order, when: it holds more
+than one text block; it is white space alone once stripped (F-c); it is
+longer than MAX_MODEL_TEXT (4,000) characters, measured with len on the text
+as received, before any strip, so a lone surrogate counts as one (the
+reviewer's verdict of 15 November, F-e: the checks take time quadratic in
+the length of a text, and the narration call allows 16,000 tokens); or it
+holds a character that is not text to read (unreadable, F-f), by the rule a
+question is checked with. The checks are never called on such a reply. CAUSE is
 added by Python after the model's text, so the checks and the causal words
 read the model's text alone; the template is never scanned for causal
 words. Figures are never held back because of narration.
@@ -89,6 +97,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Optional
@@ -96,10 +105,10 @@ from typing import Optional
 from src import answer as answers
 from src import checks, errors, model_call, roles
 
-__all__ = ["CAUSAL", "CAUSAL_WORDS", "CAUSE", "COUNTS", "MAX_GAPS", "MAX_ROWS",
-           "NOTICE_UNAVAILABLE", "NOTICE_WITHHELD", "SYSTEM", "TRUNCATED", "Narrated",
-           "causal_flags", "check", "figure_name", "figures_of", "labels_of", "narrate",
-           "narration_input", "template", "written"]
+__all__ = ["CAUSAL", "CAUSAL_WORDS", "CAUSE", "COUNTS", "MAX_GAPS", "MAX_MODEL_TEXT",
+           "MAX_ROWS", "NOTICE_UNAVAILABLE", "NOTICE_WITHHELD", "SYSTEM", "TRUNCATED",
+           "Narrated", "causal_flags", "check", "figure_name", "figures_of", "labels_of",
+           "narrate", "narration_input", "template", "unreadable", "written"]
 
 MAX_ROWS = 10
 MAX_GAPS = 5
@@ -111,6 +120,8 @@ TRUNCATED = "More rows were found than the question's limit, and those were left
 NOTICE_WITHHELD = ("The model's wording was not shown because it did not match the computed "
                    "figures.")
 NOTICE_UNAVAILABLE = "Model wording was not available."
+# The longest model wording the checks are asked to read, in characters as received (F-e).
+MAX_MODEL_TEXT = 4000
 SYSTEM = ("You write no more than three sentences about the figures you are given. Use only the "
           "figures and the names given, written as they are given. Put each number and each "
           "direction word in the same clause as the name of its figure, written exactly as "
@@ -291,6 +302,25 @@ def check(text: str, answer, registry, members, *, strict_names: bool = False) -
                              strict_names=strict_names)
 
 
+def unreadable(text: str) -> bool:
+    """Whether text holds a character that is not text to read: one of category Cc other than
+    newline and tab, Cf (the zero-width ones and the bidirectional controls among them) or Cs (a
+    lone surrogate, which cannot even be encoded). The one rule for a visitor's question
+    (src/ask.py, checked_question, 4.6) and for the model's wording (F-f)."""
+    for character in text:
+        category = unicodedata.category(character)
+        if (category == "Cc" and character not in "\n\t") or category in ("Cf", "Cs"):
+            return True
+    return False
+
+
+def _not_read(call) -> bool:
+    """Whether a reply that came back is one the checks are not asked to read, in this order:
+    more than one text block, white space alone, longer than MAX_MODEL_TEXT, unreadable."""
+    return (call.raw_text != call.text or not call.text.strip()
+            or len(call.text) > MAX_MODEL_TEXT or unreadable(call.text))
+
+
 def causal_flags(text: str) -> list:
     """A flag of the kind CAUSAL for each causal word or phrase in text, once each, in order."""
     flags: list = []
@@ -440,8 +470,8 @@ def narrate(client, answer, registry, members, role, *, mode: str,
     call = model_call.call_model(client, system=SYSTEM,
                                  user=narration_input(answer, registry, members, role))
     failure = call.code
-    if failure is None and (call.raw_text != call.text or not call.text.strip()):
-        failure = errors.UNREADABLE_REPLY      # more than one text block, or white space alone
+    if failure is None and _not_read(call):
+        failure = errors.UNREADABLE_REPLY      # see _not_read: the checks are not called
     if failure is not None:
         return Narrated(mode, "template", shown_template + "\n" + NOTICE_UNAVAILABLE,
                         model_text=call.raw_text, failure=failure, call=call)

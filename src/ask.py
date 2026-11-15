@@ -17,7 +17,8 @@ steps, in order:
 1. the question (4.6): text that, after trimming, is 1 to 500 characters,
    with no control character but newline and tab, no format character
    (Unicode category Cf, the zero-width ones among them) and no surrogate
-   (category Cs, which is not text and cannot be encoded to be sent).
+   (category Cs, which is not text and cannot be encoded to be sent): the
+   rule narration.unreadable, which the model's wording is read by too.
    Anything else is question_invalid, before anything is sent. The trimmed
    text is the user message; the record keeps the question as received;
 2. the role (roles.checked): a role of the wrong shape raises RoleError, a
@@ -84,7 +85,6 @@ calls the model through src/model_call.py alone (tests/test_boundaries.py).
 
 from __future__ import annotations
 
-import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -125,12 +125,8 @@ class Asked:
 
 def checked_question(question) -> Optional[str]:
     """The question as it is sent, trimmed, or None when it fails the checks of 4.6."""
-    if not isinstance(question, str):
+    if not isinstance(question, str) or narration.unreadable(question):
         return None
-    for character in question:
-        category = unicodedata.category(character)
-        if (category == "Cc" and character not in "\n\t") or category in ("Cf", "Cs"):
-            return None
     trimmed = question.strip()
     return trimmed if 1 <= len(trimmed) <= MAX_QUESTION else None
 
