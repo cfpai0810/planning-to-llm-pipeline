@@ -193,17 +193,30 @@ class TestDocs:
         readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
         assert paragraph in readme
 
-    def test_the_readme_says_what_exists_and_that_no_model_is_called_yet(self):
-        # Part 2e: the status line says what exists, and that no model is called yet.
+    def test_the_readme_says_what_exists(self):
+        # Changed on purpose in 3e: the status line says what Phase 3 made, a question in words
+        # on the command line with your own key, and that the web pages are still stubs.
         readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
         assert "Phase 0" not in readme and "Phase 1, not yet usable" not in readme
-        assert ("**Phase 2, not yet usable.** What exists: the sample workbook and its ledger "
-                "extract, the extractor, the spreadsheet controls, reconcile and promotion, "
-                "the metric registry, and the governed layer that answers a structured "
-                "question: sessions, roles, validation, the compiler and the guard. No model "
-                "is called yet.") in readme
+        assert "Phase 2, not yet usable" not in readme and "No model is called yet" not in readme
+        assert ("**Phase 3: a question in words, on the command line, with your own key.** "
+                "What exists: the sample workbook and its ledger extract, the extractor, the "
+                "spreadsheet controls, reconcile and promotion, the metric registry, the "
+                "governed layer that answers a structured question, and the question path: the "
+                "model turns a question in words into a specification and nothing else, and "
+                "Python validates, compiles and runs it, narrates the answer and records every "
+                "question. The web pages are still stubs.") in readme
         assert "python main.py check" in readme and "python main.py query" in readme
         assert "docs/registry.md" in readme and "docs/governed_layer.md" in readme
+
+    def test_the_readme_shows_ask_and_replay_with_no_key(self):
+        # Part 3e: an ask example with a made-up question and no key, and a replay example.
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        assert ('python main.py ask "What was revenue by entity for the year to June, against '
+                'Budget?" --pair sample --role group_controller') in text
+        assert "python main.py replay audit_log/audit.jsonl <run id>" in text
+        assert "docs/ask.md" in text and "ANTHROPIC_API_KEY" in text
+        assert "sk-" not in text and "ANTHROPIC_API_KEY=" not in text
 
     def test_the_reboot_rule_is_stated(self):
         for path in (ROOT / "README.md", RELEASING):

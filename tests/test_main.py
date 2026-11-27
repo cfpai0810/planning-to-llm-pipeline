@@ -20,6 +20,13 @@ told in plain words, and nothing the command prints names a Python class.
 Part 3b (the reviewer's Phase 3 brief, 4.8): python main.py schema --out
 <folder> writes the schema and the system texts, with a report, and calls
 nothing.
+
+Part 3e (the reviewer's Phase 3 brief, section 7, and BRIEF_3E): python main.py ask reads the
+key first and asks a question in words; python main.py replay asks a recorded specification
+again. In process, the client seam (main.client_for) is the recording fake and the template
+build (main.build_template) a copy of the suite's template; in a child process, the real client
+seam talks to the loopback stand-in with the key text "stand-in". No test reaches the network or
+holds a real key.
 """
 
 import json
@@ -29,6 +36,7 @@ import sys
 
 import pytest
 
+from tests import fakes
 from tests.conftest import subprocess_env
 from tests.extractions import FIXTURES, ROOT, extraction
 
@@ -166,8 +174,10 @@ class TestTheCommandLine:
         assert main.main([]) == 0
         out = capsys.readouterr().out
         assert "python main.py check <workbook> <ledger>" in out
-        # Part 2e: a question can be answered from a specification; no model is called.
-        assert "No model is called yet." in out and "Nothing answers a question yet." not in out
+        # Changed on purpose in 3e: the closing lines say what Phase 3 made, a question in words
+        # with your own key, so the line that no model is called is gone.
+        assert "No model is called yet." not in out and "Nothing answers a question yet." not in out
+        assert "Phase 3: a question in words on the command line, with your own key." in out
 
     def test_an_unknown_command_is_a_usage_error(self, capsys):
         import main
@@ -653,3 +663,533 @@ class TestSchema:
         assert main.main(["schema", "--out", str(taken)]) == 1
         assert capsys.readouterr().out.strip().splitlines() == [
             "schema: taken.txt: that is a file, not a folder."]
+
+
+# -- Part 3e: python main.py ask and replay -----------------------------------------------------
+# ask reads the key first, builds the template in a temporary folder of its own, asks through
+# src/ask.py with the client from main.client_for and an audit.AuditLog, prints the result and
+# removes the folder. replay reads an audit file, verifies it, replays one line's specification
+# on a fresh template and prints the state. In process, main.client_for is replaced by the
+# recording fake and main.build_template by a copy of the suite's template; the child-process
+# tests use the real client seam against the loopback stand-in, with the key text "stand-in".
+
+STAND_IN = "stand-in"
+# A made-up key text anyone would recognise; the recording fake never sends it anywhere.
+KEY_TEXT = "stand-in-3e-KEY-TEXT-r4Wq9Lm"
+BY_ENTITY = {"metric": "revenue", "version": "Actual", "dimensions": ["entity"], "filters": [],
+             "period": {"kind": "ytd", "value": "2026-06"}, "comparison": "budget",
+             "sort": None, "limit": 100}
+ASKED = "How did revenue compare with budget by entity?"
+WORDS = "Actual revenue for Calder Foods Austria was 3,983,040 EUR."
+AT_WORDS = "Actual revenue for Calder Foods Austria was 3,983,040 EUR."
+
+
+def model_reply(specification=BY_ENTITY, refusal=None) -> str:
+    return json.dumps({"refusal": refusal, "specification": specification,
+                       "asks_for_a_cause": False})
+
+
+@pytest.fixture
+def made(template, monkeypatch, tmp_path):
+    """The command's template build replaced by a copy of the suite's template (the session
+    copies it anyway), and every temporary folder the command makes for itself (p7_ask_ or
+    p7_replay_) recorded; they are made in the test's own folder, never in the system's."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    import main
+    from src.startup import Template
+
+    def copied(folder):
+        (folder / "template").mkdir(parents=True)
+        path = folder / "template" / template.path.name
+        shutil.copyfile(template.path, path)
+        return Template(path, template.pairs, template.breaks, template.steps)
+    monkeypatch.setattr(main, "build_template", copied)
+    folders = []
+    real = tempfile.mkdtemp
+    (tmp_path / "temp").mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temp"))
+
+    def recording(*args, **kwargs):
+        folder = real(*args, **kwargs)
+        if str(kwargs.get("prefix", "")).startswith(("p7_ask_", "p7_replay_")):
+            folders.append(Path(folder))
+        return folder
+    monkeypatch.setattr(tempfile, "mkdtemp", recording)
+    return folders
+
+
+def asking(capsys, monkeypatch, audit_folder, *argv, replies=None, client=None, key=STAND_IN,
+           question=ASKED, role=("--role", "group_controller"), pair="sample"):
+    """main.main(["ask", ...]) in process: (exit code, stdout, stderr, the client)."""
+    import main
+    fake = client if client is not None else fakes.FakeClient(
+        replies=list(replies if replies is not None else [fakes.Reply(model_reply())]))
+    monkeypatch.setattr(main, "client_for", lambda k: fake)
+    if key is None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    promote = (("--acknowledge-all-as", "A. Reviewer", "--promote-as", "P. Promoter")
+               if pair == "sample" else ("--promote-as", "P. Promoter"))
+    code = main.main(["ask", question, "--pair", pair, *role, *promote, *argv,
+                      "--audit", str(audit_folder)])
+    out = capsys.readouterr()
+    return code, out.out, out.err, fake
+
+
+class TestAskTheKeyFirst:
+    @pytest.mark.parametrize("key", [None, "", "  \t "], ids=["unset", "empty", "white space"])
+    def test_no_key_is_one_plain_line_and_nothing_is_built_or_sent(self, capsys, monkeypatch,
+                                                                    tmp_path, made, key):
+        import main
+
+        def never(k):
+            raise AssertionError("a client was made with no key")
+        monkeypatch.setattr(main, "client_for", never)
+        if key is None:
+            monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+        code = main.main(["ask", ASKED, "--pair", "sample", "--role", "group_controller",
+                          "--audit", str(tmp_path / "audit")])
+        out = capsys.readouterr()
+        assert (code, out.out, out.err) == (1, main.NO_KEY + "\n", "")
+        assert made == [] and not (tmp_path / "audit").exists()
+
+    def test_a_key_is_not_judged_by_its_look(self, capsys, monkeypatch, tmp_path, made):
+        # "stand-in" looks like no real key: only the API can say whether a key works.
+        code, out, _, fake = asking(capsys, monkeypatch, tmp_path / "audit")
+        assert code == 0 and len(fake.calls) == 1
+
+
+class TestAskAnswers:
+    def test_an_answer_with_the_template(self, capsys, monkeypatch, tmp_path, made):
+        from src import audit
+        code, out, err, fake = asking(capsys, monkeypatch, tmp_path / "audit")
+        assert (code, err) == (0, "")
+        lines = out.splitlines()
+        assert lines[0] == f"Question asked: {json.dumps(ASKED)}"
+        assert lines[1] == ("Specification: " + json.dumps(BY_ENTITY, sort_keys=True,
+                                                           separators=(",", ":")))
+        order = [next(i for i, l in enumerate(lines) if l.startswith(start)) for start in (
+            "Question asked: ", "Specification: ", "SQL (SHA-256 ", "Figures (3 rows):",
+            "Provenance:", "Narration, the template:", "Call: specification", "Run id: ",
+            "Audit line: ")]
+        assert order == sorted(order)
+        assert ("  entity AT: value 3,983,040 EUR; comparator 3,864,048 EUR; variance "
+                "118,992 EUR; variance % 3.1%; favourable") in lines
+        import config
+        assert (f"Call: specification, ok, served by {config.MODEL}, stop reason end_turn, "
+                "tokens 12 in and 3 out") in lines
+        assert "req_fake" not in out
+        (record,) = audit.read(tmp_path / "audit" / "audit.jsonl")
+        assert lines[-2] == f"Run id: {record['run_id']}"
+        assert lines[-1] == f"Audit line: {(tmp_path / 'audit' / 'audit.jsonl').resolve()}"
+        assert len(fake.calls) == 1
+        assert [f.name.startswith("p7_ask_") and not f.exists() for f in made] == [True]
+
+    def test_an_answer_with_the_models_wording(self, capsys, monkeypatch, tmp_path, made):
+        code, out, _, fake = asking(capsys, monkeypatch, tmp_path / "audit", "--narrate",
+                                    "model", replies=[fakes.Reply(model_reply()),
+                                                      fakes.Reply(WORDS)])
+        lines = out.splitlines()
+        assert code == 0 and len(fake.calls) == 2
+        assert lines[lines.index("Narration, the model's wording:") + 1] == "  " + WORDS
+        assert [l.split(",")[0] for l in lines if l.startswith("Call: ")] == [
+            "Call: specification", "Call: narration"]
+
+    def test_withheld_wording_prints_the_flags_and_never_the_models_text(self, capsys,
+                                                                       monkeypatch, tmp_path,
+                                                                       made):
+        from src import audit
+        wrong = "Actual revenue for Calder Foods Austria was 1,234 EUR. Zebra crossing."
+        code, out, _, _ = asking(capsys, monkeypatch, tmp_path / "audit", "--narrate", "model",
+                                 replies=[fakes.Reply(model_reply()), fakes.Reply(wrong)])
+        assert code == 0
+        assert "Narration, the template:" in out and "Zebra" not in out
+        assert ("  numeric: 1,234 EUR: '1,234 EUR' matches no figure for Actual revenue for "
+                "Calder Foods Austria.") in out.splitlines()
+        (record,) = audit.read(tmp_path / "audit" / "audit.jsonl")
+        assert record["narration"]["model_text"] == wrong
+
+    def test_the_answer_is_printed_by_querys_own_function(self, capsys, monkeypatch, tmp_path,
+                                                          made):
+        import main
+        monkeypatch.setattr(main, "answer_lines", lambda result, role: ["ANSWER LINES"])
+        code, out, _, _ = asking(capsys, monkeypatch, tmp_path / "audit")
+        assert code == 0 and "ANSWER LINES" in out.splitlines()
+
+
+class TestAskOutcomesAndFailures:
+    def test_a_refusal_is_its_sentence_with_no_sql(self, capsys, monkeypatch, tmp_path, made):
+        from src import outcomes
+        code, out, _, fake = asking(capsys, monkeypatch, tmp_path / "audit", replies=[
+            fakes.Reply(model_reply(None, {"reason": "out_of_scope"}))])
+        assert code == 1 and len(fake.calls) == 1
+        assert f"Outcome: {outcomes.outcome('out_of_scope').sentence}" in out.splitlines()
+        assert "SQL" not in out and "Specification" not in out
+        assert [f.exists() for f in made] == [False]
+
+    def test_a_validation_refusal(self, capsys, monkeypatch, tmp_path, made):
+        from src import outcomes
+        asked_for_spain = {**BY_ENTITY, "filters": [{"dimension": "entity", "values": ["ES"]}]}
+        code, out, _, _ = asking(capsys, monkeypatch, tmp_path / "audit", replies=[
+            fakes.Reply(model_reply(asked_for_spain))],
+            role=("--role", "entity_controller", "--entity", "AT"))
+        assert code == 1
+        assert f"Outcome: {outcomes.outcome('entity_not_permitted').sentence}" in out
+        assert "Spain" not in out.replace(json.dumps(ASKED), "")
+
+    @pytest.mark.parametrize("question", ["", "Revenue \x1b[31m in June?", "x" * 501],
+                             ids=["empty", "an escape sequence", "501 characters"])
+    def test_a_question_that_fails_the_checks_is_never_sent(self, capsys, monkeypatch,
+                                                             tmp_path, made, question):
+        from src import outcomes
+        code, out, _, fake = asking(capsys, monkeypatch, tmp_path / "audit", question=question)
+        assert code == 1 and fake.calls == []
+        assert out.splitlines()[0] == f"Question asked: {json.dumps(question)}"
+        assert "\x1b" not in out
+        assert f"Outcome: {outcomes.QUESTION_INVALID.sentence}" in out
+
+    def test_an_api_failure_is_its_line(self, capsys, monkeypatch, tmp_path, made):
+        from src import errors
+        error = fakes.status_error(fakes.anthropic.AuthenticationError, 401)
+        code, out, _, fake = asking(capsys, monkeypatch, tmp_path / "audit", replies=[error])
+        lines = out.splitlines()
+        assert code == 1 and len(fake.calls) == 1
+        assert f"Failure: {errors.line('key_rejected')}" in lines
+        assert any(l.startswith("Call: specification, key_rejected, served by none") for l in
+                   lines)
+        assert [f.exists() for f in made] == [False]
+
+    def test_a_fault_is_one_plain_line_and_the_folder_still_goes(self, capsys, monkeypatch,
+                                                                 tmp_path, made):
+        code, out, err, _ = asking(capsys, monkeypatch, tmp_path / "audit", replies=[
+            RuntimeError("a fault in this code")])
+        assert (code, out, err) == (1, "ask: the question could not be answered.\n", "")
+        assert [f.exists() for f in made] == [False]
+
+    def test_an_audit_folder_that_is_a_file_is_audit_unavailable_with_no_figure(
+            self, capsys, monkeypatch, tmp_path, made):
+        from src import outcomes
+        blocked = tmp_path / "audit"
+        blocked.write_bytes(b"a file, not a folder")
+        code, out, _, _ = asking(capsys, monkeypatch, blocked)
+        assert code == 1
+        assert f"Outcome: {outcomes.AUDIT_UNAVAILABLE.sentence}" in out.splitlines()
+        assert "Audit line: none was written." in out.splitlines()
+        for figure in ("3,983,040", "9,865,590", "Narration", "SQL"):
+            assert figure not in out, figure
+        assert [f.exists() for f in made] == [False]
+
+    def test_promote_as_on_the_sample_without_acknowledge_all_as(self, capsys, monkeypatch,
+                                                                 tmp_path, made):
+        import main
+        fake = fakes.FakeClient(replies=[])
+        monkeypatch.setattr(main, "client_for", lambda k: fake)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", STAND_IN)
+        code = main.main(["ask", ASKED, "--pair", "sample", "--role", "group_controller",
+                          "--promote-as", "P. Promoter", "--audit", str(tmp_path / "audit")])
+        assert code == 1 and fake.calls == [] and "nothing was sent" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("argv", [
+        [], ["--pair", "sample"], [ASKED], [ASKED, "--pair", "elsewhere", "--role",
+                                            "group_controller"],
+        [ASKED, "--pair", "sample", "--role", "chief"],
+        [ASKED, "--pair", "sample", "--role", "entity_controller"],
+        [ASKED, "--pair", "sample", "--role", "group_controller", "--entity", "AT"],
+        [ASKED, "--pair", "sample", "--role", "group_controller", "--narrate", "poetry"],
+        [ASKED, "--pair", "sample", "--role", "group_controller", "--verbose", "yes"],
+        [ASKED, "--pair", "sample", "--pair", "clean", "--role", "group_controller"]],
+        ids=["nothing", "no question", "no pair", "an unknown pair", "an unknown role",
+             "no entity", "an entity for the group", "an unknown narration",
+             "an unknown option", "a pair twice"])
+    def test_a_wrong_option_is_one_plain_line_and_exit_2(self, capsys, monkeypatch, made, argv):
+        import main
+        monkeypatch.setattr(main, "client_for", lambda k: fakes.FakeClient(replies=[]))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", STAND_IN)
+        assert main.main(["ask", *argv]) == 2
+        out = capsys.readouterr().out.splitlines()
+        assert len(out) == 1 and out[0].startswith("ask: ") and made == []
+
+
+class TestAskPrintsSafely:
+    def test_a_console_in_cp1252_never_stops_a_print(self, monkeypatch, tmp_path, made):
+        # A redirected stdout on Windows writes the locale's code page: the minus sign and an
+        # emoji cannot be written in it, and are written as backslash escapes instead.
+        import io
+        import sys
+
+        import main
+        words = WORDS + " In words: " + chr(0x2212) + " " + chr(0x1F600) + "."
+        fake = fakes.FakeClient(replies=[fakes.Reply(model_reply()), fakes.Reply(words)])
+        monkeypatch.setattr(main, "client_for", lambda k: fake)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", STAND_IN)
+        raw = io.BytesIO()
+        console = io.TextIOWrapper(raw, encoding="cp1252", errors="strict", newline="\n")
+        monkeypatch.setattr(sys, "stdout", console)
+        code = main.main(["ask", ASKED, "--pair", "sample", "--role", "group_controller",
+                          "--acknowledge-all-as", "A. Reviewer", "--promote-as", "P. Promoter",
+                          "--narrate", "model", "--audit", str(tmp_path / "audit")])
+        console.flush()
+        written = raw.getvalue()
+        assert code == 0
+        assert b"In words: \\u2212 \\U0001f600." in written
+
+
+class TestAskTheKeySearch:
+    def test_no_key_and_no_header_in_what_ask_prints_or_writes(self, capsys, monkeypatch,
+                                                               tmp_path, made):
+        from src import narration
+        error = fakes.status_error(fakes.anthropic.AuthenticationError, 401,
+                                   f"invalid x-api-key {KEY_TEXT}; Authorization: Bearer x")
+        said = []
+        for replies, extra, folder in (
+                ([fakes.Reply(model_reply())], (), "audit"),
+                ([fakes.Reply(model_reply()), fakes.Reply(WORDS)], ("--narrate", "model"),
+                 "audit"),
+                ([fakes.Reply(model_reply(None, {"reason": "out_of_scope"}))], (), "audit"),
+                ([error], (), "audit"),
+                ([fakes.Reply(model_reply())], (), "blocked")):
+            if folder == "blocked":
+                (tmp_path / "blocked").write_bytes(b"a file")
+            client = fakes.FakeClient(replies=list(replies), api_key=KEY_TEXT)
+            code, out, err, _ = asking(capsys, monkeypatch, tmp_path / folder, *extra,
+                                       client=client, key=KEY_TEXT)
+            said.append(out + err)
+        assert narration.NOTICE_WITHHELD not in said[1]
+        everything = ("".join(said).encode("utf-8")
+                      + (tmp_path / "audit" / "audit.jsonl").read_bytes()).lower()
+        assert (tmp_path / "audit" / "audit.jsonl").read_bytes().count(b"\n") == 4
+        for text in (KEY_TEXT.lower(), "x-api-key", "authorization", "bearer"):
+            assert text.encode("ascii") not in everything, text
+
+
+class TestAskCallCounts:
+    def test_one_specification_call_and_a_narration_call_only_when_asked(self, capsys,
+                                                                         monkeypatch, tmp_path,
+                                                                         made):
+        _, _, _, template = asking(capsys, monkeypatch, tmp_path / "audit")
+        _, _, _, model = asking(capsys, monkeypatch, tmp_path / "audit", "--narrate", "model",
+                                replies=[fakes.Reply(model_reply()), fakes.Reply(WORDS)])
+        _, _, _, refused = asking(capsys, monkeypatch, tmp_path / "audit", "--narrate", "model",
+                                  replies=[fakes.Reply(model_reply(None,
+                                                                   {"reason": "out_of_scope"}))])
+        _, _, _, invalid = asking(capsys, monkeypatch, tmp_path / "audit", question="")
+        assert [len(c.calls) for c in (template, model, refused, invalid)] == [1, 2, 1, 0]
+        assert "format" not in model.calls[1]["output_config"]
+
+
+# -- replay ----------------------------------------------------------------------------------------
+
+@pytest.fixture
+def recorded(capsys, monkeypatch, tmp_path, made):
+    """Six answers recorded by ask in one audit file: both pairs, under the group controller
+    and the ES and AT controllers. [(pair, role, run id)] and the file."""
+    from src import audit
+    found = []
+    for pair in ("clean", "sample"):
+        for role in (("--role", "group_controller"),
+                     ("--role", "entity_controller", "--entity", "ES"),
+                     ("--role", "entity_controller", "--entity", "AT")):
+            code, _, _, _ = asking(capsys, monkeypatch, tmp_path / "audit", pair=pair,
+                                   role=role)
+            assert code == 0
+            found.append((pair, role[-1], audit.read(tmp_path / "audit" / "audit.jsonl")[-1][
+                "run_id"]))
+    made.clear()
+    return found, tmp_path / "audit" / "audit.jsonl"
+
+
+def replaying(capsys, monkeypatch, path, run_id):
+    """main.main(["replay", ...]) with no key and a client seam that fails if it is ever
+    used: (exit code, stdout lines)."""
+    import main
+
+    def never(key):
+        raise AssertionError("replay made a client")
+    monkeypatch.setattr(main, "client_for", never)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    code = main.main(["replay", str(path), run_id])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def rewritten(path, folder, change):
+    """A copy of an audit file whose first line's record is changed by change and written
+    again with its own hash, so the copy still verifies."""
+    from src import audit
+    records = [{k: v for k, v in r.items() if k != "record_sha256"} for r in audit.read(path)]
+    change(records[0])
+    copy = folder / "changed.jsonl"
+    copy.write_bytes(b"".join(audit.line_of(r) for r in records))
+    return copy, records[0]["run_id"]
+
+
+class TestReplay:
+    def test_every_recorded_answer_replays_to_same_on_both_pairs_and_three_roles(
+            self, capsys, monkeypatch, recorded, made):
+        found, path = recorded
+        before = path.read_bytes()
+        for pair, role, run_id in found:
+            code, lines = replaying(capsys, monkeypatch, path, run_id)
+            assert code == 0, lines
+            assert lines[0] == f"Replay of run {run_id}: line " \
+                               f"{[r[2] for r in found].index(run_id) + 1} of {path.resolve()}"
+            assert lines[1] == f"Pair: {pair}, its breaks acknowledged and the pair promoted " \
+                               'as "Replay"'
+            assert lines[2] == "State: same" and lines[3].startswith("  recorded: outcome ")
+            assert lines[3][len("  recorded: "):] == lines[4][len("  replayed: "):]
+            assert lines[-1] == "No key was read and no model was called."
+        assert path.read_bytes() == before
+        assert len(made) == 6 and not [f for f in made if f.exists()]
+        assert {(p, r) for p, r, _ in found} == {(p, r) for p in ("clean", "sample")
+                                                  for r in ("group_controller", "ES", "AT")}
+
+    def test_a_record_with_no_specification_is_not_replayable_before_anything_is_built(
+            self, capsys, monkeypatch, tmp_path, made):
+        from src import audit
+        asking(capsys, monkeypatch, tmp_path / "audit", replies=[
+            fakes.Reply(model_reply(None, {"reason": "out_of_scope"}))])
+        (record,) = audit.read(tmp_path / "audit" / "audit.jsonl")
+        made.clear()
+        code, lines = replaying(capsys, monkeypatch, tmp_path / "audit" / "audit.jsonl",
+                                record["run_id"])
+        assert code == 1 and made == []
+        assert lines[1] == ("State: not_replayable: the record holds no specification "
+                            "(outcome out_of_scope).")
+
+    def test_a_record_no_pair_matches_is_not_comparable_before_anything_is_built(
+            self, capsys, monkeypatch, recorded, made, tmp_path):
+        _, path = recorded
+        copy, run_id = rewritten(path, tmp_path, lambda r: r["provenance"].update(
+            plan_file_sha256="0" * 64))
+        code, lines = replaying(capsys, monkeypatch, copy, run_id)
+        assert code == 1 and made == []
+        assert "State: not_comparable: the kinds that differ are plan_file." in lines
+
+    def test_a_changed_registry_hash_is_not_comparable(self, capsys, monkeypatch, recorded,
+                                                        tmp_path):
+        _, path = recorded
+        copy, run_id = rewritten(path, tmp_path, lambda r: r["provenance"].update(
+            registry_hash="0" * 64))
+        code, lines = replaying(capsys, monkeypatch, copy, run_id)
+        assert code == 1
+        assert "State: not_comparable: the kinds that differ are registry." in lines
+
+    def test_a_changed_result_hash_is_different_with_both_sets(self, capsys, monkeypatch,
+                                                               recorded, tmp_path):
+        _, path = recorded
+        copy, run_id = rewritten(path, tmp_path, lambda r: r.update(result_sha256="0" * 64))
+        code, lines = replaying(capsys, monkeypatch, copy, run_id)
+        assert code == 1 and "State: different" in lines
+        recorded_line = next(l for l in lines if l.startswith("  recorded: "))
+        replayed_line = next(l for l in lines if l.startswith("  replayed: "))
+        assert recorded_line.endswith("result SHA-256 " + "0" * 64)
+        assert not replayed_line.endswith("0" * 64)
+
+    def test_another_engine_version_is_printed_not_refused(self, capsys, monkeypatch,
+                                                           recorded, tmp_path):
+        from src import warehouse
+        _, path = recorded
+        copy, run_id = rewritten(path, tmp_path, lambda r: r["provenance"].update(
+            engine_version="0.0.1"))
+        code, lines = replaying(capsys, monkeypatch, copy, run_id)
+        assert code == 0 and "State: same" in lines
+        assert (f"Engine: recorded {warehouse.ENGINE} 0.0.1, now {warehouse.ENGINE} "
+                f"{warehouse.ENGINE_VERSION}; reported, not refused.") in lines
+
+    def test_a_file_that_does_not_verify_is_refused_with_its_lines(self, capsys, monkeypatch,
+                                                                    recorded, made, tmp_path):
+        _, path = recorded
+        lines = path.read_bytes().split(b"\n")
+        lines[1] = lines[1].replace(b'"outcome":"answered"', b'"outcome":"no_data"', 1)
+        copy = tmp_path / "altered.jsonl"
+        copy.write_bytes(b"\n".join(lines))
+        code, said = replaying(capsys, monkeypatch, copy, "0" * 32)
+        assert code == 1 and made == [] and len(said) == 1
+        assert said[0] == "replay: altered.jsonl does not verify (line 2 hash); nothing was " \
+                          "replayed."
+
+    def test_a_run_id_in_no_line_or_in_two_is_refused(self, capsys, monkeypatch, recorded,
+                                                       made, tmp_path):
+        found, path = recorded
+        code, said = replaying(capsys, monkeypatch, path, "f" * 32)
+        assert (code, len(said)) == (1, 1) and said[0].startswith("replay: no line of ")
+        twice = tmp_path / "twice.jsonl"
+        first = path.read_bytes().split(b"\n")[0] + b"\n"
+        twice.write_bytes(first + first)
+        code, said = replaying(capsys, monkeypatch, twice, found[0][2])
+        assert (code, len(said)) == (1, 1)
+        assert said[0].startswith("replay: 2 lines of twice.jsonl have the run id ")
+        assert made == []
+
+    @pytest.mark.parametrize("argv", [[], ["only.jsonl"], ["a", "b", "c"], ["--file", "x"]],
+                             ids=["nothing", "no run id", "three", "an option"])
+    def test_a_wrong_argument_is_one_plain_line_and_exit_2(self, capsys, argv):
+        import main
+        assert main.main(["replay", *argv]) == 2
+        assert capsys.readouterr().out.startswith("replay: ")
+
+    def test_a_missing_file_is_one_plain_line(self, capsys, tmp_path):
+        import main
+        assert main.main(["replay", str(tmp_path / "absent.jsonl"), "0" * 32]) == 1
+        assert capsys.readouterr().out == "replay: absent.jsonl: there is no such file.\n"
+
+
+# -- In a child process, through the real client seam against the loopback stand-in ----------------
+
+class TestAskAndReplayInAChildProcess:
+    def test_no_key_in_a_child_process(self, tmp_path):
+        done = run("ask", ASKED, "--pair", "sample", "--role", "group_controller", "--audit",
+                   tmp_path / "audit", temp=tmp_path)
+        import main
+        assert (done.returncode, done.stdout, done.stderr) == (1, main.NO_KEY + "\n", "")
+        assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+    def test_ask_then_replay_through_the_real_sdk(self, tmp_path):
+        from src import audit
+        temp = tmp_path / "temp"
+        temp.mkdir()
+        with fakes.StandInAPI(replies=[(200, fakes.message(model_reply())),
+                                       (200, fakes.message(AT_WORDS))]) as api:
+            done = subprocess.run(
+                [sys.executable, str(MAIN), "ask", ASKED, "--pair", "sample", "--role",
+                 "group_controller", "--acknowledge-all-as", "A. Reviewer", "--promote-as",
+                 "P. Promoter", "--narrate", "model", "--audit", str(tmp_path / "audit")],
+                capture_output=True, text=True, encoding="utf-8", cwd=str(ROOT), timeout=600,
+                env=subprocess_env(TEMP=str(temp), TMP=str(temp), TMPDIR=str(temp),
+                                   ANTHROPIC_API_KEY=STAND_IN, ANTHROPIC_BASE_URL=api.url))
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert [r["headers"]["x-api-key"] for r in api.received] == [STAND_IN, STAND_IN]
+        assert "Narration, the model's wording:" in done.stdout and AT_WORDS in done.stdout
+        (record,) = audit.read(tmp_path / "audit" / "audit.jsonl")
+        assert [c["request_id"] for c in record["calls"]] == ["req_standin_1",
+                                                              "req_standin_2"]
+        assert "req_standin" not in done.stdout and STAND_IN not in done.stdout
+        assert sorted(p.name for p in temp.iterdir()) == []
+        replayed = run("replay", tmp_path / "audit" / "audit.jsonl", record["run_id"],
+                       temp=temp)
+        assert replayed.returncode == 0, replayed.stdout + replayed.stderr
+        assert "State: same" in replayed.stdout.splitlines()
+        assert sorted(p.name for p in temp.iterdir()) == []
+        assert (tmp_path / "audit" / "audit.jsonl").read_bytes().count(b"\n") == 1
+
+
+class TestTheUsageNamesAskAndReplay:
+    def test_the_usage_and_its_closing_lines(self, capsys):
+        import main
+        assert main.main([]) == 0
+        out = capsys.readouterr().out
+        assert ('python main.py ask "<question>" --pair clean|sample --role '
+                'group_controller|entity_controller [--entity ES] [--acknowledge-all-as "Name"] '
+                '[--promote-as "Name"] [--narrate template|model] [--audit <folder>]') in out
+        assert "python main.py replay <audit file> <run id>" in out
+        flat = " ".join(out.split())
+        assert ("Phase 3: a question in words on the command line, with your own key. The model "
+                "writes a specification and nothing else; Python validates, compiles and runs "
+                "it, narrates the answer and records every question. The web pages are still "
+                "stubs.") in flat
+        assert "No model is called yet." not in out

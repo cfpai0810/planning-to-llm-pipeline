@@ -233,7 +233,8 @@ A refusal is an outcome (`src/outcomes.py`): a code and one fixed sentence,
 filled with nothing, so it never echoes a name. The question path
 (`src/ask.py`, part 3b) adds seven: `question_invalid` before anything is
 sent, the four refusal reasons a model may give, `session_ended` and
-`audit_unavailable`.
+`audit_unavailable`. The question path itself, from a question in words to
+its audit line and its replay, is in [ask.md](ask.md).
 
 | Code | Sentence |
 |---|---|

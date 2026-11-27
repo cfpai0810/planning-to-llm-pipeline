@@ -13,6 +13,9 @@ variant may be kept in a named place, with its reason: the export contract's
 table of generic terms maps an export's "scenario" to the version, and the
 pages' theme kit, carried from P6 and left as it is while the pages stay
 stubs, names a widget the "KPI tile".
+
+Part 3e adds the question path's terms (question, refusal reason, narration, flag, run id,
+audit record and replay), each with the variants it retires, as proposals for the reviewer.
 """
 
 import io
@@ -31,7 +34,9 @@ TERMS = ("batch", "batch record", "break", "control", "check", "reconcile", "ack
          "ledger sign", "presentation sign", "star schema",
          "metric", "registry", "specification", "validate", "compile", "guard", "role",
          "session", "template", "held", "coverage", "gap", "matched months", "closing value",
-         "ratio of sums", "outcome", "provenance")
+         "ratio of sums", "outcome", "provenance",
+         # Part 3e: the question path's terms, proposals for the reviewer.
+         "question", "refusal reason", "narration", "flag", "run id", "audit record", "replay")
 
 # The retired variants: (the term to say instead, the variants as the glossary lists them, a
 # pattern that finds them in prose, and the places not read for them).
@@ -66,6 +71,17 @@ RETIRED = (
     ("star schema", ("data mart",), r"(?i)\bdata marts?\b", ()),
     ("metric", ("KPI", "key performance indicator"),
      r"\bKPIs?\b|(?i:\bkey performance indicators?\b)", PAGES),
+    # Part 3e.
+    ("question", ("user query", "free-text query"),
+     r"(?i)\buser quer(y|ies)\b|\bfree-text quer(y|ies)\b", ()),
+    ("refusal reason", ("decline reason", "rejection reason"),
+     r"(?i)\b(decline|rejection) reasons?\b", ()),
+    ("narration", ("commentary", "narrative"), r"(?i)\bcommentar(y|ies)\b|\bnarratives?\b", ()),
+    ("flag", ("violation", "red flag"), r"(?i)\bviolations?\b|\bred flags?\b", ()),
+    ("run id", ("trace id", "correlation id"), r"(?i)\b(trace|correlation) ids?\b", ()),
+    ("audit record", ("audit entry", "audit row"), r"(?i)\baudit (entry|entries|rows?)\b", ()),
+    ("replay", ("re-execution", "playback"),
+     r"(?i)\bre-?execut(e|es|ed|ing|ion|ions)\b|\bplaybacks?\b", ()),
 )
 
 
@@ -135,7 +151,8 @@ def _meanings() -> dict:
 class TestGlossary:
     def test_the_glossary_names_every_agreed_term(self):
         rows = _rows()
-        assert tuple(rows) == TERMS and len(TERMS) == 41
+        # Changed on purpose in 3e: seven terms of the question path, 41 then.
+        assert tuple(rows) == TERMS and len(TERMS) == 48
         for seed in ("batch", "break", "acknowledge", "promote", "plan", "Actual", "Budget",
                      "Forecast", "entity", "account", "period", "ledger"):
             assert seed in rows, seed
@@ -180,14 +197,19 @@ class TestGlossary:
                      "the latest estimate", "a business unit", "the fiscal period",
                      "the reporting sign", "a discrepancy", "she signed off the break",
                      "the batch goes live", "publish the batch", "the plan file", "a data mart",
-                     "a trial balance", "the scenario", "a KPI", "key performance indicators"):
+                     "a trial balance", "the scenario", "a KPI", "key performance indicators",
+                     "a user query", "a free-text query", "a rejection reason", "the commentary",
+                     "a narrative", "a violation", "a red flag", "a trace id",
+                     "an audit entry", "an audit row", "re-execution", "a playback"):
             assert _retired(text), text
         for text in ("a batch", "the ledger extract", "an account", "the Budget",
                      "the Forecast", "an entity", "the period", "the presentation sign",
                      "a break", "she acknowledged the break", "the pair is promoted",
                      "the planning workbook", "the star schema", "the published figures",
                      "the ledger sign", "file metadata", "a release of the app", "the version",
-                     "a metric", "a block labelled Scenario"):
+                     "a metric", "a block labelled Scenario", "the question", "a refusal reason",
+                     "the narration", "a flag", "the run id", "the audit record",
+                     "the audit line", "a replay", "the query", "the request id"):
             assert not _retired(text), text
 
     def test_the_four_entries_the_reviewer_worded(self):

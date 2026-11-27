@@ -50,6 +50,13 @@ a retired variant comes back. Each term below lists the variants it retires.
 | **ratio of sums** | A ratio computed on the sums of its numerator and its denominator over the entities and months asked for, never an average of ratios. | |
 | **outcome** | What a question gets in place of figures: a code and one fixed sentence, which never echoes a name. | |
 | **provenance** | What an answer names about its figures: the promoted pair's files and hashes, the promotion, the breaks and their acknowledgements, the registry's version and hash, the engine, and the role's view. | |
+| **question** | A visitor's words, as the question path receives them: 1 to 500 characters once trimmed, with no control, format or surrogate character. The model turns it into a specification or refuses; the audit record keeps it as received, cut at 2,000 characters. | user query, free-text query |
+| **refusal reason** | What the model may give in place of a specification: out_of_scope, needs_clarification, change_not_possible or currency_not_supported, each an outcome with its fixed sentence. | decline reason, rejection reason |
+| **narration** | An answer in words: by default the narration template, Python's own sentences; with model narration asked for, the model's wording, shown only when the checks give it no flag. | commentary, narrative |
+| **flag** | What a check finds in wording: its kind (numeric, direction or cause), the words, the figure they were read against, and why. Any flag withholds the model's wording. | violation, red flag |
+| **run id** | The random id of one question: in its audit record, printed by `main.py ask`, and how `main.py replay` finds the record. | trace id, correlation id |
+| **audit record** | What one question leaves, refusals and failures included: a closed set of fields, written as one line of `audit.jsonl` (the audit line) with its own SHA-256. | audit entry, audit row |
+| **replay** | To ask a recorded specification again under the record's role, with no model call, and compare the outcome, the SQL hash and the result hash: same, different, not comparable or not replayable. | re-execution, playback |
 
 ## Notes
 
@@ -68,3 +75,7 @@ a retired variant comes back. Each term below lists the variants it retires.
 - The governed layer's terms (metric to provenance) were added in part 2e and
   approved by the reviewer on 11 November (D4), with the guard's entry
   reworded.
+- The question path's terms (question to replay) were added in part 3e, as
+  proposals for the reviewer to approve at the final review. "Template" also
+  names narration's template, Python's own sentences; where the warehouse is
+  not meant, the docs say "the narration template".

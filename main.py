@@ -2,7 +2,7 @@
 # main.py: the command line
 # =============================================================================
 """
-The pipeline's command line. Three commands:
+The pipeline's command line. Five commands:
 
     python main.py check <workbook> <ledger>
 
@@ -51,6 +51,53 @@ length, the nullable fields, the deepest nesting, and the hashes. It reads no
 key and calls nothing. A wrong option is one plain line and the exit code 2;
 an --out that is a file, or a build or write that fails, is one plain line
 and 1.
+
+    python main.py ask "<question>" --pair clean|sample
+        --role group_controller|entity_controller [--entity ES]
+        [--acknowledge-all-as "Name"] [--promote-as "Name"]
+        [--narrate template|model] [--audit <folder>]
+
+Part 3e (the reviewer's Phase 3 brief, section 7), a question in words. It
+reads the key from ANTHROPIC_API_KEY before anything else: with no key, or
+one of white space alone, it prints one plain line and exits 1, with nothing
+built and nothing sent. The key is never printed or written, and whether a
+key works is the API's to say. It builds the template warehouse in a
+temporary folder of its own (prefix p7_ask_), opens a session under a root
+inside it (F26), may acknowledge every break of the pair and promote it as
+the people named, as query does, and asks through src/ask.py with the client
+from client_for (the app's client seam, streamlit_app/lib/claude_client.py)
+and an audit.AuditLog. The audit folder is never the temporary one: it is
+audit_log in the current directory (audit.DEFAULT_FOLDER) unless --audit
+names another. It prints, in this order: the question as received,
+JSON-encoded, as check shows names from a file; the outcome's sentence or
+the failure's line, or the canonical specification and the answer as query
+prints it (answer_lines: the SQL and its hash, the figures, the coverage and
+gaps, the provenance); the narration shown and any flags (kind, text,
+reason), never a withheld model text, which is in the audit line; for each
+model call its purpose, outcome, the model that served it, the stop reason
+and the tokens (the request id is in the audit line alone); the run id; and
+the full path of the audit file, or that no line was written. The temporary
+folder is removed on every path. An answer exits 0, whatever narration was
+shown; an outcome or a failed call exits 1; a wrong option exits 2.
+
+    python main.py replay <audit file> <run id>
+
+Part 3e. It reads the file with audit.read, which verifies it, finds the one
+line with that run id, and finds the pair whose two file hashes are the
+record's. Then, in a temporary folder (prefix p7_replay_), it builds the
+template, acknowledges every break of that pair as "Replay", promotes it as
+"Replay", replays the record (audit.replay) and prints its state: same or
+different with both sets of values, not_comparable with the kinds that
+differ, not_replayable with the reason; a different engine version is
+printed, not refused. A file that does not verify, a run id in no line or in
+more than one, and a record no pair matches are each one plain line and 1,
+before anything is built. same exits 0, every other state 1. It reads no
+key, makes no model call, writes no audit line and leaves the file as it
+was.
+
+ask and replay write a character the console's encoding cannot hold as a
+backslash escape, so text that came from outside never stops a print (a
+redirected stdout on Windows writes the locale's code page).
 """
 
 from __future__ import annotations
@@ -67,6 +114,8 @@ from typing import Optional
 USAGE = """Usage: python main.py check <workbook> <ledger>
        python main.py query <spec.json> --pair clean|sample --role group_controller|entity_controller [--entity ES] [--acknowledge-all-as "Name"] [--promote-as "Name"]
        python main.py schema --out <folder>
+       python main.py ask "<question>" --pair clean|sample --role group_controller|entity_controller [--entity ES] [--acknowledge-all-as "Name"] [--promote-as "Name"] [--narrate template|model] [--audit <folder>]
+       python main.py replay <audit file> <run id>
 
   check   Lands the workbook and the ledger in a temporary warehouse, runs the
           spreadsheet controls and reconcile, prints each batch record and every
@@ -79,11 +128,20 @@ USAGE = """Usage: python main.py check <workbook> <ledger>
   schema  Writes the schema a model's reply must match and the system text
           each role is sent, with a report of their sizes and hashes, from the
           sample pair promoted as "Schema dump". It calls nothing.
+  ask     Asks a question in words, with the key in ANTHROPIC_API_KEY: builds the
+          template warehouse in a temporary folder, may acknowledge and promote the
+          pair, has the model write a specification and nothing else, prints the
+          outcome or the answer, the narration and the calls, writes one line to
+          the audit file (audit_log/audit.jsonl unless --audit names another
+          folder), and deletes the temporary folder.
+  replay  Asks the specification of one line of an audit file again, on a fresh
+          template with its pair promoted as "Replay", and says whether the SQL
+          and the result are the same. It reads no key and calls nothing.
 
-Phase 2: the sample workbook and its ledger extract, the extractor, the
-spreadsheet controls, reconcile and promotion, the metric registry, and the
-governed layer that answers a structured question exist.
-No model is called yet."""
+Phase 3: a question in words on the command line, with your own key. The
+model writes a specification and nothing else; Python validates, compiles
+and runs it, narrates the answer and records every question. The web pages
+are still stubs."""
 
 COLUMNS = (("id", 16), ("control", 18), ("kind", 26), ("severity", 9), ("where", 22))
 
@@ -206,26 +264,30 @@ def remove_folder(folder: Path) -> None:
     shutil.rmtree(folder, onexc=_add_write_bit_and_retry)
 
 
-def _options(argv: list[str]) -> dict:
-    """The spec file and the options, or Refused with a plain line and the exit code 2."""
+def _options(argv: list[str], command: str = "query", allowed: Optional[dict] = None,
+             first: str = "spec") -> dict:
+    """The first argument and the options, or Refused with a plain line and the exit code 2.
+    query's first argument is the spec file; ask's is the question."""
+    allowed = OPTIONS if allowed is None else allowed
     if not argv or argv[0].startswith("--"):
-        raise Refused("query: give the spec file first, then --pair and --role.", 2)
-    found: dict = {"spec": Path(argv[0])}
+        what = "the spec file" if first == "spec" else "the question, in quotes,"
+        raise Refused(f"{command}: give {what} first, then --pair and --role.", 2)
+    found: dict = {first: Path(argv[0]) if first == "spec" else argv[0]}
     rest = argv[1:]
     while rest:
         option = rest.pop(0)
-        if option not in OPTIONS or not rest or OPTIONS[option] in found:
-            raise Refused("query: an option was not understood; run python main.py for the "
-                          "usage.", 2)
-        found[OPTIONS[option]] = rest.pop(0)
+        if option not in allowed or not rest or allowed[option] in found:
+            raise Refused(f"{command}: an option was not understood; run python main.py for "
+                          "the usage.", 2)
+        found[allowed[option]] = rest.pop(0)
     if found.get("pair") not in PAIRS:
-        raise Refused("query: the pair must be clean or sample.", 2)
+        raise Refused(f"{command}: the pair must be clean or sample.", 2)
     if found.get("role") not in ROLES:
-        raise Refused("query: the role must be group_controller or entity_controller.", 2)
+        raise Refused(f"{command}: the role must be group_controller or entity_controller.", 2)
     if found["role"] == "entity_controller" and "entity" not in found:
-        raise Refused("query: an entity controller needs --entity.", 2)
+        raise Refused(f"{command}: an entity controller needs --entity.", 2)
     if found["role"] == "group_controller" and "entity" in found:
-        raise Refused("query: --entity is for an entity controller alone.", 2)
+        raise Refused(f"{command}: --entity is for an entity controller alone.", 2)
     return found
 
 
@@ -461,6 +523,260 @@ def schema(argv: list[str]) -> int:
     return 0
 
 
+# == ask and replay (part 3e) =====================================================================
+
+ASK_OPTIONS = {**OPTIONS, "--narrate": "narrate", "--audit": "audit"}
+NARRATIONS = ("template", "model")
+REPLAYER = "Replay"
+NO_KEY = ("ask: there is no key: set ANTHROPIC_API_KEY in the environment to ask a question. "
+          "Nothing was built and nothing was sent.")
+
+
+def client_for(key: str):
+    """The client the command line asks with: the app's own client seam, with no retry and
+    the SDK's default timeout. The one place a client is made here; tests replace it."""
+    from streamlit_app.lib import claude_client
+    return claude_client.build_client(key)
+
+
+def build_template(folder: Path):
+    """The template warehouse of one command, in its own temporary folder. Tests replace it
+    with a copy of the suite's template."""
+    from src import startup
+    return startup.build_template(folder / "template")
+
+
+def _readable_output() -> None:
+    """A character the console's encoding cannot hold is written as a backslash escape, so
+    text from outside never stops a print."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
+class _Recorded:
+    """The audit seam ask writes to: the audit log, keeping the record once it is written, so
+    the command can print what the line says of the calls and the narration."""
+
+    def __init__(self, log):
+        self.log, self.record = log, None
+
+    def write(self, record) -> None:
+        self.log.write(record)
+        self.record = record
+
+
+def _canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def ask_lines(question, asked, record, role, audit_path: Path) -> list[str]:
+    """What ask prints: the question, the outcome or the answer, the narration and its flags,
+    the calls, the run id and where the audit line went."""
+    from src import answer, errors
+    lines = [f"Question asked: {_data(question) if isinstance(question, str) else 'none'}"]
+    if isinstance(asked.result, answer.Answer):
+        lines.append(f"Specification: {_canonical(record['specification'])}")
+        lines += answer_lines(asked.result, role)
+    elif asked.result is not None:
+        lines.append(f"Outcome: {asked.result.sentence}")
+    else:
+        lines.append(f"Failure: {errors.line(asked.failure)}")
+    if asked.narration is not None:
+        shown = "the model's wording" if record["narration"]["mode_shown"] == "model" else \
+            "the template"
+        lines.append(f"Narration, {shown}:")
+        lines += ["  " + line for line in asked.narration.splitlines()]
+    if asked.flags:
+        lines.append("Flags, so the model's wording was withheld:")
+        lines += [f"  {f.kind}: {f.text}: {f.reason}" for f in asked.flags]
+    if record is not None:
+        for call in record["calls"]:
+            tokens = ("no tokens counted" if call["input_tokens"] is None else
+                      f"tokens {call['input_tokens']} in and {call['output_tokens']} out")
+            lines.append(f"Call: {call['purpose']}, {call['outcome']}, served by "
+                         f"{call['served_by'] or 'none'}, stop reason "
+                         f"{call['stop_reason'] or 'none'}, {tokens}")
+    lines.append(f"Run id: {asked.run_id}")
+    lines.append(f"Audit line: {audit_path}" if record is not None
+                 else "Audit line: none was written.")
+    return lines
+
+
+def ask(argv: list[str]) -> int:
+    _readable_output()
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key.strip():
+        print(NO_KEY)
+        return 1
+    from src import answer, audit, promotion, roles, session, warehouse
+    from src import ask as asking
+    from src.batch import SourceError
+    try:
+        options = _options(argv, "ask", ASK_OPTIONS, "question")
+        if options.get("narrate", "template") not in NARRATIONS:
+            raise Refused("ask: --narrate must be template or model.", 2)
+        role = roles.group_controller if options["role"] == "group_controller" else \
+            roles.entity_controller(options["entity"])
+    except Refused as refused:
+        print(refused)
+        return refused.code
+    except roles.RoleError as refused:
+        print(f"ask: {refused}")
+        return 2
+    seam = _Recorded(audit.AuditLog(Path(options.get("audit", audit.DEFAULT_FOLDER)).resolve()))
+    folder = Path(tempfile.mkdtemp(prefix="p7_ask_"))
+    try:
+        template = build_template(folder)
+        pair = options["pair"]
+        waiting = len(template.breaks[pair])
+        if "promote_as" in options and waiting and "acknowledge_as" not in options:
+            print(f"ask: the {pair} pair has {waiting} break{'' if waiting == 1 else 's'}, "
+                  "so --promote-as needs --acknowledge-all-as as well; nothing was promoted "
+                  "and nothing was sent.")
+            return 1
+        pool = session.Sessions(template, root=folder / "sessions")
+        try:
+            s = pool.open()
+            if "acknowledge_as" in options:
+                s.acknowledge_many(pair, [(b.break_id, options["acknowledge_as"], "accepted")
+                                          for b in s.breaks(pair)])
+            if "promote_as" in options:
+                s.promote(pair, options["promote_as"])
+            asked = asking.ask(client_for(key), s, role, options["question"], audit=seam,
+                               narrate=options.get("narrate", "template"))
+        finally:
+            pool.close_all()
+    except promotion.PromotionError as refused:
+        print(f"ask: {refused}")
+        return 1
+    except (SourceError, warehouse.WarehouseError) as error:
+        print(f"ask: {error}")
+        return 1
+    except OSError:
+        print("ask: the question could not finish: a file could not be read or written.")
+        return 1
+    except Exception:          # a fault in the code: one plain line, never the error's text
+        print("ask: the question could not be answered.")
+        return 1
+    finally:
+        remove_folder(folder)
+    print("\n".join(ask_lines(options["question"], asked, seam.record, role, seam.log.path)))
+    return 0 if isinstance(asked.result, answer.Answer) else 1
+
+
+def _pairs() -> dict:
+    """{pair: (its planning workbook's SHA-256, its ledger extract's SHA-256)}, from the files
+    the template is built from."""
+    from src import hashing, warehouse
+    ledger = hashing.file_sha256(warehouse.COMMITTED_LEDGER)
+    return {"sample": (hashing.file_sha256(warehouse.SAMPLE_WORKBOOK), ledger),
+            "clean": (hashing.file_sha256(warehouse.CLEAN_WORKBOOK), ledger)}
+
+
+def _values(values: dict) -> str:
+    return (f"outcome {values['outcome']}; SQL SHA-256 {values['sql_sha256'] or 'none'}; "
+            f"result SHA-256 {values['result_sha256'] or 'none'}")
+
+
+def replay_lines(replayed, head: list) -> list[str]:
+    """What replay prints: where the line is from, its state and what it holds."""
+    lines = list(head)
+    if replayed.state == "not_replayable":
+        lines.append(f"State: not_replayable: the record holds no specification (outcome "
+                     f"{replayed.reason}).")
+    elif replayed.state == "not_comparable":
+        lines.append("State: not_comparable: the kinds that differ are "
+                     f"{', '.join(replayed.differs)}.")
+    else:
+        lines += [f"State: {replayed.state}", f"  recorded: {_values(replayed.recorded)}",
+                  f"  replayed: {_values(replayed.replayed)}"]
+    if replayed.engine is not None:
+        lines.append(f"Engine: recorded {replayed.engine[0]}, now {replayed.engine[1]}; "
+                     "reported, not refused.")
+    lines.append("No key was read and no model was called.")
+    return lines
+
+
+def replay(argv: list[str]) -> int:
+    _readable_output()
+    from src import audit, promotion, session, warehouse
+    from src.batch import SourceError
+    if len(argv) != 2 or argv[0].startswith("--"):
+        print("replay: give the audit file and a run id; run python main.py for the usage.")
+        return 2
+    path, run_id = Path(argv[0]), argv[1]
+    if not path.is_file():
+        print(f"replay: {path.name}: there is no such file.")
+        return 1
+    try:
+        verified = audit.verify(path)
+    except OSError:
+        print(f"replay: {path.name}: the file could not be read.")
+        return 1
+    if not verified.ok:
+        listed = "; ".join(f"line {p.line} {p.code}" for p in verified.problems[:10])
+        more = f"; and {len(verified.problems) - 10} more" if len(verified.problems) > 10 else ""
+        print(f"replay: {path.name} does not verify ({listed}{more}); nothing was replayed.")
+        return 1
+    found = [(n, r) for n, r in enumerate(audit.read(path), start=1) if r["run_id"] == run_id]
+    if not found:
+        print(f"replay: no line of {path.name} has the run id {_data(run_id)}; nothing was "
+              "replayed.")
+        return 1
+    if len(found) > 1:
+        print(f"replay: {len(found)} lines of {path.name} have the run id {_data(run_id)}; a "
+              "line written twice cannot be told from the first, so nothing was replayed.")
+        return 1
+    line, record = found[0]
+    head = [f"Replay of run {run_id}: line {line} of {path.resolve()}"]
+    if record["specification"] is None:
+        print("\n".join(replay_lines(audit.replay(record, None), head)))
+        return 1
+    then = record["provenance"] or {}
+    pairs = _pairs()
+    matched = [name for name, files in pairs.items()
+               if files == (then.get("plan_file_sha256"), then.get("ledger_file_sha256"))]
+    if not matched:
+        differs = tuple(kind for kind, key, known in (
+            ("plan_file", "plan_file_sha256", {f[0] for f in pairs.values()}),
+            ("ledger_file", "ledger_file_sha256", {f[1] for f in pairs.values()}))
+            if then.get(key) not in known) or ("plan_file", "ledger_file")
+        unmatched = audit.Replayed("not_comparable", differs=differs)
+        print("\n".join(replay_lines(unmatched, head + ["Pair: none of the pairs has both of "
+                                                       "the record's file hashes."])))
+        return 1
+    pair = matched[0]
+    folder = Path(tempfile.mkdtemp(prefix="p7_replay_"))
+    try:
+        template = build_template(folder)
+        pool = session.Sessions(template, root=folder / "sessions")
+        try:
+            s = pool.open()
+            s.acknowledge_many(pair, [(b.break_id, REPLAYER, "accepted")
+                                      for b in s.breaks(pair)])
+            s.promote(pair, REPLAYER)
+            replayed = audit.replay(record, s)
+        finally:
+            pool.close_all()
+    except (promotion.PromotionError, SourceError, warehouse.WarehouseError) as error:
+        print(f"replay: {error}")
+        return 1
+    except OSError:
+        print("replay: the replay could not finish: a file could not be read or written.")
+        return 1
+    except Exception:          # a fault in the code: one plain line
+        print("replay: the record could not be replayed.")
+        return 1
+    finally:
+        remove_folder(folder)
+    head.append(f"Pair: {pair}, its breaks acknowledged and the pair promoted as "
+                f"\"{REPLAYER}\"")
+    print("\n".join(replay_lines(replayed, head)))
+    return 0 if replayed.state == "same" else 1
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -470,6 +786,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return query(argv[1:])
     if argv[0] == "schema":
         return schema(argv[1:])
+    if argv[0] == "ask":
+        return ask(argv[1:])
+    if argv[0] == "replay":
+        return replay(argv[1:])
     if argv[0] != "check" or len(argv) != 3:
         print(USAGE)
         return 2

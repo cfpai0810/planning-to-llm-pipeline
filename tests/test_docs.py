@@ -54,8 +54,9 @@ class TestTheExportContract:
     def test_no_page_for_any_one_tool(self):
         assert not (ROOT / "docs" / "mappings").exists()
         # Part 2e adds the registry's rules and the governed layer.
+        # Changed on purpose in 3e: docs/ask.md, the question path.
         assert sorted(p.name for p in (ROOT / "docs").glob("*.md")) == [
-            "controls.md", "export_contract.md", "glossary.md", "governed_layer.md",
+            "ask.md", "controls.md", "export_contract.md", "glossary.md", "governed_layer.md",
             "rebuilding_the_sample.md", "registry.md", "releasing.md"]
 
 
@@ -416,3 +417,91 @@ class TestThe3bDocs:
         assert "No model is called yet" not in first
         assert ("A model writes the specification through the question path (`src/ask.py`), "
                 "and nothing else.") in first
+
+
+# -- Part 3e: docs/ask.md --------------------------------------------------------------------------
+
+ASK = ROOT / "docs" / "ask.md"
+
+
+class TestTheAskDoc:
+    def test_it_covers_the_question_path(self):
+        text = ASK.read_text(encoding="utf-8")
+        for heading in ("# The question path", "## Asking a question", "## The steps",
+                        "## The schema", "## The prompt", "## Refusals and failed calls",
+                        "## Narration and the checks", "## The audit", "## Replay",
+                        "## Live checks", "## Limits"):
+            assert f"\n{heading}\n" in "\n" + text, heading
+        flat = flat_text(text)
+        assert ("Member names are plain strings in the schema, not enums. That keeps the grammar "
+                "small, and it lets an entity controller's question about another entity reach "
+                "validation with the word it used") in flat
+        assert "The direction check is a vocabulary check" in flat
+        for code in ("model_refused", "reply_cut_off", "unreadable_reply", "key_rejected",
+                     "rate_limited", "service_unavailable"):
+            assert f"`{code}`" in flat, code
+        assert "a fresh temporary folder (prefix `p7_ask_`)" in flat
+        assert "`audit.jsonl` in `audit_log` in the current directory" in flat
+
+    def test_the_refusal_sentences_are_the_outcomes_own(self):
+        from src import outcomes
+        rows = {r[0].strip("`"): r[1] for r in table_rows(ASK, "Reason")}
+        assert rows == {code: outcomes.outcome(code).sentence for code in (
+            "out_of_scope", "needs_clarification", "change_not_possible",
+            "currency_not_supported")}
+
+    def test_the_live_checks(self):
+        text = section(ASK, "## Live checks")
+        for phrase in ("27 November 2026", "at commit 83b0466", "9 of 9", "at commit 267ec35",
+                       "The model's text was shown 4 times and withheld 2 times",
+                       "Both withheld texts were true, and both were withheld for the comma "
+                       "pattern",
+                       "The results files** are kept outside the repository"):
+            assert phrase in text, phrase
+        # The model that served every call on 27 November is the one config.py names.
+        import config
+        assert f"`{config.MODEL}`" in text
+
+    def test_the_limits_in_the_verdicts_groups(self):
+        text = section(ASK, "## Limits")
+        groups = [g for g in ("### The checks", "### Model wording", "### The question",
+                              "### The audit", "### Calls and limits")]
+        raw = ASK.read_text(encoding="utf-8").split("\n## Limits\n", 1)[1]
+        assert [raw.index(g) for g in groups] == sorted(raw.index(g) for g in groups)
+        for phrase in (
+                '"EBIT was 500,000 EUR" passes for a loss of 500,000',
+                "Brackets and an en dash (U+2013) before the number are not signs",
+                "Numbers spelt out in words are not read",
+                "Only vocabulary is checked", "advice and a name that is not among the rows",
+                "the count is not enforced",
+                "Strict naming withholds a true direction word written after a comma",
+                "longer than 4,000 characters, or holding a control, format or surrogate "
+                "character (a carriage return included), is not read",
+                "An empty second text block counts as one block",
+                "the narration call's entry in the record says `ok`, while the narration's "
+                "failure is `unreadable_reply`",
+                "A flag's reason quotes the computed figure with all its decimal places",
+                "A question that names no version is asked in Actual, and a relative date",
+                '"at" in the registry\'s headcount definition',
+                "are matched exactly (N2)",
+                "detects an altered line, but not a deleted line, two lines swapped, or a "
+                "line written twice. The hash has no key",
+                "no fsync", "The Release phase decides where the file lives",
+                "Two processes writing one audit file are not coordinated",
+                "a line can reach tens of kilobytes",
+                "The question is cut at 2,000 characters",
+                "A failed call keeps no request id",
+                "The values of a filter are not capped (F30)",
+                "The SDK's default timeout applies", "the web phase sets one",
+                "With `ANTHROPIC_BASE_URL` set, the key and the question go to that address"):
+            assert phrase in text, phrase
+
+    def test_no_request_id_raw_text_or_key_in_the_docs(self):
+        for path in sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md"]:
+            text = path.read_text(encoding="utf-8")
+            assert not re.search(r"req_[0-9A-Za-z]", text), path.name
+            assert "sk-ant" not in text and "OneDrive" not in text, path.name
+
+    def test_the_governed_layer_points_to_it(self):
+        assert "The question path itself, from a question in words to its audit line and its " \
+               "replay, is in [ask.md](ask.md)." in section(GOVERNED, "## Outcomes")
